@@ -58,8 +58,9 @@ Ver `.env.example`. Precisa de Firebase Admin, `OPENAI_API_KEY`,
 
 1. ✅ Painel da base de conhecimento (feito).
 2. ✅ Motor de agenda + lembrete anti-no-show (feito).
-3. Painel visual da agenda (calendário do dono) e painel de horários da Livia.
+3. ✅ Painel visual da agenda — `app/painel/agenda` (visão do dia, ações de status, novo agendamento com horários livres).
 4. Booking pela IA: o bot marca sozinho via function calling (consulta `/api/availability` e cria o agendamento).
+5. Painel de configuração da agenda (horários por dia, pausas, template de lembrete).
 5. Conexão do WhatsApp via Embedded Signup (portar do Nuvem Rush, app separado da Livia).
 6. Criar/aprovar o template de lembrete na WABA de cada estabelecimento.
 7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev).
