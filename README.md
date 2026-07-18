@@ -54,18 +54,47 @@ Ver `.env.example`. Precisa de Firebase Admin, `OPENAI_API_KEY`,
 - `app/api/cron/reminders` — lembrete anti-no-show por **template** (envio proativo fora da janela de 24h exige HSM aprovado).
 - Webhook captura a resposta ao lembrete (`SIM` confirma, `CANCELAR` desmarca).
 
+## Feito
+
+- ✅ Núcleo do bot com IA (webhook → base de conhecimento → resposta).
+- ✅ Painel da base de conhecimento (`app/painel/conhecimento`).
+- ✅ Motor de agenda + lembrete anti-no-show.
+- ✅ Painel visual da agenda (`app/painel/agenda`).
+- ✅ Booking pela IA via function calling (`lib/ai/brain.ts`; requer `bot.bookingEnabled`).
+- ✅ Painel de config (`app/painel/config`: estabelecimento + bot + agenda).
+- ✅ Deploy na Vercel + Firestore próprio (`livia-6230b`, São Paulo). Painéis testados em produção.
+
 ## Próximos passos
 
-1. ✅ Painel da base de conhecimento (feito).
-2. ✅ Motor de agenda + lembrete anti-no-show (feito).
-3. ✅ Painel visual da agenda — `app/painel/agenda` (visão do dia, ações de status, novo agendamento com horários livres).
-4. ✅ Booking pela IA — o bot marca sozinho na conversa via function calling (`lib/ai/brain.ts`: ferramentas `check_availability` e `create_appointment`). Requer `bot.bookingEnabled = true` no estabelecimento.
-5. ✅ Painel de config — `app/painel/config` (estabelecimento + bot: persona/tom/bookingEnabled/guardrail/handoff; agenda: horários por dia, duração, antecedência, template de lembrete). É aqui que se liga o `bookingEnabled`.
-6. Conexão do WhatsApp via Embedded Signup (app separado da Livia + App Review).
-7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev; o config cria o estabelecimento no primeiro save).
-8. Handoff completo: notificar o atendente e caixa de entrada no painel.
-5. Conexão do WhatsApp via Embedded Signup (portar do Nuvem Rush, app separado da Livia).
-6. Criar/aprovar o template de lembrete na WABA de cada estabelecimento.
-7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev).
-8. Handoff completo: notificar o atendente e caixa de entrada no painel.
-9. Suporte a áudio/imagem; mover processamento pesado para fila em volume alto.
+1. Conexão do WhatsApp via Embedded Signup (app separado da Livia + App Review na Meta).
+2. Criar/aprovar o template de lembrete na WABA de cada estabelecimento.
+3. **Verificação do número por OTP** (anti-fake) — ver seção abaixo.
+4. Login/sessão no painel — hoje o tenant vem por `?est=` (inseguro, temporário); trocar por JWT em `lib/auth/session.ts`.
+5. Handoff completo: notificar o atendente e caixa de entrada no painel.
+6. Suporte a áudio/imagem; mover processamento pesado para fila em volume alto.
+
+## Verificação do número por OTP (anti-fake)
+
+Objetivo: garantir que o telefone de um agendamento é real e pertence ao cliente.
+
+Regra de ouro — **só é preciso verificar quando o número NÃO veio de uma
+mensagem do WhatsApp:**
+
+- **Agendamento pelo bot** (cliente conversa no WhatsApp): o número já está
+  provado (a mensagem chegou daquele número). Confirma direto, sem OTP.
+- **Agendamento manual** (dono digita o número) ou **via formulário/web**
+  (futuro widget "agende aqui"): o número pode ser errado/inventado → pede OTP.
+
+Fluxo proposto (quando o WhatsApp estiver ligado):
+
+1. Ao criar um agendamento de origem `manual`/`web`, status inicial fica
+   `pending` (aguardando verificação).
+2. Livia envia um **template de Autenticação da Meta** (categoria "Authentication",
+   OTP de código único; custo ~R$0,03) com um código de 6 dígitos.
+3. O cliente responde/toca com o código; o webhook valida contra o código
+   gerado (guardar hash + expiração curta, ex. 10 min, no doc do agendamento).
+4. Código correto → status vira `confirmed`. Errado/expirado → reenvia ou cai
+   pra revisão manual do dono.
+
+Depende de: WhatsApp conectado (Embedded Signup) + um template de OTP aprovado
+na WABA. Por isso fica para depois de ligar a Meta.
