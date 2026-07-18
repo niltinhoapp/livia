@@ -30,6 +30,20 @@ export async function getKnowledgeBase(
   return doc.exists ? (doc.data() as KnowledgeBase) : null;
 }
 
+// Salva (merge) a base de conhecimento do estabelecimento.
+export async function saveKnowledgeBase(
+  establishmentId: string,
+  data: Omit<KnowledgeBase, "establishmentId" | "updatedAt">,
+): Promise<KnowledgeBase> {
+  const kb: KnowledgeBase = {
+    ...data,
+    establishmentId,
+    updatedAt: Date.now(),
+  };
+  await sub(establishmentId, "meta").doc("knowledge").set(kb);
+  return kb;
+}
+
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens
 // pra dar contexto à IA.
 export async function loadConversation(
