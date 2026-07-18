@@ -48,6 +48,48 @@ export async function sendText(
   return { waMessageId: data.messages?.[0]?.id };
 }
 
+// Envia mensagem de TEMPLATE (HSM). Necessária para envios PROATIVOS fora da
+// janela de 24h — é o caso do lembrete de agendamento. O template precisa
+// estar aprovado na WABA do estabelecimento. `params` preenche as variáveis
+// {{1}}, {{2}}... do corpo, na ordem.
+export async function sendTemplate(
+  wa: EstablishmentWhatsapp,
+  toPhone: string,
+  templateName: string,
+  languageCode: string,
+  params: string[] = [],
+): Promise<{ waMessageId?: string }> {
+  const components =
+    params.length > 0
+      ? [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }]
+      : undefined;
+
+  const res = await fetch(`${GRAPH}/${wa.phoneNumberId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${wa.accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: normalizePhone(toPhone),
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        ...(components ? { components } : {}),
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`WhatsApp sendTemplate ${res.status}: ${body}`);
+  }
+  const data = (await res.json().catch(() => ({}))) as { messages?: { id: string }[] };
+  return { waMessageId: data.messages?.[0]?.id };
+}
+
 // Marca a mensagem recebida como lida (opcional, melhora a UX — o cliente vê
 // o "visto" azul enquanto a IA formula a resposta).
 export async function markAsRead(

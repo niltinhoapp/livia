@@ -45,11 +45,23 @@ atendente (marcador `[[HANDOFF]]`, que troca a conversa para modo humano).
 Ver `.env.example`. Precisa de Firebase Admin, `OPENAI_API_KEY`,
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN` e as credenciais do Embedded Signup.
 
+## Agenda (motor de agendamento)
+
+- `lib/scheduling.ts` — config da agenda, cálculo de horários livres (descontando pausas, antecedência mínima e conflitos) e CRUD de agendamentos.
+- `app/api/schedule` — configuração da agenda (horários por dia, slot, fuso, template de lembrete).
+- `app/api/availability` — horários livres de um dia.
+- `app/api/appointments` (+ `/[id]`) — criar, listar, confirmar, cancelar, remarcar.
+- `app/api/cron/reminders` — lembrete anti-no-show por **template** (envio proativo fora da janela de 24h exige HSM aprovado).
+- Webhook captura a resposta ao lembrete (`SIM` confirma, `CANCELAR` desmarca).
+
 ## Próximos passos
 
-1. Painel do estabelecimento para cadastrar a base de conhecimento.
-2. Conexão do WhatsApp via Embedded Signup (portar do Nuvem Rush).
-3. Motor de agenda: horários, confirmação, remarcação, lembrete anti-no-show.
-4. Handoff completo: notificar o atendente e caixa de entrada no painel.
-5. Suporte a áudio/imagem nas mensagens recebidas.
-6. Mover o processamento pesado para fila (Cloud Tasks) em volume alto.
+1. ✅ Painel da base de conhecimento (feito).
+2. ✅ Motor de agenda + lembrete anti-no-show (feito).
+3. Painel visual da agenda (calendário do dono) e painel de horários da Livia.
+4. Booking pela IA: o bot marca sozinho via function calling (consulta `/api/availability` e cria o agendamento).
+5. Conexão do WhatsApp via Embedded Signup (portar do Nuvem Rush, app separado da Livia).
+6. Criar/aprovar o template de lembrete na WABA de cada estabelecimento.
+7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev).
+8. Handoff completo: notificar o atendente e caixa de entrada no painel.
+9. Suporte a áudio/imagem; mover processamento pesado para fila em volume alto.

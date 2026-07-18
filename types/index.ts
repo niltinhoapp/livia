@@ -84,6 +84,53 @@ export interface Conversation {
   createdAt: number;
 }
 
+// ---- Agenda ----
+export type AppointmentStatus =
+  | "pending" // criado, aguardando confirmação do cliente
+  | "confirmed" // cliente confirmou
+  | "cancelled"
+  | "completed"
+  | "no_show"; // não compareceu
+
+export interface Appointment {
+  id: string;
+  establishmentId: string;
+  contactPhone: string;
+  contactName: string | null;
+  serviceName: string;
+  startAt: number; // epoch ms (UTC)
+  durationMin: number;
+  status: AppointmentStatus;
+  source: "bot" | "manual";
+  note: string | null;
+  createdAt: number;
+  confirmedAt: number | null;
+  reminderSentAt: number | null;
+}
+
+export interface DayHours {
+  open: string; // "09:00"
+  close: string; // "18:00"
+  breaks?: { start: string; end: string }[]; // ex.: almoço
+}
+
+// Configuração da agenda do estabelecimento.
+export interface ScheduleConfig {
+  establishmentId: string;
+  timezone: string; // exibição (ex.: "America/Sao_Paulo")
+  // Offset fixo usado nos cálculos (Brasil não tem horário de verão: -180).
+  utcOffsetMinutes: number;
+  slotMinutes: number; // granularidade dos horários (ex.: 30)
+  defaultDurationMin: number; // duração padrão de um atendimento
+  leadHours: number; // antecedência mínima pra marcar (ex.: 2h)
+  // Horários por dia da semana: "0"=domingo ... "6"=sábado. null = fechado.
+  days: Record<string, DayHours | null>;
+  // Template aprovado usado no lembrete (envio fora da janela de 24h exige HSM).
+  reminderTemplateName: string | null;
+  reminderTemplateLang: string;
+  updatedAt: number;
+}
+
 export type MessageRole = "customer" | "bot" | "agent";
 
 export interface Message {

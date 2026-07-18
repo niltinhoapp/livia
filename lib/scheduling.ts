@@ -1,0 +1,220 @@
+// Motor de agenda da Livia: configuração, cálculo de horários livres e
+// operações sobre agendamentos.
+//
+// Fuso: guardamos startAt em epoch UTC. A config tem um offset fixo
+// (utcOffsetMinutes; Brasil = -180, sem horário de verão) usado pra converter
+// entre o "relógio de parede" local e o epoch. Simples e sem dependências.
+import { sub } from "@/lib/firebase/admin";
+import type {
+  ScheduleConfig,
+  DayHours,
+  Appointment,
+  AppointmentStatus,
+} from "@/types";
+
+// ---- Config padrão (Seg-Sex 9-18 com almoço 12-13, Sáb 9-13) ----
+export function defaultScheduleConfig(establishmentId: string): ScheduleConfig {
+  const weekday: DayHours = {
+    open: "09:00",
+    close: "18:00",
+    breaks: [{ start: "12:00", end: "13:00" }],
+  };
+  return {
+    establishmentId,
+    timezone: "America/Sao_Paulo",
+    utcOffsetMinutes: -180,
+    slotMinutes: 30,
+    defaultDurationMin: 30,
+    leadHours: 2,
+    days: {
+      "0": null,
+      "1": weekday,
+      "2": weekday,
+      "3": weekday,
+      "4": weekday,
+      "5": weekday,
+      "6": { open: "09:00", close: "13:00" },
+    },
+    reminderTemplateName: null,
+    reminderTemplateLang: "pt_BR",
+    updatedAt: Date.now(),
+  };
+}
+
+// ---- Helpers de tempo ----
+function hmToMinutes(hm: string): number {
+  const [h, m] = hm.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+function minutesToHM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// "YYYY-MM-DD" + minutos locais -> epoch UTC, dado o offset local.
+export function localToEpoch(dateStr: string, localMinutes: number, offsetMin: number): number {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const wallAsUtc = Date.UTC(y!, (mo! - 1), d!, 0, 0) + localMinutes * 60000;
+  return wallAsUtc - offsetMin * 60000;
+}
+
+// Dia da semana (0=domingo) de uma data local.
+export function weekdayOf(dateStr: string): number {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  return new Date(Date.UTC(y!, mo! - 1, d!)).getUTCDay();
+}
+
+export interface Slot {
+  time: string; // "14:30" (hora local)
+  startAt: number; // epoch UTC
+}
+
+// Calcula os horários livres de um dia, descontando pausas, antecedência
+// mínima e agendamentos já existentes (que se sobrepõem).
+export function computeSlots(
+  config: ScheduleConfig,
+  dateStr: string,
+  durationMin: number,
+  existing: Appointment[],
+  now = Date.now(),
+): Slot[] {
+  const day = config.days[String(weekdayOf(dateStr))];
+  if (!day) return [];
+
+  const open = hmToMinutes(day.open);
+  const close = hmToMinutes(day.close);
+  const breaks = (day.breaks ?? []).map((b) => ({
+    start: hmToMinutes(b.start),
+    end: hmToMinutes(b.end),
+  }));
+  const minStart = now + config.leadHours * 3600000;
+
+  // Ocupados = agendamentos ativos (não cancelados / no_show).
+  const busy = existing
+    .filter((a) => a.status !== "cancelled" && a.status !== "no_show")
+    .map((a) => ({ start: a.startAt, end: a.startAt + a.durationMin * 60000 }));
+
+  const slots: Slot[] = [];
+  for (let t = open; t + durationMin <= close; t += config.slotMinutes) {
+    const slotEndMin = t + durationMin;
+    // dentro de uma pausa?
+    if (breaks.some((b) => t < b.end && b.start < slotEndMin)) continue;
+
+    const startAt = localToEpoch(dateStr, t, config.utcOffsetMinutes);
+    const endAt = startAt + durationMin * 60000;
+    if (startAt < minStart) continue; // respeita antecedência mínima
+    if (busy.some((b) => startAt < b.end && b.start < endAt)) continue; // ocupado
+
+    slots.push({ time: minutesToHM(t), startAt });
+  }
+  return slots;
+}
+
+// ---- Persistência: config ----
+export async function getScheduleConfig(establishmentId: string): Promise<ScheduleConfig> {
+  const doc = await sub(establishmentId, "meta").doc("schedule").get();
+  if (doc.exists) return doc.data() as ScheduleConfig;
+  return defaultScheduleConfig(establishmentId);
+}
+
+export async function saveScheduleConfig(
+  establishmentId: string,
+  data: Omit<ScheduleConfig, "establishmentId" | "updatedAt">,
+): Promise<ScheduleConfig> {
+  const cfg: ScheduleConfig = { ...data, establishmentId, updatedAt: Date.now() };
+  await sub(establishmentId, "meta").doc("schedule").set(cfg);
+  return cfg;
+}
+
+// ---- Persistência: agendamentos ----
+export async function createAppointment(
+  establishmentId: string,
+  data: {
+    contactPhone: string;
+    contactName: string | null;
+    serviceName: string;
+    startAt: number;
+    durationMin: number;
+    source: "bot" | "manual";
+    note?: string | null;
+  },
+): Promise<Appointment> {
+  const ref = sub(establishmentId, "appointments").doc();
+  const appt: Appointment = {
+    id: ref.id,
+    establishmentId,
+    contactPhone: data.contactPhone,
+    contactName: data.contactName,
+    serviceName: data.serviceName,
+    startAt: data.startAt,
+    durationMin: data.durationMin,
+    status: "pending",
+    source: data.source,
+    note: data.note ?? null,
+    createdAt: Date.now(),
+    confirmedAt: null,
+    reminderSentAt: null,
+  };
+  await ref.set(appt);
+  return appt;
+}
+
+// Agendamentos num intervalo [from, to) (por startAt).
+export async function listAppointments(
+  establishmentId: string,
+  from: number,
+  to: number,
+): Promise<Appointment[]> {
+  const snap = await sub(establishmentId, "appointments")
+    .where("startAt", ">=", from)
+    .where("startAt", "<", to)
+    .orderBy("startAt", "asc")
+    .get();
+  return snap.docs.map((d) => d.data() as Appointment);
+}
+
+export async function getAppointment(
+  establishmentId: string,
+  id: string,
+): Promise<Appointment | null> {
+  const doc = await sub(establishmentId, "appointments").doc(id).get();
+  return doc.exists ? (doc.data() as Appointment) : null;
+}
+
+export async function updateAppointment(
+  establishmentId: string,
+  id: string,
+  patch: Partial<Pick<Appointment, "status" | "startAt" | "durationMin" | "serviceName" | "note" | "confirmedAt" | "reminderSentAt">>,
+): Promise<void> {
+  await sub(establishmentId, "appointments").doc(id).update(patch);
+}
+
+// Próximo agendamento ativo do contato (o mais cedo a partir de agora).
+export async function findNextAppointment(
+  establishmentId: string,
+  contactPhone: string,
+  now = Date.now(),
+): Promise<Appointment | null> {
+  const snap = await sub(establishmentId, "appointments")
+    .where("contactPhone", "==", contactPhone)
+    .where("startAt", ">=", now)
+    .orderBy("startAt", "asc")
+    .limit(3)
+    .get();
+  const found = snap.docs
+    .map((d) => d.data() as Appointment)
+    .find((a) => a.status === "pending" || a.status === "confirmed");
+  return found ?? null;
+}
+
+export function setStatus(
+  establishmentId: string,
+  id: string,
+  status: AppointmentStatus,
+): Promise<void> {
+  const patch: Record<string, unknown> = { status };
+  if (status === "confirmed") patch.confirmedAt = Date.now();
+  return updateAppointment(establishmentId, id, patch as Partial<Appointment>);
+}

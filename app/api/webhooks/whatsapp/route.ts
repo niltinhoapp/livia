@@ -18,6 +18,9 @@ import {
 } from "@/lib/repo";
 import { sendText, markAsRead } from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
+import { findNextAppointment, setStatus } from "@/lib/scheduling";
+import { normalizePhone } from "@/lib/whatsapp/client";
+import type { Establishment } from "@/types";
 
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
@@ -85,6 +88,24 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // Se a conversa já está com humano, o bot fica quieto (não atropela o atendente).
   if (conversation.status === "human") return;
 
+  // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
+  // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
+  // assim "sim"/"ok" no meio de outra conversa não é confundido.
+  const intent = confirmCancelIntent(customerText);
+  if (intent) {
+    const next = await findNextAppointment(est.id, normalizePhone(contactPhone));
+    if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
+      if (intent === "confirm") {
+        await setStatus(est.id, next.id, "confirmed");
+        await replyAndLog(est, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
+      } else {
+        await setStatus(est.id, next.id, "cancelled");
+        await replyAndLog(est, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
+      }
+      return;
+    }
+  }
+
   const kb = await getKnowledgeBase(est.id);
   const historyForAI = [
     ...history,
@@ -100,6 +121,27 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     await setConversationStatus(est.id, conversation.id, "human");
     // TODO: notificar o dono/atendente (push, e-mail ou painel).
   }
+}
+
+// Detecta intenção de confirmar/cancelar em respostas curtas ao lembrete.
+function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
+  const t = text.trim().toLowerCase();
+  if (t.length > 30) return null; // resposta longa: deixa a IA tratar
+  const confirm = ["sim", "confirmo", "confirmar", "confirmado", "confirma", "ok", "isso", "pode confirmar", "vou sim", "com certeza", "👍"];
+  const cancel = ["cancelar", "cancela", "cancelado", "nao vou", "não vou", "desmarcar", "desmarca", "nao poderei", "não poderei"];
+  if (cancel.some((w) => t.includes(w))) return "cancel";
+  if (confirm.some((w) => t === w || t.startsWith(w + " ") || t.includes(w))) return "confirm";
+  return null;
+}
+
+async function replyAndLog(
+  est: Establishment,
+  conversationId: string,
+  toPhone: string,
+  text: string,
+): Promise<void> {
+  const sent = await sendText(est.whatsapp!, toPhone, text);
+  await appendMessage(est.id, conversationId, "bot", text, sent.waMessageId);
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
