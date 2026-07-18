@@ -112,7 +112,13 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     { id: msg.id ?? "cur", role: "customer" as const, text: customerText, at: Date.now() },
   ];
 
-  const { reply, handoff } = await think(est, kb, historyForAI);
+  const { reply, handoff } = await think({
+    est,
+    kb,
+    history: historyForAI,
+    contactPhone,
+    contactName,
+  });
 
   const sent = await sendText(est.whatsapp, contactPhone, reply);
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
