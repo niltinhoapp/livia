@@ -1,0 +1,25 @@
+{
+  "name": "livia",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Livia — atendente virtual com IA no WhatsApp para clínicas, pets, salões e serviços locais.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "next": "^14.2.0",
+    "openai": "^4.52.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.4.0"
+  }
+}
