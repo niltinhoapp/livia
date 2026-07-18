@@ -60,8 +60,10 @@ Ver `.env.example`. Precisa de Firebase Admin, `OPENAI_API_KEY`,
 2. ✅ Motor de agenda + lembrete anti-no-show (feito).
 3. ✅ Painel visual da agenda — `app/painel/agenda` (visão do dia, ações de status, novo agendamento com horários livres).
 4. ✅ Booking pela IA — o bot marca sozinho na conversa via function calling (`lib/ai/brain.ts`: ferramentas `check_availability` e `create_appointment`). Requer `bot.bookingEnabled = true` no estabelecimento.
-5. Painel de configuração da agenda (horários por dia, pausas, template de lembrete) + config do bot (persona, tom, bookingEnabled, guardrail).
+5. ✅ Painel de config — `app/painel/config` (estabelecimento + bot: persona/tom/bookingEnabled/guardrail/handoff; agenda: horários por dia, duração, antecedência, template de lembrete). É aqui que se liga o `bookingEnabled`.
 6. Conexão do WhatsApp via Embedded Signup (app separado da Livia + App Review).
+7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev; o config cria o estabelecimento no primeiro save).
+8. Handoff completo: notificar o atendente e caixa de entrada no painel.
 5. Conexão do WhatsApp via Embedded Signup (portar do Nuvem Rush, app separado da Livia).
 6. Criar/aprovar o template de lembrete na WABA de cada estabelecimento.
 7. Login/sessão no painel (hoje o tenant vem por `?est=` em dev).

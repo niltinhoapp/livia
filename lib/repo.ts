@@ -3,11 +3,54 @@ import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import type {
   Establishment,
+  EstablishmentType,
+  BotConfig,
   KnowledgeBase,
   Conversation,
   Message,
   MessageRole,
 } from "@/types";
+
+export function defaultBotConfig(): BotConfig {
+  return {
+    personaName: "Livia",
+    tone: "acolhedora e objetiva",
+    bookingEnabled: false,
+    handoffKeywords: ["falar com atendente", "atendente", "humano"],
+    medicalGuardrail: false,
+  };
+}
+
+export async function getEstablishment(id: string): Promise<Establishment | null> {
+  const doc = await establishmentRef(id).get();
+  return doc.exists ? (doc.data() as Establishment) : null;
+}
+
+// Cria (se novo) ou atualiza nome/tipo/config do bot do estabelecimento.
+export async function upsertEstablishmentConfig(
+  id: string,
+  data: { name?: string; type?: EstablishmentType; bot?: BotConfig },
+): Promise<Establishment> {
+  const existing = await getEstablishment(id);
+  const merged: Establishment = existing
+    ? {
+        ...existing,
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(data.type !== undefined ? { type: data.type } : {}),
+        ...(data.bot !== undefined ? { bot: data.bot } : {}),
+      }
+    : {
+        id,
+        name: data.name ?? "",
+        type: data.type ?? "outro",
+        ownerUid: "", // TODO: preencher com o login quando existir
+        status: "active",
+        createdAt: Date.now(),
+        bot: data.bot ?? defaultBotConfig(),
+      };
+  await establishmentRef(id).set(merged, { merge: true });
+  return merged;
+}
 
 // Acha o estabelecimento dono de um phone_number_id (o webhook chega com ele).
 // Query num campo aninhado exige índice; em produção, criar índice composto.
