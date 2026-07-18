@@ -4,7 +4,8 @@
 // ~24h e ainda não receberam lembrete. O envio é por TEMPLATE (fora da janela
 // de 24h a Meta exige HSM aprovado).
 //
-// Ideal rodar de hora em hora. Protegido pelo CRON_SECRET.
+// Roda 1x/dia (limite do plano Hobby da Vercel; no Pro dá pra aumentar a
+// frequencia). Protegido pelo CRON_SECRET.
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase/admin";
 import { getScheduleConfig, listAppointments, updateAppointment } from "@/lib/scheduling";
