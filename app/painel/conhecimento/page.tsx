@@ -3,8 +3,8 @@
 // É aqui que o dono ensina a Livia — serviços, horários, endereço e FAQs.
 // A IA responde SOMENTE com o que estiver cadastrado aqui.
 //
-// MVP: o estabelecimento é passado por ?est=<id> (dev). Em produção virá do
-// login e o header x-establishment-id é preenchido pela sessão.
+// Tenant vem da sessão (cookie httpOnly criado no login); o painel só é
+// renderizado se app/painel/layout.tsx confirmar uma sessão válida.
 import { useCallback, useEffect, useState } from "react";
 import type { KnowledgeService, KnowledgeFaq } from "@/types";
 
@@ -31,8 +31,8 @@ const btnGhost: React.CSSProperties = {
 };
 
 export default function KnowledgePanel() {
-  const [est, setEst] = useState<string>("");
   const [state, setState] = useState<SaveState>("loading");
+  const [loadError, setLoadError] = useState(false);
   const [about, setAbout] = useState("");
   const [address, setAddress] = useState("");
   const [hours, setHours] = useState("");
@@ -41,10 +41,7 @@ export default function KnowledgePanel() {
   const [faqs, setFaqs] = useState<KnowledgeFaq[]>([]);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("est") ?? "";
-    setEst(id);
-    if (!id) { setState("error"); return; }
-    fetch(`/api/knowledge?est=${encodeURIComponent(id)}`)
+    fetch("/api/knowledge")
       .then((r) => r.json())
       .then((d) => {
         const kb = d.knowledge;
@@ -58,22 +55,22 @@ export default function KnowledgePanel() {
         }
         setState("idle");
       })
-      .catch(() => setState("error"));
+      .catch(() => { setLoadError(true); setState("idle"); });
   }, []);
 
   const save = useCallback(async () => {
     setState("saving");
     const res = await fetch("/api/knowledge", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", "x-establishment-id": est },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ about, address, hours, notes, services, faqs }),
     });
     setState(res.ok ? "saved" : "error");
     if (res.ok) setTimeout(() => setState("idle"), 2000);
-  }, [est, about, address, hours, notes, services, faqs]);
+  }, [about, address, hours, notes, services, faqs]);
 
   if (state === "loading") return <Msg>Carregando…</Msg>;
-  if (!est) return <Msg>Estabelecimento não informado. Use ?est=&lt;id&gt; na URL.</Msg>;
+  if (loadError) return <Msg>Erro ao carregar. Faça login novamente.</Msg>;
 
   return (
     <main style={{ maxWidth: 720, margin: "40px auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>

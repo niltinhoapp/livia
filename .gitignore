@@ -23,6 +23,10 @@ npm-debug.log*
 # vercel
 .vercel
 
+# credenciais (Firebase Admin SDK service account, etc.)
+livia-*-firebase-adminsdk-*.json
+*firebase-adminsdk*.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -9,14 +9,14 @@ import { getKnowledgeBase, saveKnowledgeBase } from "@/lib/repo";
 import type { KnowledgeBase, KnowledgeService, KnowledgeFaq } from "@/types";
 
 export async function GET(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
   const kb = await getKnowledgeBase(id);
   return NextResponse.json({ knowledge: kb });
 }
 
 export async function PUT(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const raw = (await req.json().catch(() => null)) as Partial<KnowledgeBase> | null;

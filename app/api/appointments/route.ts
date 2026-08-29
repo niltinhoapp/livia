@@ -10,7 +10,7 @@ import {
 } from "@/lib/scheduling";
 
 export async function GET(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const now = Date.now();
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const b = (await req.json().catch(() => null)) as {

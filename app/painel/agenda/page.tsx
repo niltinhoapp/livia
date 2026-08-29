@@ -2,9 +2,9 @@
 // Painel: agenda visual do estabelecimento (visão do dia).
 // O dono vê os agendamentos, confirma/conclui/cancela/remarca e cria manual.
 //
-// MVP: tenant via ?est=<id> (dev). Em produção vem do login (header
-// x-establishment-id preenchido pela sessão).
-import { useCallback, useEffect, useMemo, useState } from "react";
+// Tenant vem da sessão (cookie httpOnly criado no login); o painel só é
+// renderizado se app/painel/layout.tsx confirmar uma sessão válida.
+import { useCallback, useEffect, useState } from "react";
 import type { Appointment, AppointmentStatus, ScheduleConfig } from "@/types";
 
 interface Slot { time: string; startAt: number }
@@ -56,44 +56,36 @@ function prettyDate(dateStr: string): string {
 }
 
 export default function AgendaPanel() {
-  const [est, setEst] = useState("");
   const [config, setConfig] = useState<ScheduleConfig | null>(null);
   const [date, setDate] = useState("");
   const [appts, setAppts] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [error, setError] = useState(false);
 
   const offset = config?.utcOffsetMinutes ?? -180;
 
-  const authHeaders = useMemo(
-    () => ({ "Content-Type": "application/json", "x-establishment-id": est }),
-    [est],
-  );
-
-  const loadDay = useCallback(async (id: string, cfg: ScheduleConfig, d: string) => {
+  const loadDay = useCallback(async (cfg: ScheduleConfig, d: string) => {
     setLoading(true);
     const from = localToEpoch(d, 0, cfg.utcOffsetMinutes);
     const to = from + 24 * 3600000;
-    const r = await fetch(`/api/appointments?est=${id}&from=${from}&to=${to}`);
+    const r = await fetch(`/api/appointments?from=${from}&to=${to}`);
     const j = await r.json();
     setAppts((j.appointments ?? []).sort((a: Appointment, b: Appointment) => a.startAt - b.startAt));
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("est") ?? "";
-    setEst(id);
-    if (!id) { setLoading(false); return; }
-    fetch(`/api/schedule?est=${id}`)
+    fetch("/api/schedule")
       .then((r) => r.json())
       .then((j) => {
         const cfg: ScheduleConfig = j.schedule;
         setConfig(cfg);
         const d = todayLocal(cfg.utcOffsetMinutes);
         setDate(d);
-        return loadDay(id, cfg, d);
+        return loadDay(cfg, d);
       })
-      .catch(() => setLoading(false));
+      .catch(() => { setError(true); setLoading(false); });
   }, [loadDay]);
 
   const go = (n: number) => {
@@ -101,16 +93,20 @@ export default function AgendaPanel() {
     const d = addDays(date, n);
     setDate(d);
     setShowNew(false);
-    loadDay(est, config, d);
+    loadDay(config, d);
   };
 
   const patch = async (id: string, body: Record<string, unknown>) => {
-    await fetch(`/api/appointments/${id}`, { method: "PATCH", headers: authHeaders, body: JSON.stringify(body) });
-    if (config) loadDay(est, config, date);
+    await fetch(`/api/appointments/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (config) loadDay(config, date);
   };
 
   if (loading && !config) return <Msg>Carregando…</Msg>;
-  if (!est) return <Msg>Estabelecimento não informado. Use ?est=&lt;id&gt; na URL.</Msg>;
+  if (error) return <Msg>Erro ao carregar. Faça login novamente.</Msg>;
 
   const active = appts.filter((a) => a.status !== "cancelled");
 
@@ -122,7 +118,7 @@ export default function AgendaPanel() {
           <div style={{ minWidth: 140, textAlign: "center" }}>
             <div style={{ fontSize: 20, fontWeight: 700 }}>{date && prettyDate(date)}</div>
             <button style={{ ...chip, border: "none", padding: 0, color: "#7c3aed" }}
-              onClick={() => { const d = todayLocal(offset); setDate(d); config && loadDay(est, config, d); }}>
+              onClick={() => { const d = todayLocal(offset); setDate(d); config && loadDay(config, d); }}>
               hoje
             </button>
           </div>
@@ -134,7 +130,7 @@ export default function AgendaPanel() {
       </div>
 
       {showNew && config && (
-        <NewAppointment est={est} date={date} config={config} onCreated={() => { setShowNew(false); loadDay(est, config, date); }} />
+        <NewAppointment date={date} config={config} onCreated={() => { setShowNew(false); loadDay(config, date); }} />
       )}
 
       {loading ? (
@@ -170,8 +166,8 @@ export default function AgendaPanel() {
   );
 }
 
-function NewAppointment({ est, date, config, onCreated }: {
-  est: string; date: string; config: ScheduleConfig; onCreated: () => void;
+function NewAppointment({ date, config, onCreated }: {
+  date: string; config: ScheduleConfig; onCreated: () => void;
 }) {
   const [serviceName, setServiceName] = useState("");
   const [contactName, setContactName] = useState("");
@@ -183,12 +179,12 @@ function NewAppointment({ est, date, config, onCreated }: {
 
   const loadSlots = useCallback(async () => {
     setState("loadingSlots");
-    const r = await fetch(`/api/availability?est=${est}&date=${date}&duration=${duration}`);
+    const r = await fetch(`/api/availability?date=${date}&duration=${duration}`);
     const j = await r.json();
     setSlots(j.slots ?? []);
     setPicked(null);
     setState("idle");
-  }, [est, date, duration]);
+  }, [date, duration]);
 
   useEffect(() => { loadSlots(); }, [loadSlots]);
 
@@ -197,7 +193,7 @@ function NewAppointment({ est, date, config, onCreated }: {
     setState("saving");
     const r = await fetch("/api/appointments", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-establishment-id": est },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ serviceName, contactName: contactName || null, contactPhone, startAt: picked, durationMin: duration, source: "manual" }),
     });
     if (r.ok) onCreated();

@@ -43,7 +43,7 @@ export async function upsertEstablishmentConfig(
         id,
         name: data.name ?? "",
         type: data.type ?? "outro",
-        ownerUid: "", // TODO: preencher com o login quando existir
+        ownerUid: id, // establishmentId = uid do dono autenticado (1 estabelecimento por conta)
         status: "active",
         createdAt: Date.now(),
         bot: data.bot ?? defaultBotConfig(),

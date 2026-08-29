@@ -17,7 +17,7 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } },
 ) {
-  const estId = resolveEstablishmentId(req);
+  const estId = await resolveEstablishmentId(req);
   if (!estId) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const appt = await getAppointment(estId, params.id);

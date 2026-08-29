@@ -18,6 +18,7 @@ if (!getApps().length) {
 }
 
 export const db = getFirestore(app);
+export const firebaseAdminApp = app;
 
 // Helpers de caminho multi-tenant. Tudo sob establishments/{id}/...
 export const establishmentRef = (id: string) =>

@@ -8,7 +8,7 @@ import type { BotConfig, EstablishmentType } from "@/types";
 const TYPES: EstablishmentType[] = ["clinica", "pet", "salao", "estetica", "odonto", "outro"];
 
 export async function GET(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const est = await getEstablishment(id);
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-  const id = resolveEstablishmentId(req);
+  const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const raw = (await req.json().catch(() => null)) as {

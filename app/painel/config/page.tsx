@@ -3,7 +3,8 @@
 // Bot: persona, tom, ligar/desligar agendamento, guardrail médico, transferência.
 // Agenda: horários por dia, duração, antecedência e template de lembrete.
 //
-// MVP: tenant via ?est=<id> (dev). Em produção vem do login.
+// Tenant vem da sessão (cookie httpOnly criado no login); o painel só é
+// renderizado se app/painel/layout.tsx confirmar uma sessão válida.
 import { useCallback, useEffect, useState } from "react";
 import type { BotConfig, EstablishmentType, ScheduleConfig, DayHours } from "@/types";
 
@@ -27,8 +28,8 @@ const btn: React.CSSProperties = { background: "#7c3aed", color: "#fff", border:
 const h2: React.CSSProperties = { fontSize: 18, margin: "0 0 16px" };
 
 export default function ConfigPanel() {
-  const [est, setEst] = useState("");
   const [state, setState] = useState<"loading" | "idle" | "saving" | "saved" | "error">("loading");
+  const [loadError, setLoadError] = useState(false);
 
   // estabelecimento + bot
   const [name, setName] = useState("");
@@ -39,25 +40,22 @@ export default function ConfigPanel() {
   const [sched, setSched] = useState<ScheduleConfig | null>(null);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("est") ?? "";
-    setEst(id);
-    if (!id) { setState("error"); return; }
     Promise.all([
-      fetch(`/api/establishment?est=${id}`).then((r) => r.json()),
-      fetch(`/api/schedule?est=${id}`).then((r) => r.json()),
+      fetch("/api/establishment").then((r) => r.json()),
+      fetch("/api/schedule").then((r) => r.json()),
     ]).then(([e, s]) => {
       setName(e.establishment.name ?? "");
       setType(e.establishment.type ?? "outro");
       setBot(e.establishment.bot);
       setSched(s.schedule);
       setState("idle");
-    }).catch(() => setState("error"));
+    }).catch(() => { setLoadError(true); setState("idle"); });
   }, []);
 
   const save = useCallback(async () => {
     if (!bot || !sched) return;
     setState("saving");
-    const headers = { "Content-Type": "application/json", "x-establishment-id": est };
+    const headers = { "Content-Type": "application/json" };
     const [r1, r2] = await Promise.all([
       fetch("/api/establishment", { method: "PUT", headers, body: JSON.stringify({ name, type, bot }) }),
       fetch("/api/schedule", { method: "PUT", headers, body: JSON.stringify(sched) }),
@@ -65,11 +63,10 @@ export default function ConfigPanel() {
     const ok = r1.ok && r2.ok;
     setState(ok ? "saved" : "error");
     if (ok) setTimeout(() => setState("idle"), 2000);
-  }, [est, name, type, bot, sched]);
+  }, [name, type, bot, sched]);
 
   if (state === "loading") return <Msg>Carregando…</Msg>;
-  if (!est) return <Msg>Estabelecimento não informado. Use ?est=&lt;id&gt; na URL.</Msg>;
-  if (!bot || !sched) return <Msg>Erro ao carregar.</Msg>;
+  if (loadError || !bot || !sched) return <Msg>Erro ao carregar. Faça login novamente.</Msg>;
 
   const setDay = (k: string, day: DayHours | null) =>
     setSched({ ...sched, days: { ...sched.days, [k]: day } });
