@@ -4,12 +4,11 @@ import { usePathname } from "next/navigation";
 import { MessageCircle, MessageCircleOff } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { ESTABLISHMENT_TYPE_LABELS } from "@/components/lib/labels";
-import { useShellData } from "@/components/hooks/useShellData";
+import type { ShellData } from "@/components/hooks/useShellData";
 import LogoutButton from "@/app/painel/LogoutButton";
 
-export function Header() {
+export function Header({ data }: { data: ShellData | null }) {
   const pathname = usePathname();
-  const { data } = useShellData();
   const title = NAV_ITEMS.find((i) => i.href === pathname)?.label ?? "Livia";
 
   return (
