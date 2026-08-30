@@ -26,10 +26,18 @@ export interface Establishment {
 export interface EstablishmentWhatsapp {
   wabaId: string;
   phoneNumberId: string;
-  accessToken: string; // TODO: criptografar em repouso (KMS)
+  // Nunca em texto puro — sempre o resultado de encryptToken()
+  // (lib/whatsapp/tokenCrypto.ts). Decifrar só em memória, na hora de usar.
+  accessToken: EncryptedToken;
   status: "connected" | "disconnected";
   connectedAt: number;
   tokenRefreshedAt?: number;
+}
+
+export interface EncryptedToken {
+  ciphertext: string; // base64
+  iv: string; // base64
+  authTag: string; // base64
 }
 
 export interface BotConfig {
