@@ -102,34 +102,72 @@ export function useEmbeddedSignup({
     [isAttemptValid],
   );
 
-  useEffect(() => {
-    function onMessage(event: MessageEvent) {
-      if (!isAllowedEmbeddedSignupOrigin(event.origin)) return; // origem não confiável
-      const parsed = parseEmbeddedSignupMessage(event.data);
-      if (!parsed) return; // formato inesperado
+  // O postMessage do Embedded Signup NÃO carrega nenhum identificador de
+  // sessão/tentativa — ler `attemptIdRef.current` no momento da mensagem só
+  // diz qual é a tentativa "atual" agora, não de qual tentativa a mensagem
+  // realmente veio. Isso significa que um listener único e permanente não
+  // consegue, sozinho, distinguir um FINISH tardio de um popup antigo de um
+  // FINISH legítimo da tentativa atual — um FINISH tardio de uma tentativa
+  // JÁ SUPERADA seria erroneamente aceito como se fosse da tentativa nova
+  // (isAttemptValid não pega esse caso, porque o id "current" já é o da
+  // tentativa nova quando a mensagem chega).
+  //
+  // GARANTIA adotada aqui, já que o payload não dá para correlacionar: o
+  // listener de `message` só existe enquanto a tentativa que o criou ainda é
+  // a atual — cada start() remove o listener da tentativa anterior de forma
+  // SÍNCRONA, antes de qualquer `await`, e só registra o listener da nova
+  // tentativa depois. Como remove+add são síncronos (sem brecha de eventos
+  // de UI entre eles), no instante em que start() é chamado o listener
+  // antigo já não existe mais — um FINISH tardio do popup anterior chega numa
+  // janela em que NENHUM listener está ouvindo por ele (é descartado pelo
+  // navegador, não processado por engano) até a tentativa nova registrar o
+  // seu próprio. Resultado: é fisicamente impossível um FINISH de uma
+  // tentativa antiga ser combinado com o `code` de uma tentativa nova.
+  const activeListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
 
-      const attemptId = attemptIdRef.current;
-      if (parsed.event === "CANCEL") {
-        handleCancel(attemptId);
-        return;
-      }
-      if (parsed.event === "FINISH" && parsed.wabaId && parsed.phoneNumberId) {
-        if (!isAttemptValid(attemptId)) return; // FINISH tardio de tentativa já cancelada/superada
-        idsRef.current = { wabaId: parsed.wabaId, phoneNumberId: parsed.phoneNumberId };
-        tryComplete(attemptId);
-      }
+  const detachMessageListener = useCallback(() => {
+    if (activeListenerRef.current) {
+      window.removeEventListener("message", activeListenerRef.current);
+      activeListenerRef.current = null;
     }
+  }, []);
 
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [handleCancel, isAttemptValid, tryComplete]);
+  const attachMessageListener = useCallback(
+    (attemptId: number) => {
+      detachMessageListener(); // no máximo um listener vivo por vez
+      const onMessage = (event: MessageEvent) => {
+        if (!isAllowedEmbeddedSignupOrigin(event.origin)) return; // origem não confiável
+        const parsed = parseEmbeddedSignupMessage(event.data);
+        if (!parsed) return; // formato inesperado
+
+        if (parsed.event === "CANCEL") {
+          handleCancel(attemptId);
+          return;
+        }
+        if (parsed.event === "FINISH" && parsed.wabaId && parsed.phoneNumberId) {
+          if (!isAttemptValid(attemptId)) return;
+          idsRef.current = { wabaId: parsed.wabaId, phoneNumberId: parsed.phoneNumberId };
+          tryComplete(attemptId);
+        }
+      };
+      activeListenerRef.current = onMessage;
+      window.addEventListener("message", onMessage);
+    },
+    [detachMessageListener, handleCancel, isAttemptValid, tryComplete],
+  );
+
+  // Segurança adicional: se o componente desmontar com um listener ainda
+  // registrado (ex.: popup aberto quando o usuário navega para outra
+  // página), remove — nunca deixa um listener órfão vivo.
+  useEffect(() => () => detachMessageListener(), [detachMessageListener]);
 
   const start = useCallback(async () => {
-    // Nova tentativa — supera qualquer tentativa anterior (cancelada ou não):
-    // o id novo nunca mais bate com o que ficou capturado em closures/refs
-    // antigos, então qualquer callback tardio deles é ignorado por
-    // isAttemptValid.
+    // Nova tentativa — supera qualquer tentativa anterior (cancelada ou não).
+    // Remove o listener da tentativa anterior IMEDIATAMENTE e de forma
+    // síncrona, antes de qualquer `await` — ver comentário acima de
+    // activeListenerRef sobre a garantia que isso proporciona.
     const attemptId = (attemptIdRef.current += 1);
+    detachMessageListener();
     cancelledAttemptIdRef.current = null;
     completedRef.current = false;
     codeRef.current = null;
@@ -152,6 +190,7 @@ export function useEmbeddedSignup({
     }
     if (!isAttemptValid(attemptId)) return; // uma tentativa mais nova já começou enquanto o SDK carregava
 
+    attachMessageListener(attemptId);
     onPopupOpened?.();
     window.FB.login(
       (response) => {
@@ -172,7 +211,17 @@ export function useEmbeddedSignup({
         extras: { setup: {}, sessionInfoVersion: "3" },
       },
     );
-  }, [appId, configId, handleCancel, isAttemptValid, onFailed, onPopupOpened, tryComplete]);
+  }, [
+    appId,
+    configId,
+    attachMessageListener,
+    detachMessageListener,
+    handleCancel,
+    isAttemptValid,
+    onFailed,
+    onPopupOpened,
+    tryComplete,
+  ]);
 
   return { start };
 }

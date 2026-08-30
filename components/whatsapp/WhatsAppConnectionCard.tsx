@@ -17,8 +17,8 @@ export type WhatsAppPhase =
   | "awaiting-meta" // popup aberto, aguardando o lojista na Meta
   | "finalizing" // popup fechou, backend processando (POST /api/whatsapp/connect)
   | "connected" // sucesso
-  | "in-progress" // CONNECTION_IN_PROGRESS / STALE_ATTEMPT — já tem uma tentativa rodando
-  | "error-recoverable" // EXCHANGE_FAILED, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
+  | "in-progress" // CONNECTION_IN_PROGRESS / ALREADY_CONNECTED — já tem uma tentativa rodando
+  | "error-recoverable" // EXCHANGE_FAILED, STALE_ATTEMPT, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
   | "error-attention"; // OWNERSHIP_MISMATCH, SUBSCRIBE_FAILED, REGISTER_FAILED — algo a checar na Meta
 
 interface WhatsAppConnectionCardProps {
