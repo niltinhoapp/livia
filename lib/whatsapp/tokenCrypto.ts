@@ -14,7 +14,7 @@
 // ambiente — nunca no Firestore, nunca em log, nunca hardcoded, sem
 // fallback/default. Deve ser 32 bytes, em base64 (ex.: gerada com
 // `openssl rand -base64 32` ou `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`).
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, randomInt } from "node:crypto";
 import type { EncryptedToken } from "@/types";
 
 const ALGORITHM = "aes-256-gcm";
@@ -76,4 +76,31 @@ export function decryptToken(encrypted: EncryptedToken): string {
   decipher.setAuthTag(authTag);
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return plaintext.toString("utf8");
+}
+
+// ---- PIN de registro do WhatsApp (POST /{phone_number_id}/register) ----
+//
+// Não é uma credencial da Meta — é a verificação em 2 etapas *daquele número*
+// na Cloud API, gerada pela Livia (nunca escolhida pelo estabelecimento, nunca
+// um valor fixo compartilhado). Precisa ser recuperável no futuro (um
+// re-registro do número exige o MESMO pin já configurado), então é cifrado e
+// armazenado — nunca só gerado e descartado, nunca em texto puro.
+//
+// Reaproveita a mesma infraestrutura AES-256-GCM acima (mesma chave mestra,
+// mesmo algoritmo), mas com funções e campo próprios (`pin`, separado de
+// `accessToken` no schema) — deixa explícito no código que são usos
+// distintos, mesmo compartilhando a implementação.
+
+// PIN aleatório criptograficamente seguro de 6 dígitos (000000–999999).
+// randomInt (não Math.random) — mesma classe de aleatoriedade usada para IV.
+export function generateRandomPin(): string {
+  return randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+export function encryptPin(pin: string): EncryptedToken {
+  return encryptToken(pin);
+}
+
+export function decryptPin(encrypted: EncryptedToken): string {
+  return decryptToken(encrypted);
 }

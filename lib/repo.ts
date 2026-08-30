@@ -1,9 +1,13 @@
 // Repositório: leitura/escrita das coleções do Firestore.
+import { randomUUID } from "node:crypto";
+import { FieldValue } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import type {
   Establishment,
   EstablishmentType,
+  EncryptedToken,
   BotConfig,
   KnowledgeBase,
   Conversation,
@@ -50,6 +54,189 @@ export async function upsertEstablishmentConfig(
       };
   await establishmentRef(id).set(merged, { merge: true });
   return merged;
+}
+
+// TTL da lease exclusiva de uma tentativa de conexão de WhatsApp. A lease só
+// é assumida dentro do POST /api/whatsapp/connect — ou seja, DEPOIS que o
+// estabelecimento já concluiu o popup do Embedded Signup e o frontend já
+// enviou code/wabaId/phoneNumberId. O TTL não cobre o tempo de interação no
+// popup (isso já passou); cobre o processamento no backend (exchange,
+// verificação de posse, subscribe, register, finalize) e o cenário de uma
+// requisição travada/lenta ou um processo que caiu no meio do caminho — 8
+// minutos dá folga bem acima do tempo normal dessas chamadas (segundos) sem
+// deixar uma tentativa travada bloqueando reconexão por muito tempo.
+// Centralizado aqui — se precisar ajustar, é o único lugar.
+export const WHATSAPP_CONNECT_LEASE_TTL_MS = 8 * 60 * 1000;
+
+export type ClaimWhatsappResult =
+  // Claim nova: ninguém estava conectando/conectado — o PIN já foi gerado e
+  // persistido cifrado (status "connecting") DENTRO desta transação, antes
+  // de retornar. attemptId é a prova de posse da lease: só quem recebeu
+  // este valor pode finalizar ou liberar esta tentativa específica.
+  | { outcome: "claimed"; pin: string; attemptId: string }
+  // Havia uma claim "connecting" para o MESMO wabaId/phoneNumberId com a
+  // lease JÁ EXPIRADA (tentativa anterior não concluiu a tempo, ou foi
+  // liberada após uma falha) — reaproveita o PIN já persistido (nunca gera
+  // outro) e assume uma lease NOVA com attemptId novo.
+  | { outcome: "resumed"; pin: string; attemptId: string }
+  // Já há uma conexão "connected" válida — não é sobrescrita.
+  | { outcome: "already_connected" }
+  // Há uma lease ATIVA (outra requisição em andamento agora) para o mesmo
+  // estabelecimento, ou uma claim "connecting" (com ou sem lease ativa)
+  // para OUTRO wabaId/phoneNumberId — recusa por segurança, nunca sobrepõe.
+  | { outcome: "conflict" };
+
+// Tenta assumir, com EXCLUSIVIDADE, o processo de conexão de WhatsApp de um
+// estabelecimento. Duas requisições concorrentes nunca recebem "resumed"/
+// "claimed" ao mesmo tempo: a lease (attemptId + leaseExpiresAt) garante que
+// só uma tentativa por vez tem permissão de prosseguir, mesmo quando os
+// wabaId/phoneNumberId informados são idênticos — a segunda cai em
+// "conflict" enquanto a lease da primeira estiver ativa.
+//
+// Também é aqui, e não na rota, que o PIN nasce: gerado e cifrado dentro da
+// própria transação, então a claim SÓ é considerada bem-sucedida se o PIN
+// cifrado já estiver gravado no Firestore — nunca depois de chamar /register.
+export async function claimWhatsappConnection(
+  id: string,
+  wabaId: string,
+  phoneNumberId: string,
+): Promise<ClaimWhatsappResult> {
+  const ref = establishmentRef(id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+    const now = Date.now();
+
+    if (existing?.status === "connected") {
+      return { outcome: "already_connected" as const };
+    }
+
+    if (existing?.status === "connecting") {
+      const leaseActive =
+        typeof existing.leaseExpiresAt === "number" && existing.leaseExpiresAt > now;
+
+      // Lease ainda válida: ninguém mais assume, IDs iguais ou não.
+      if (leaseActive) {
+        return { outcome: "conflict" as const };
+      }
+
+      // Lease expirada (ou liberada após falha) — só retoma se for
+      // exatamente a MESMA WABA/número da tentativa anterior; IDs
+      // diferentes continuam em conflito mesmo sem lease ativa, para nunca
+      // sobrescrever silenciosamente uma claim de outra tentativa.
+      if (existing.wabaId !== wabaId || existing.phoneNumberId !== phoneNumberId) {
+        return { outcome: "conflict" as const };
+      }
+
+      const attemptId = randomUUID();
+      tx.update(ref, {
+        "whatsapp.attemptId": attemptId,
+        "whatsapp.leaseExpiresAt": now + WHATSAPP_CONNECT_LEASE_TTL_MS,
+        "whatsapp.claimedAt": now,
+      });
+      return { outcome: "resumed" as const, pin: decryptPin(existing.pin), attemptId };
+    }
+
+    // Nova claim: nenhuma tentativa anterior para este estabelecimento.
+    const pin = generateRandomPin();
+    const attemptId = randomUUID();
+    const whatsapp = {
+      wabaId,
+      phoneNumberId,
+      status: "connecting" as const,
+      pin: encryptPin(pin),
+      attemptId,
+      claimedAt: now,
+      leaseExpiresAt: now + WHATSAPP_CONNECT_LEASE_TTL_MS,
+    };
+    if (snap.exists) {
+      tx.update(ref, { whatsapp });
+    } else {
+      // Conta nova que ainda não passou pelo painel/config — cria o doc
+      // mínimo do estabelecimento junto (mesmo padrão do
+      // upsertEstablishmentConfig), já com a claim.
+      const base: Establishment = {
+        id,
+        name: "",
+        type: "outro",
+        ownerUid: id,
+        status: "active",
+        createdAt: now,
+        bot: defaultBotConfig(),
+        whatsapp,
+      };
+      tx.set(ref, base);
+    }
+    return { outcome: "claimed" as const, pin, attemptId };
+  });
+}
+
+// Conclui a conexão: chamada só depois que TODA a sequência obrigatória
+// (exchange, verificação de posse, subscribe, register) já teve sucesso.
+// Verifica, na MESMA transação, que a lease ainda pertence a este
+// `attemptId` — se outra tentativa já assumiu (nossa lease expirou no meio
+// do caminho e alguém mais tomou posse) ou a conexão já foi concluída por
+// outro caminho, esta função recusa escrever "connected" e devolve
+// `{ ok: false }`. Preserva o `pin` já persistido pela claim (nunca
+// reescrito aqui); attemptId/leaseExpiresAt são removidos por não fazerem
+// mais sentido depois de "connected".
+export async function finalizeWhatsappConnection(
+  id: string,
+  attemptId: string,
+  data: { wabaId: string; phoneNumberId: string; accessToken: EncryptedToken; registeredAt?: number },
+): Promise<{ ok: boolean }> {
+  const ref = establishmentRef(id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+
+    if (!existing || existing.status !== "connecting" || existing.attemptId !== attemptId) {
+      return { ok: false };
+    }
+
+    const now = Date.now();
+    tx.update(ref, {
+      "whatsapp.wabaId": data.wabaId,
+      "whatsapp.phoneNumberId": data.phoneNumberId,
+      "whatsapp.accessToken": data.accessToken,
+      "whatsapp.status": "connected",
+      "whatsapp.connectedAt": now,
+      "whatsapp.tokenRefreshedAt": now,
+      "whatsapp.attemptId": FieldValue.delete(),
+      "whatsapp.leaseExpiresAt": FieldValue.delete(),
+      ...(data.registeredAt !== undefined ? { "whatsapp.registeredAt": data.registeredAt } : {}),
+    });
+    return { ok: true };
+  });
+}
+
+// Libera a lease de uma tentativa que falhou (exchange/ownership/subscribe/
+// register) ANTES do TTL expirar naturalmente — permite uma nova tentativa
+// imediata sem obrigar o estabelecimento a esperar. NUNCA apaga o `pin`
+// cifrado nem move o status para longe de "connecting": o registro
+// permanece recuperável, só a exclusividade é liberada (leaseExpiresAt
+// jogado para o passado — a próxima claim com o MESMO wabaId/phoneNumberId
+// entra pelo caminho de "resumed" e reaproveita o PIN).
+//
+// Verifica `attemptId` antes de liberar: se esta já não é mais a tentativa
+// ativa (outra já assumiu, ou já finalizou), não faz nada — nunca libera
+// uma lease que não é sua.
+export async function releaseWhatsappConnectionAttempt(
+  id: string,
+  attemptId: string,
+): Promise<void> {
+  const ref = establishmentRef(id);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+    if (!existing || existing.status !== "connecting" || existing.attemptId !== attemptId) {
+      return;
+    }
+    tx.update(ref, {
+      "whatsapp.leaseExpiresAt": Date.now() - 1,
+      "whatsapp.attemptId": FieldValue.delete(),
+    });
+  });
 }
 
 // Acha o estabelecimento dono de um phone_number_id (o webhook chega com ele).

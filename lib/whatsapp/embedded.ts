@@ -95,6 +95,28 @@ export async function refreshBusinessToken(currentToken: string): Promise<string
   return token;
 }
 
+// Lista os phone_number_id que a WABA `wabaId` realmente possui, consultados
+// COM o token recém-obtido do estabelecimento (não com o app secret). Serve
+// de verificação de posse antes de qualquer subscribe/register: se o token
+// não tiver acesso a essa WABA, a própria chamada falha (erro de permissão
+// da Meta); se tiver, a lista devolvida é a fonte da verdade de quais
+// números pertencem a ela — nunca confiar apenas no phoneNumberId que o
+// frontend informou.
+//
+// Não pagina resultados (cenário típico: 1 estabelecimento, poucos números
+// por WABA) — se algum dia surgir uma WABA com muitas dezenas de números,
+// revisar para seguir `paging.next`.
+export async function getWabaPhoneNumbers(wabaId: string, token: string): Promise<string[]> {
+  const body = await graphJson(
+    await fetch(`${GRAPH_BASE_URL}/${wabaId}/phone_numbers`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    "getWabaPhoneNumbers",
+  );
+  const data = (body.data as Array<{ id?: string }> | undefined) ?? [];
+  return data.map((p) => p.id).filter((id): id is string => Boolean(id));
+}
+
 // Inscreve o app da Livia na WABA do estabelecimento — obrigatório para
 // recebermos os webhooks (mensagens, status de entrega) da conta dele.
 export async function subscribeAppToWaba(wabaId: string, token: string): Promise<void> {

@@ -23,15 +23,49 @@ export interface Establishment {
   bot: BotConfig;
 }
 
+// "connecting" existe para uma garantia específica: o PIN de registro é
+// aceito e APLICADO pela Meta no momento do POST /register — se a Livia só
+// persistisse o PIN depois disso, uma falha entre o /register bem-sucedido e
+// a escrita no Firestore perderia a credencial permanentemente (mensagens
+// continuariam funcionando, mas um re-registro futuro do número ficaria
+// impossível). Por isso o PIN é gerado e gravado cifrado como "connecting"
+// ANTES de qualquer chamada a /register — nunca depois.
+//   "connecting"    -> claim em andamento; SÓ tem pin cifrado + IDs. NUNCA
+//                      tratado como conexão válida por nenhum consumidor
+//                      (webhook, painel) — só "connected" habilita o canal.
+//   "connected"     -> sequência completa; accessToken cifrado presente.
+//   "disconnected"  -> reservado para o futuro fluxo de desconexão (ainda
+//                      não implementado nesta etapa).
 export interface EstablishmentWhatsapp {
   wabaId: string;
   phoneNumberId: string;
-  // Nunca em texto puro — sempre o resultado de encryptToken()
-  // (lib/whatsapp/tokenCrypto.ts). Decifrar só em memória, na hora de usar.
-  accessToken: EncryptedToken;
-  status: "connected" | "disconnected";
-  connectedAt: number;
+  status: "connecting" | "connected" | "disconnected";
+  // PIN de registro (2 etapas do número na Cloud API) — gerado pela Livia,
+  // nunca escolhido pelo estabelecimento, sempre cifrado (encryptPin/
+  // decryptPin em lib/whatsapp/tokenCrypto.ts). Campo separado do
+  // accessToken mesmo cifrado — usos e ciclos de vida diferentes. Presente
+  // já no estado "connecting" (é o primeiro dado persistido do fluxo).
+  pin: EncryptedToken;
+  // Presente somente quando status === "connected". Nunca em texto puro —
+  // sempre o resultado de encryptToken() (lib/whatsapp/tokenCrypto.ts).
+  accessToken?: EncryptedToken;
+  connectedAt?: number;
   tokenRefreshedAt?: number;
+  // Quando a claim ("connecting") foi criada/retomada.
+  claimedAt?: number;
+  // Lease exclusiva da tentativa em andamento (só relevante enquanto
+  // status === "connecting"). attemptId identifica QUAL requisição tem
+  // permissão de finalizar; leaseExpiresAt limita por quanto tempo, sem
+  // exigir que uma tentativa travada bloqueie novas tentativas para sempre.
+  // Ambos somem (deletados) quando a conexão finaliza ou a lease é liberada
+  // manualmente após uma falha — ver lib/repo.ts.
+  attemptId?: string;
+  leaseExpiresAt?: number;
+  // Só presente quando a Livia efetivamente registrou o número agora
+  // (POST /register retornou sucesso). Se a Meta já considerava o número
+  // registrado (alreadyRegistered — comum em Coexistence), este campo fica
+  // ausente: não fomos nós que registramos, não inventar uma data.
+  registeredAt?: number;
 }
 
 export interface EncryptedToken {
