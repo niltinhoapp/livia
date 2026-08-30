@@ -7,7 +7,13 @@
 // Responde 200 rápido em todos os casos pra Meta não reenviar; o processamento
 // pesado (IA) roda antes do 200 porque o Vercel encerra a função ao retornar —
 // para volumes maiores, mover para uma fila (Cloud Tasks), como no Nuvem Rush.
+//
+// Segurança: o POST valida a assinatura HMAC-SHA256 (X-Hub-Signature-256) com
+// o META_APP_SECRET sobre o corpo cru — sem isso, qualquer um forjaria
+// mensagens/eventos (ex.: confirmar ou cancelar agendamento de um cliente
+// alheio). Mesmo padrão do webhook do Nuvem Rush.
 import { NextRequest, NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   findEstablishmentByPhoneNumberId,
   getKnowledgeBase,
@@ -33,10 +39,29 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "verificação inválida" }, { status: 403 });
 }
 
+// Valida X-Hub-Signature-256 (sha256=<hmac do corpo cru com META_APP_SECRET>).
+function verifySignature(rawBody: string, header: string | null): boolean {
+  const secret = process.env.META_APP_SECRET;
+  if (!secret || !header?.startsWith("sha256=")) return false;
+  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  const provided = header.slice("sha256=".length);
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export async function POST(req: NextRequest) {
+  const raw = await req.text();
+
+  // Assinatura ausente/inválida/não confere -> ignora (responde 200 mesmo
+  // assim para a Meta não desativar o webhook por erros repetidos).
+  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"))) {
+    return NextResponse.json({ received: true });
+  }
+
   let body: WebhookBody;
   try {
-    body = (await req.json()) as WebhookBody;
+    body = JSON.parse(raw) as WebhookBody;
   } catch {
     return NextResponse.json({ received: true });
   }
