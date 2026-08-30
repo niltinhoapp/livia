@@ -51,6 +51,17 @@ export function useEmbeddedSignup({
   // evitar dupla submissão), mesmo se os eventos disparassem mais de uma vez.
   const completedRef = useRef(false);
 
+  // Identifica a tentativa atual (incrementado a cada start()) e qual foi a
+  // última tentativa explicitamente cancelada. Junto, os dois protegem
+  // contra dois tipos de callback/evento tardio:
+  //   - de uma tentativa CANCELADA que ainda não completou quando o CANCEL
+  //     chegou (cancelledAttemptIdRef marca exatamente essa tentativa);
+  //   - de uma tentativa ANTERIOR à atual, já superada por um novo start()
+  //     (attemptIdRef muda, então o id capturado na tentativa antiga nunca
+  //     mais bate com o id "current").
+  const attemptIdRef = useRef(0);
+  const cancelledAttemptIdRef = useRef<number | null>(null);
+
   // Sempre a versão mais recente do callback, sem precisar re-registrar o
   // listener de postMessage a cada render.
   const onCompletedRef = useRef(onCompleted);
@@ -58,16 +69,38 @@ export function useEmbeddedSignup({
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
 
-  const tryComplete = useCallback(() => {
-    if (completedRef.current) return;
-    if (!codeRef.current || !idsRef.current) return; // nunca entrega parcial
-    completedRef.current = true;
-    const result: EmbeddedSignupResult = { code: codeRef.current, ...idsRef.current };
-    // Limpa a memória local imediatamente após entregar.
-    codeRef.current = null;
-    idsRef.current = null;
-    onCompletedRef.current(result);
-  }, []);
+  // Só true para a tentativa que é, ao mesmo tempo, a atual E não foi
+  // cancelada — usado por todo callback/evento antes de agir.
+  const isAttemptValid = useCallback(
+    (attemptId: number) => attemptId === attemptIdRef.current && cancelledAttemptIdRef.current !== attemptId,
+    [],
+  );
+
+  const handleCancel = useCallback(
+    (attemptId: number) => {
+      if (!isAttemptValid(attemptId)) return; // já cancelada ou já superada — não faz nada
+      cancelledAttemptIdRef.current = attemptId; // invalida esta tentativa imediatamente
+      codeRef.current = null;
+      idsRef.current = null;
+      onCancelledRef.current?.();
+    },
+    [isAttemptValid],
+  );
+
+  const tryComplete = useCallback(
+    (attemptId: number) => {
+      if (!isAttemptValid(attemptId)) return; // tentativa cancelada ou já superada
+      if (completedRef.current) return;
+      if (!codeRef.current || !idsRef.current) return; // nunca entrega parcial
+      completedRef.current = true;
+      const result: EmbeddedSignupResult = { code: codeRef.current, ...idsRef.current };
+      // Limpa a memória local imediatamente após entregar.
+      codeRef.current = null;
+      idsRef.current = null;
+      onCompletedRef.current(result);
+    },
+    [isAttemptValid],
+  );
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -75,22 +108,29 @@ export function useEmbeddedSignup({
       const parsed = parseEmbeddedSignupMessage(event.data);
       if (!parsed) return; // formato inesperado
 
+      const attemptId = attemptIdRef.current;
       if (parsed.event === "CANCEL") {
-        onCancelledRef.current?.();
+        handleCancel(attemptId);
         return;
       }
       if (parsed.event === "FINISH" && parsed.wabaId && parsed.phoneNumberId) {
+        if (!isAttemptValid(attemptId)) return; // FINISH tardio de tentativa já cancelada/superada
         idsRef.current = { wabaId: parsed.wabaId, phoneNumberId: parsed.phoneNumberId };
-        tryComplete();
+        tryComplete(attemptId);
       }
     }
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [tryComplete]);
+  }, [handleCancel, isAttemptValid, tryComplete]);
 
   const start = useCallback(async () => {
-    // Nova tentativa — reseta o estado da sessão anterior.
+    // Nova tentativa — supera qualquer tentativa anterior (cancelada ou não):
+    // o id novo nunca mais bate com o que ficou capturado em closures/refs
+    // antigos, então qualquer callback tardio deles é ignorado por
+    // isAttemptValid.
+    const attemptId = (attemptIdRef.current += 1);
+    cancelledAttemptIdRef.current = null;
     completedRef.current = false;
     codeRef.current = null;
     idsRef.current = null;
@@ -110,18 +150,20 @@ export function useEmbeddedSignup({
       onFailed?.("sdk-unavailable");
       return;
     }
+    if (!isAttemptValid(attemptId)) return; // uma tentativa mais nova já começou enquanto o SDK carregava
 
     onPopupOpened?.();
     window.FB.login(
       (response) => {
+        if (!isAttemptValid(attemptId)) return; // tentativa cancelada ou já superada
         const code = response.authResponse?.code;
         if (!code) {
           // Usuário fechou o popup ou cancelou antes de autorizar.
-          onCancelledRef.current?.();
+          handleCancel(attemptId);
           return;
         }
         codeRef.current = code;
-        tryComplete();
+        tryComplete(attemptId);
       },
       {
         config_id: configId,
@@ -130,7 +172,7 @@ export function useEmbeddedSignup({
         extras: { setup: {}, sessionInfoVersion: "3" },
       },
     );
-  }, [appId, configId, onFailed, onPopupOpened, tryComplete]);
+  }, [appId, configId, handleCancel, isAttemptValid, onFailed, onPopupOpened, tryComplete]);
 
   return { start };
 }
