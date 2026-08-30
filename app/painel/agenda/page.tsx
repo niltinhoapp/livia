@@ -5,29 +5,26 @@
 // Tenant vem da sessão (cookie httpOnly criado no login); o painel só é
 // renderizado se app/painel/layout.tsx confirmar uma sessão válida.
 import { useCallback, useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type { Appointment, AppointmentStatus, ScheduleConfig } from "@/types";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Field";
+import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
+import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { PageHeader } from "@/components/ui/PageHeader";
 
-interface Slot { time: string; startAt: number }
+interface Slot {
+  time: string;
+  startAt: number;
+}
 
-const STATUS: Record<AppointmentStatus, { label: string; bg: string; fg: string }> = {
-  pending: { label: "Aguardando", bg: "#fef0c7", fg: "#b54708" },
-  confirmed: { label: "Confirmado", bg: "#d1fadf", fg: "#027a48" },
-  cancelled: { label: "Cancelado", bg: "#f2f4f7", fg: "#667085" },
-  completed: { label: "Concluído", bg: "#d1e9ff", fg: "#175cd3" },
-  no_show: { label: "Faltou", bg: "#fee4e2", fg: "#b42318" },
-};
-
-const btn: React.CSSProperties = {
-  background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8,
-  padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer",
-};
-const chip: React.CSSProperties = {
-  background: "transparent", border: "1px solid #d0d5dd", borderRadius: 6,
-  padding: "5px 10px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#344054",
-};
-const box: React.CSSProperties = {
-  width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #d0d5dd",
-  fontSize: 14, fontFamily: "inherit", boxSizing: "border-box",
+const STATUS: Record<AppointmentStatus, { label: string; tone: StatusTone }> = {
+  pending: { label: "Aguardando", tone: "warning" },
+  confirmed: { label: "Confirmado", tone: "success" },
+  cancelled: { label: "Cancelado", tone: "neutral" },
+  completed: { label: "Concluído", tone: "info" },
+  no_show: { label: "Faltou", tone: "danger" },
 };
 
 // epoch/data helpers (mesmo offset fixo do backend).
@@ -75,7 +72,8 @@ export default function AgendaPanel() {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
+  const loadAll = useCallback(() => {
+    setError(false);
     fetch("/api/schedule")
       .then((r) => r.json())
       .then((j) => {
@@ -85,8 +83,15 @@ export default function AgendaPanel() {
         setDate(d);
         return loadDay(cfg, d);
       })
-      .catch(() => { setError(true); setLoading(false); });
+      .catch(() => {
+        setError(true);
+        setLoading(false);
+      });
   }, [loadDay]);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
 
   const go = (n: number) => {
     if (!config) return;
@@ -105,69 +110,118 @@ export default function AgendaPanel() {
     if (config) loadDay(config, date);
   };
 
-  if (loading && !config) return <Msg>Carregando…</Msg>;
-  if (error) return <Msg>Erro ao carregar. Faça login novamente.</Msg>;
+  if (error) return <ErrorState onRetry={loadAll} />;
+  if (loading && !config) return <LoadingState />;
+  if (!config) return null;
 
   const active = appts.filter((a) => a.status !== "cancelled");
 
   return (
-    <main style={{ maxWidth: 760, margin: "32px auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button style={chip} onClick={() => go(-1)}>←</button>
-          <div style={{ minWidth: 140, textAlign: "center" }}>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>{date && prettyDate(date)}</div>
-            <button style={{ ...chip, border: "none", padding: 0, color: "#7c3aed" }}
-              onClick={() => { const d = todayLocal(offset); setDate(d); config && loadDay(config, d); }}>
-              hoje
-            </button>
-          </div>
-          <button style={chip} onClick={() => go(1)}>→</button>
+    <div className="mx-auto max-w-3xl">
+      <PageHeader
+        title="Agenda"
+        action={
+          <Button size="sm" onClick={() => setShowNew((v) => !v)}>
+            {showNew ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {showNew ? "Fechar" : "Novo agendamento"}
+          </Button>
+        }
+      />
+
+      <div className="mb-5 flex items-center gap-3">
+        <button
+          onClick={() => go(-1)}
+          className="rounded-control border border-line p-2 text-ink-500 hover:bg-line/30"
+          aria-label="Dia anterior"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <div className="min-w-[140px] text-center">
+          <p className="text-lg font-bold text-ink-900">{date && prettyDate(date)}</p>
+          <button
+            className="text-xs font-semibold text-primary hover:underline"
+            onClick={() => {
+              const d = todayLocal(offset);
+              setDate(d);
+              loadDay(config, d);
+            }}
+          >
+            hoje
+          </button>
         </div>
-        <button style={btn} onClick={() => setShowNew((v) => !v)}>
-          {showNew ? "Fechar" : "+ Novo agendamento"}
+        <button
+          onClick={() => go(1)}
+          className="rounded-control border border-line p-2 text-ink-500 hover:bg-line/30"
+          aria-label="Próximo dia"
+        >
+          <ChevronRight className="h-4 w-4" />
         </button>
       </div>
 
-      {showNew && config && (
-        <NewAppointment date={date} config={config} onCreated={() => { setShowNew(false); loadDay(config, date); }} />
+      {showNew && (
+        <NewAppointment
+          date={date}
+          config={config}
+          onCreated={() => {
+            setShowNew(false);
+            loadDay(config, date);
+          }}
+        />
       )}
 
       {loading ? (
-        <Msg>Carregando…</Msg>
+        <LoadingState />
       ) : active.length === 0 ? (
-        <div style={{ textAlign: "center", color: "#98a2b3", padding: "48px 0" }}>Nenhum agendamento neste dia.</div>
+        <EmptyState title="Nenhum agendamento neste dia" description="Os agendamentos feitos pela Livia ou por você aparecem aqui." />
       ) : (
-        active.map((a) => (
-          <div key={a.id} style={{ border: "1px solid #e4e7ec", borderRadius: 12, padding: 16, marginBottom: 12, display: "flex", gap: 14, alignItems: "flex-start" }}>
-            <div style={{ fontSize: 18, fontWeight: 700, minWidth: 52 }}>{epochToHM(a.startAt, offset)}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{a.serviceName}</div>
-              <div style={{ color: "#667085", fontSize: 14 }}>
-                {a.contactName ?? "Cliente"} · {a.contactPhone} · {a.durationMin}min
+        <div className="space-y-3">
+          {active.map((a) => (
+            <Card key={a.id} className="flex items-start gap-4 p-4">
+              <div className="min-w-[52px] text-lg font-bold text-ink-900">{epochToHM(a.startAt, offset)}</div>
+              <div className="flex-1">
+                <p className="font-semibold text-ink-900">{a.serviceName}</p>
+                <p className="text-sm text-ink-500">
+                  {a.contactName ?? "Cliente"} · {a.contactPhone} · {a.durationMin}min
+                </p>
+                {a.note && <p className="mt-1 text-xs text-ink-400">{a.note}</p>}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {a.status === "pending" && (
+                    <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "confirmed" })}>
+                      Confirmar
+                    </Button>
+                  )}
+                  {(a.status === "pending" || a.status === "confirmed") && (
+                    <>
+                      <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "completed" })}>
+                        Concluir
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "no_show" })}>
+                        Faltou
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => patch(a.id, { status: "cancelled" })}>
+                        Cancelar
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
-              {a.note && <div style={{ color: "#98a2b3", fontSize: 13, marginTop: 2 }}>{a.note}</div>}
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                {a.status === "pending" && <button style={chip} onClick={() => patch(a.id, { status: "confirmed" })}>Confirmar</button>}
-                {(a.status === "pending" || a.status === "confirmed") && <>
-                  <button style={chip} onClick={() => patch(a.id, { status: "completed" })}>Concluir</button>
-                  <button style={chip} onClick={() => patch(a.id, { status: "no_show" })}>Faltou</button>
-                  <button style={{ ...chip, color: "#b42318", borderColor: "#fda29b" }} onClick={() => patch(a.id, { status: "cancelled" })}>Cancelar</button>
-                </>}
-              </div>
-            </div>
-            <span style={{ background: STATUS[a.status].bg, color: STATUS[a.status].fg, borderRadius: 16, padding: "4px 12px", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}>
-              {STATUS[a.status].label}
-            </span>
-          </div>
-        ))
+              <StatusBadge tone={STATUS[a.status].tone}>{STATUS[a.status].label}</StatusBadge>
+            </Card>
+          ))}
+        </div>
       )}
-    </main>
+    </div>
   );
 }
 
-function NewAppointment({ date, config, onCreated }: {
-  date: string; config: ScheduleConfig; onCreated: () => void;
+function NewAppointment({
+  date,
+  config,
+  onCreated,
+}: {
+  date: string;
+  config: ScheduleConfig;
+  onCreated: () => void;
 }) {
   const [serviceName, setServiceName] = useState("");
   const [contactName, setContactName] = useState("");
@@ -186,7 +240,9 @@ function NewAppointment({ date, config, onCreated }: {
     setState("idle");
   }, [date, duration]);
 
-  useEffect(() => { loadSlots(); }, [loadSlots]);
+  useEffect(() => {
+    loadSlots();
+  }, [loadSlots]);
 
   const create = async () => {
     if (!serviceName || !contactPhone || picked == null) return;
@@ -194,45 +250,52 @@ function NewAppointment({ date, config, onCreated }: {
     const r = await fetch("/api/appointments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serviceName, contactName: contactName || null, contactPhone, startAt: picked, durationMin: duration, source: "manual" }),
+      body: JSON.stringify({
+        serviceName,
+        contactName: contactName || null,
+        contactPhone,
+        startAt: picked,
+        durationMin: duration,
+        source: "manual",
+      }),
     });
     if (r.ok) onCreated();
     else setState("error");
   };
 
   return (
-    <div style={{ border: "1px solid #e4e7ec", borderRadius: 12, padding: 16, marginBottom: 16, background: "#faf5ff" }}>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        <input style={{ ...box, flex: "1 1 200px" }} value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="Serviço" />
-        <input style={{ ...box, flex: "1 1 160px" }} value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Nome do cliente" />
-        <input style={{ ...box, flex: "1 1 150px" }} value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="WhatsApp (DDD+número)" />
+    <Card className="mb-5 bg-primary-light/40">
+      <div className="mb-3 flex flex-wrap gap-3">
+        <Input className="flex-1 basis-[200px]" value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="Serviço" />
+        <Input className="flex-1 basis-[160px]" value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Nome do cliente" />
+        <Input className="flex-1 basis-[150px]" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="WhatsApp (DDD+número)" />
       </div>
-      <div style={{ fontSize: 13, color: "#667085", marginBottom: 6 }}>Horários livres em {prettyDate(date)}:</div>
+      <p className="mb-2 text-sm text-ink-500">Horários livres em {prettyDate(date)}:</p>
       {state === "loadingSlots" ? (
-        <div style={{ color: "#98a2b3" }}>Buscando…</div>
+        <p className="text-sm text-ink-400">Buscando…</p>
       ) : slots.length === 0 ? (
-        <div style={{ color: "#98a2b3" }}>Sem horários livres neste dia.</div>
+        <p className="text-sm text-ink-400">Sem horários livres neste dia.</p>
       ) : (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        <div className="mb-3 flex flex-wrap gap-2">
           {slots.map((s) => (
-            <button key={s.startAt} onClick={() => setPicked(s.startAt)}
-              style={{ ...chip, background: picked === s.startAt ? "#7c3aed" : "transparent", color: picked === s.startAt ? "#fff" : "#344054", borderColor: picked === s.startAt ? "#7c3aed" : "#d0d5dd" }}>
+            <button
+              key={s.startAt}
+              onClick={() => setPicked(s.startAt)}
+              className={`rounded-control border px-3 py-1.5 text-sm font-semibold ${
+                picked === s.startAt ? "border-primary bg-primary text-white" : "border-line text-ink-700 hover:bg-line/30"
+              }`}
+            >
               {s.time}
             </button>
           ))}
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <button style={{ ...btn, opacity: (!serviceName || !contactPhone || picked == null || state === "saving") ? 0.5 : 1 }}
-          disabled={!serviceName || !contactPhone || picked == null || state === "saving"} onClick={create}>
+      <div className="flex items-center gap-3">
+        <Button disabled={!serviceName || !contactPhone || picked == null || state === "saving"} onClick={create}>
           {state === "saving" ? "Salvando…" : "Agendar"}
-        </button>
-        {state === "error" && <span style={{ color: "#b42318", fontWeight: 600 }}>Erro (horário pode ter sido ocupado).</span>}
+        </Button>
+        {state === "error" && <span className="text-sm font-semibold text-danger-fg">Erro (horário pode ter sido ocupado).</span>}
       </div>
-    </div>
+    </Card>
   );
-}
-
-function Msg({ children }: { children: React.ReactNode }) {
-  return <main style={{ maxWidth: 640, margin: "80px auto", padding: 24, fontFamily: "system-ui, sans-serif", color: "#667085" }}>{children}</main>;
 }
