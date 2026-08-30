@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { getAuth } from "firebase-admin/auth";
 import { firebaseAdminApp } from "@/lib/firebase/admin";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
-import LogoutButton from "./LogoutButton";
+import { AppShell } from "@/components/layout/AppShell";
 
 export default async function PainelLayout({ children }: { children: ReactNode }) {
   const cookie = cookies().get(SESSION_COOKIE_NAME)?.value;
@@ -21,12 +21,5 @@ export default async function PainelLayout({ children }: { children: ReactNode }
   }
   if (!ok) redirect("/login");
 
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 24px" }}>
-        <LogoutButton />
-      </div>
-      {children}
-    </div>
-  );
+  return <AppShell>{children}</AppShell>;
 }
