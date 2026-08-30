@@ -4,7 +4,10 @@
 // com TEXTO LIVRE — sem template aprovado. É isso que o bot usa.
 //
 // Credenciais vêm SEMPRE do estabelecimento (Embedded Signup / Tech Provider);
-// a Meta cobra as conversas direto dele.
+// a Meta cobra as conversas direto dele. O accessToken é sempre armazenado
+// cifrado (EncryptedToken) — este módulo decifra em memória, na hora de
+// montar cada requisição, e nunca guarda/loga/devolve o valor em claro.
+import { decryptToken } from "@/lib/whatsapp/tokenCrypto";
 import type { EstablishmentWhatsapp } from "@/types";
 
 const GRAPH = "https://graph.facebook.com/v22.0";
@@ -17,16 +20,39 @@ export function normalizePhone(raw: string): string {
   return digits;
 }
 
+// Único ponto de decrypt do módulo — evita duplicar a checagem de elegibilidade
+// e a chamada a decryptToken em cada função de envio. O token retornado só
+// existe na variável local de quem chamou; nunca é logado, persistido ou
+// devolvido ao chamador além do uso imediato no header Authorization.
+//
+// Só status === "connected" pode enviar mensagem — "connecting" é um estado
+// transitório do Embedded Signup (só tem PIN, nunca token) e "disconnected"
+// não tem credencial válida. Falha explícita em qualquer outro caso, nunca
+// monta um Authorization vazio/inválido.
+function resolveSendCredentials(wa: EstablishmentWhatsapp): {
+  phoneNumberId: string;
+  accessToken: string;
+} {
+  if (wa.status !== "connected") {
+    throw new Error(`WhatsApp não está conectado (status atual: "${wa.status}").`);
+  }
+  if (!wa.accessToken) {
+    throw new Error("WhatsApp conectado, mas sem accessToken cifrado — estado inconsistente.");
+  }
+  return { phoneNumberId: wa.phoneNumberId, accessToken: decryptToken(wa.accessToken) };
+}
+
 // Envia texto livre (só válido dentro da janela de 24h aberta pelo cliente).
 export async function sendText(
   wa: EstablishmentWhatsapp,
   toPhone: string,
   text: string,
 ): Promise<{ waMessageId?: string }> {
-  const res = await fetch(`${GRAPH}/${wa.phoneNumberId}/messages`, {
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa);
+  const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${wa.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -59,15 +85,16 @@ export async function sendTemplate(
   languageCode: string,
   params: string[] = [],
 ): Promise<{ waMessageId?: string }> {
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa);
   const components =
     params.length > 0
       ? [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }]
       : undefined;
 
-  const res = await fetch(`${GRAPH}/${wa.phoneNumberId}/messages`, {
+  const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${wa.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -96,10 +123,18 @@ export async function markAsRead(
   wa: EstablishmentWhatsapp,
   waMessageId: string,
 ): Promise<void> {
-  await fetch(`${GRAPH}/${wa.phoneNumberId}/messages`, {
+  let phoneNumberId: string;
+  let accessToken: string;
+  try {
+    ({ phoneNumberId, accessToken } = resolveSendCredentials(wa));
+  } catch {
+    return; // best effort — mesma postura do .catch abaixo, não interrompe o fluxo
+  }
+
+  await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${wa.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
