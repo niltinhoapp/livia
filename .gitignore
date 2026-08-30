@@ -23,6 +23,9 @@ npm-debug.log*
 # vercel
 .vercel
 
+# ambiente local do Claude Code (config de dev server, etc.)
+.claude/
+
 # credenciais (Firebase Admin SDK service account, etc.)
 livia-*-firebase-adminsdk-*.json
 *firebase-adminsdk*.json
