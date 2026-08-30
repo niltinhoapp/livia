@@ -12,7 +12,7 @@ import type { EstablishmentType, ScheduleConfig, DayHours } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select, Textarea } from "@/components/ui/Field";
-import { LoadingState } from "@/components/ui/States";
+import { LoadingState, ErrorState } from "@/components/ui/States";
 import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsapp/WhatsAppConnectionCard";
 import { ESTABLISHMENT_TYPE_LABELS, WEEKDAY_LABELS } from "@/components/lib/labels";
 
@@ -25,7 +25,9 @@ export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [type, setType] = useState<EstablishmentType>("outro");
@@ -33,47 +35,78 @@ export default function OnboardingPage() {
   const [about, setAbout] = useState("");
   const [waPhase, setWaPhase] = useState<WhatsAppPhase>("idle");
 
-  useEffect(() => {
+  const loadSchedule = useCallback(() => {
+    setLoading(true);
+    setLoadError(false);
     fetch("/api/schedule")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error("falha ao carregar");
+        return r.json();
+      })
       .then((j) => setSched(j.schedule))
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadSchedule();
+  }, [loadSchedule]);
 
   const hasOpenDay = sched ? Object.values(sched.days).some((d) => d !== null) : false;
 
   const saveEmpresa = useCallback(async () => {
     setSaving(true);
-    await fetch("/api/establishment", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, type }),
-    });
-    setSaving(false);
-    setStep(2);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/establishment", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, type }),
+      });
+      if (!res.ok) throw new Error("falha ao salvar");
+      setStep(2);
+    } catch {
+      setSaveError("Não foi possível salvar. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
   }, [name, type]);
 
   const saveHorarios = useCallback(async () => {
     if (!sched) return;
     setSaving(true);
-    await fetch("/api/schedule", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sched),
-    });
-    setSaving(false);
-    setStep(3);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/schedule", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sched),
+      });
+      if (!res.ok) throw new Error("falha ao salvar");
+      setStep(3);
+    } catch {
+      setSaveError("Não foi possível salvar os horários. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
   }, [sched]);
 
   const saveConhecimento = useCallback(async () => {
     setSaving(true);
-    await fetch("/api/knowledge", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ about, address: null, hours: null, notes: null, services: [], faqs: [] }),
-    });
-    setSaving(false);
-    setStep(4);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/knowledge", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ about, address: null, hours: null, notes: null, services: [], faqs: [] }),
+      });
+      if (!res.ok) throw new Error("falha ao salvar");
+      setStep(4);
+    } catch {
+      setSaveError("Não foi possível salvar. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
   }, [about]);
 
   const setDay = (k: string, day: DayHours | null) => {
@@ -81,6 +114,7 @@ export default function OnboardingPage() {
     setSched({ ...sched, days: { ...sched.days, [k]: day } });
   };
 
+  if (loadError) return <ErrorState onRetry={loadSchedule} />;
   if (loading || !sched) return <LoadingState />;
 
   return (
@@ -128,6 +162,7 @@ export default function OnboardingPage() {
           <Button className="mt-6 w-full" disabled={!name || saving} onClick={saveEmpresa}>
             {saving ? "Salvando…" : "Continuar"}
           </Button>
+          {saveError && <p className="mt-2 text-center text-sm text-danger-fg">{saveError}</p>}
         </Card>
       )}
 
@@ -166,6 +201,7 @@ export default function OnboardingPage() {
             {saving ? "Salvando…" : "Continuar"}
           </Button>
           {!hasOpenDay && <p className="mt-2 text-center text-xs text-ink-400">Abra pelo menos um dia para continuar.</p>}
+          {saveError && <p className="mt-2 text-center text-sm text-danger-fg">{saveError}</p>}
         </Card>
       )}
 
@@ -185,6 +221,7 @@ export default function OnboardingPage() {
           <Button className="mt-6 w-full" disabled={!about || saving} onClick={saveConhecimento}>
             {saving ? "Salvando…" : "Continuar"}
           </Button>
+          {saveError && <p className="mt-2 text-center text-sm text-danger-fg">{saveError}</p>}
         </Card>
       )}
 
