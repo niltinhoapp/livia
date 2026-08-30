@@ -1,17 +1,27 @@
 "use client";
-// Painel: conexão de WhatsApp (Embedded Signup) — SÓ a experiência visual.
+// Painel: conexão de WhatsApp via Meta Embedded Signup — fluxo real.
 //
-// A integração real (Facebook JS SDK, FB.login, listener WA_EMBEDDED_SIGNUP,
-// captura de code/waba_id/phone_number_id e o POST real para
-// /api/whatsapp/connect) é implementação sensível reservada para uma etapa
-// própria — ver comentário em components/whatsapp/WhatsAppConnectionCard.tsx.
-// Esta página só consulta o status real (GET, contrato já existente) e
-// mostra os estados visuais; o clique em "Conectar" ainda não abre a Meta de
-// verdade.
+// A integração sensível (SDK JS da Meta, FB.login, listener
+// WA_EMBEDDED_SIGNUP, sincronização de code+waba_id+phone_number_id) vive em
+// components/whatsapp/useEmbeddedSignup.ts — esta página só orquestra as
+// transições de fase visual e chama o backend já existente
+// (POST /api/whatsapp/connect) quando os 3 valores estão prontos.
+//
+// Nunca exibe wabaId, phoneNumberId, accessToken, PIN ou termos técnicos da
+// Meta ao lojista — só os 8 estados visuais já definidos em
+// WhatsAppConnectionCard.
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsapp/WhatsAppConnectionCard";
+import { useEmbeddedSignup, type EmbeddedSignupResult } from "@/components/whatsapp/useEmbeddedSignup";
+import { mapErrorToPhase } from "@/components/whatsapp/errorMapping";
+
+// Env públicas (NEXT_PUBLIC_*) — não são segredo, o próprio popup da Meta as
+// expõe. META_APP_SECRET nunca é referenciado aqui nem em nenhum arquivo
+// client-side (só em lib/whatsapp/embedded.ts, server-only).
+const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? "";
+const ES_CONFIG_ID = process.env.NEXT_PUBLIC_WHATSAPP_ES_CONFIG_ID ?? "";
 
 interface ConnectStatus {
   connected: boolean;
@@ -39,14 +49,48 @@ export default function WhatsAppPage() {
     load();
   }, [load]);
 
-  // Ponto de integração futuro (ver cabeçalho do arquivo): por enquanto só
-  // demonstra a transição visual, sem SDK da Meta carregado.
+  // Só chamado pelo hook quando code + wabaId + phoneNumberId já estão
+  // sincronizados — nunca com dado parcial (ver useEmbeddedSignup).
+  const finalizeConnection = useCallback(
+    async (result: EmbeddedSignupResult) => {
+      setPhase("finalizing");
+      try {
+        const res = await fetch("/api/whatsapp/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(result),
+        });
+        if (res.ok) {
+          setPhase("connected");
+          load(); // atualiza connectedAt a partir do GET (fonte da verdade)
+          return;
+        }
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setPhase(mapErrorToPhase(body.error ?? ""));
+      } catch {
+        setPhase("error-recoverable");
+      }
+    },
+    [load],
+  );
+
+  const handlePopupOpened = useCallback(() => setPhase("awaiting-meta"), []);
+  const handleCancelled = useCallback(() => setPhase("idle"), []);
+  const handleFailed = useCallback(() => setPhase("error-recoverable"), []);
+
+  const { start } = useEmbeddedSignup({
+    appId: META_APP_ID,
+    configId: ES_CONFIG_ID,
+    onPopupOpened: handlePopupOpened,
+    onCancelled: handleCancelled,
+    onFailed: handleFailed,
+    onCompleted: finalizeConnection,
+  });
+
   const handleConnectClick = useCallback(() => {
     setPhase("connecting");
-    setTimeout(() => {
-      setPhase("idle");
-    }, 900);
-  }, []);
+    start();
+  }, [start]);
 
   if (error) return <ErrorState onRetry={load} />;
   if (!status) return <LoadingState />;
@@ -70,8 +114,8 @@ export default function WhatsAppPage() {
 }
 
 // Só existe em desenvolvimento (compilado fora do bundle de produção) — deixa
-// os 8 estados visuais fáceis de validar sem depender da integração real com
-// a Meta, que ainda não existe.
+// os 8 estados visuais fáceis de validar sem precisar passar pelo fluxo real
+// da Meta a cada teste.
 function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange: (p: WhatsAppPhase) => void }) {
   const phases: WhatsAppPhase[] = [
     "idle",

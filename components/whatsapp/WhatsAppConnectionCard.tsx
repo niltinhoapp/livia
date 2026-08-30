@@ -1,11 +1,9 @@
 "use client";
-// Componente 100% visual da conexão de WhatsApp (Embedded Signup).
-//
-// IMPORTANTE — ponto de integração futuro: este componente NÃO implementa
-// FB.login, o SDK JS da Meta, nem o POST real para /api/whatsapp/connect com
-// code/wabaId/phoneNumberId reais. Isso é integração sensível reservada para
-// uma etapa própria. `onConnectClick` é o callback que essa integração real
-// vai substituir — hoje ele só demonstra a transição visual "connecting".
+// Componente 100% visual da conexão de WhatsApp (Embedded Signup). Não sabe
+// nada sobre FB.login, SDK da Meta ou o POST para /api/whatsapp/connect —
+// isso é responsabilidade de quem usa este componente (hoje,
+// app/painel/whatsapp/page.tsx + components/whatsapp/useEmbeddedSignup.ts).
+// `onConnectClick` é só o gatilho; a fase (`phase`) é controlada de fora.
 //
 // Nunca exibe wabaId, phoneNumberId, accessToken, PIN ou termos técnicos da
 // Meta — só o que o lojista precisa entender.
