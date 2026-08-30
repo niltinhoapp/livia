@@ -1,11 +1,9 @@
 "use client";
-// Componente 100% visual da conexão de WhatsApp (Embedded Signup).
-//
-// IMPORTANTE — ponto de integração futuro: este componente NÃO implementa
-// FB.login, o SDK JS da Meta, nem o POST real para /api/whatsapp/connect com
-// code/wabaId/phoneNumberId reais. Isso é integração sensível reservada para
-// uma etapa própria. `onConnectClick` é o callback que essa integração real
-// vai substituir — hoje ele só demonstra a transição visual "connecting".
+// Componente 100% visual da conexão de WhatsApp (Embedded Signup). Não sabe
+// nada sobre FB.login, SDK da Meta ou o POST para /api/whatsapp/connect —
+// isso é responsabilidade de quem usa este componente (hoje,
+// app/painel/whatsapp/page.tsx + components/whatsapp/useEmbeddedSignup.ts).
+// `onConnectClick` é só o gatilho; a fase (`phase`) é controlada de fora.
 //
 // Nunca exibe wabaId, phoneNumberId, accessToken, PIN ou termos técnicos da
 // Meta — só o que o lojista precisa entender.
@@ -19,8 +17,8 @@ export type WhatsAppPhase =
   | "awaiting-meta" // popup aberto, aguardando o lojista na Meta
   | "finalizing" // popup fechou, backend processando (POST /api/whatsapp/connect)
   | "connected" // sucesso
-  | "in-progress" // CONNECTION_IN_PROGRESS / STALE_ATTEMPT — já tem uma tentativa rodando
-  | "error-recoverable" // EXCHANGE_FAILED, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
+  | "in-progress" // CONNECTION_IN_PROGRESS / ALREADY_CONNECTED — já tem uma tentativa rodando
+  | "error-recoverable" // EXCHANGE_FAILED, STALE_ATTEMPT, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
   | "error-attention"; // OWNERSHIP_MISMATCH, SUBSCRIBE_FAILED, REGISTER_FAILED — algo a checar na Meta
 
 interface WhatsAppConnectionCardProps {
