@@ -15,12 +15,12 @@ export function MobileTabBar() {
           <Link
             key={item.href}
             href={item.href}
-            className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] font-medium ${
+            className={`flex flex-1 flex-col items-center gap-1 px-0.5 py-2.5 text-[10px] font-medium leading-none ${
               active ? "text-primary" : "text-ink-400"
             }`}
           >
-            <Icon className="h-5 w-5" />
-            {item.label}
+            <Icon className="h-5 w-5 shrink-0" />
+            <span className="truncate">{item.mobileLabel}</span>
           </Link>
         );
       })}
