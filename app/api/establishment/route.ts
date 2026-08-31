@@ -5,7 +5,17 @@ import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, upsertEstablishmentConfig, defaultBotConfig } from "@/lib/repo";
 import type { BotConfig, EstablishmentType } from "@/types";
 
-const TYPES: EstablishmentType[] = ["clinica", "pet", "salao", "estetica", "odonto", "outro"];
+const TYPES: EstablishmentType[] = [
+  "clinica",
+  "pet",
+  "salao",
+  "estetica",
+  "odonto",
+  "oficina",
+  "academia",
+  "imobiliaria",
+  "outro",
+];
 
 export async function GET(req: NextRequest) {
   const id = await resolveEstablishmentId(req);

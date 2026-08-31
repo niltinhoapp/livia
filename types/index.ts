@@ -7,6 +7,9 @@ export type EstablishmentType =
   | "salao"
   | "estetica"
   | "odonto"
+  | "oficina"
+  | "academia"
+  | "imobiliaria"
   | "outro";
 
 export interface Establishment {
@@ -89,6 +92,10 @@ export interface BotConfig {
 
 // ---- Base de conhecimento do estabelecimento ----
 // É o que a IA consulta pra responder. Sem isso, ela não inventa.
+// "Ensine a Livia" (painel /painel/conhecimento) é a UI guiada por cima
+// destes campos — o comerciante nunca vê nome de campo nem prompt técnico,
+// só as 7 seções da experiência guiada. Cada campo aqui corresponde 1:1 a
+// uma seção; ver lib/ai/brain.ts para como cada um entra no prompt.
 export interface KnowledgeBase {
   establishmentId: string;
   about: string; // descrição curta do negócio
@@ -96,8 +103,24 @@ export interface KnowledgeBase {
   hours: string | null; // texto livre: "Seg-Sex 9h-18h, Sáb 9h-13h"
   services: KnowledgeService[];
   faqs: KnowledgeFaq[];
-  // Texto adicional livre (políticas, formas de pagamento, convênios...).
+  // Texto adicional livre (políticas, convênios, regras diversas...).
   notes: string | null;
+  // Formas de pagamento aceitas, em texto livre (ex.: "Pix, dinheiro, cartão").
+  paymentMethods: string | null;
+  // Informações que o cliente precisa saber antes de vir (documentos,
+  // chegar com antecedência, etc.).
+  importantInfo: string | null;
+  // Como a Livia deve conversar (tom, estilo, o que fazer). Complementa
+  // BotConfig.tone com orientação mais rica e específica do negócio.
+  toneGuidelines: string | null;
+  // O que a Livia NUNCA deve fazer (além do medicalGuardrail, que é uma
+  // trava estrutural separada — isto é orientação adicional em texto livre).
+  prohibitions: string | null;
+  // Situações em que a Livia deve chamar um humano, em linguagem natural
+  // (ex.: "cliente irritado", "pedido de desconto") — julgamento semântico
+  // da IA, complementar a BotConfig.handoffKeywords (que é match literal de
+  // palavra-chave). Os dois mecanismos coexistem, nenhum substitui o outro.
+  handoffTriggers: string | null;
   updatedAt: number;
 }
 
@@ -121,7 +144,11 @@ export interface Conversation {
   establishmentId: string;
   contactPhone: string;
   contactName: string | null;
-  status: "bot" | "human" | "closed"; // "human" = transferido pro atendente
+  // "bot" = Livia atendendo · "handoff" = Livia identificou que precisa de
+  // humano e PAROU de responder automaticamente, mas ainda ninguém assumiu ·
+  // "human" = um atendente assumiu a conversa (assumir/devolver no painel) ·
+  // "closed" = reservado para uso futuro.
+  status: "bot" | "handoff" | "human" | "closed";
   lastMessageAt: number;
   createdAt: number;
 }

@@ -9,6 +9,9 @@ export const ESTABLISHMENT_TYPE_LABELS: Record<EstablishmentType, string> = {
   salao: "Salão",
   estetica: "Estética",
   odonto: "Odonto",
+  oficina: "Oficina mecânica",
+  academia: "Academia",
+  imobiliaria: "Imobiliária",
   outro: "Outro",
 };
 

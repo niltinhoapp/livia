@@ -50,6 +50,11 @@ export async function PUT(req: NextRequest) {
     services,
     faqs,
     notes: raw.notes ? String(raw.notes).trim() : null,
+    paymentMethods: raw.paymentMethods ? String(raw.paymentMethods).trim() : null,
+    importantInfo: raw.importantInfo ? String(raw.importantInfo).trim() : null,
+    toneGuidelines: raw.toneGuidelines ? String(raw.toneGuidelines).trim() : null,
+    prohibitions: raw.prohibitions ? String(raw.prohibitions).trim() : null,
+    handoffTriggers: raw.handoffTriggers ? String(raw.handoffTriggers).trim() : null,
   });
 
   return NextResponse.json({ knowledge: kb });
