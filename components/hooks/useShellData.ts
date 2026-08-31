@@ -13,7 +13,13 @@ export interface ShellData {
   whatsappConnected: boolean;
 }
 
-export function useShellData() {
+// `refetchKey` (normalmente o pathname atual) força uma nova busca sempre
+// que mudar. Sem isso, o hook buscava só uma vez por montagem do AppShell —
+// então, depois de concluir o onboarding (establishment recém-criado) e
+// navegar via router.push/replace (sem remontar o AppShell), `exists`
+// continuava obsoleto (false), e o guard de onboarding em AppShell.tsx
+// redirecionava de volta pra /painel/onboarding mesmo já configurado.
+export function useShellData(refetchKey?: string) {
   const [data, setData] = useState<ShellData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -41,7 +47,7 @@ export function useShellData() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refetchKey]);
 
   return { data, loading };
 }

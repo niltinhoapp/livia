@@ -7,9 +7,11 @@ import { Header } from "./Header";
 import { useShellData } from "@/components/hooks/useShellData";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { data, loading } = useShellData();
   const pathname = usePathname();
   const router = useRouter();
+  // refetchKey = pathname: revalida "exists" a cada navegação, pra nunca
+  // decidir o redirect de onboarding com dado obsoleto (ver useShellData.ts).
+  const { data, loading } = useShellData(pathname);
 
   // Conta nova (sem establishment ainda) cai direto no onboarding guiado, em
   // vez de abrir um formulário de configurações vazio sem contexto.
