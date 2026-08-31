@@ -2,24 +2,30 @@
 // Onboarding guiado — só para estabelecimento novo (redirecionado aqui pelo
 // AppShell quando GET /api/establishment devolve exists:false). Salva de
 // forma incremental, um PUT por etapa, reaproveitando exatamente os mesmos
-// endpoints/payloads das páginas de Configurações/Conhecimento/WhatsApp —
-// nenhum contrato novo, nenhuma etapa obrigatória além do que o backend já
-// exige para funcionar.
+// endpoints/payloads das páginas de Configurações/WhatsApp — nenhum
+// contrato novo.
+//
+// Só dados ESSENCIAIS de operação (nome, segmento, horários) — nada de
+// "Ensine a Livia" (conteúdo de treinamento da IA). Isso é proposital: são
+// duas coisas diferentes (dado necessário pro estabelecimento existir vs.
+// treinamento da IA), e o comerciante escolhe explicitamente, na primeira
+// entrada em /painel/conhecimento, se quer usar um modelo pronto ou começar
+// do zero — não é decidido aqui.
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Building2, CalendarClock, BookOpen, MessageCircle, CheckCircle2 } from "lucide-react";
+import { Sparkles, Building2, CalendarClock, MessageCircle, CheckCircle2 } from "lucide-react";
 import type { EstablishmentType, ScheduleConfig, DayHours } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Input, Label, Select, Textarea } from "@/components/ui/Field";
+import { Input, Label, Select } from "@/components/ui/Field";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsapp/WhatsAppConnectionCard";
 import { ESTABLISHMENT_TYPE_LABELS, WEEKDAY_LABELS } from "@/components/lib/labels";
 
 const TYPES = Object.entries(ESTABLISHMENT_TYPE_LABELS) as [EstablishmentType, string][];
 
-type Step = 0 | 1 | 2 | 3 | 4 | 5;
-const STEP_LABELS = ["Bem-vindo", "Empresa", "Horários", "Conhecimento", "WhatsApp", "Pronto"];
+type Step = 0 | 1 | 2 | 3 | 4;
+const STEP_LABELS = ["Bem-vindo", "Empresa", "Horários", "WhatsApp", "Pronto"];
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -32,7 +38,6 @@ export default function OnboardingPage() {
   const [name, setName] = useState("");
   const [type, setType] = useState<EstablishmentType>("outro");
   const [sched, setSched] = useState<ScheduleConfig | null>(null);
-  const [about, setAbout] = useState("");
   const [waPhase, setWaPhase] = useState<WhatsAppPhase>("idle");
 
   const loadSchedule = useCallback(() => {
@@ -90,24 +95,6 @@ export default function OnboardingPage() {
       setSaving(false);
     }
   }, [sched]);
-
-  const saveConhecimento = useCallback(async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch("/api/knowledge", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ about, address: null, hours: null, notes: null, services: [], faqs: [] }),
-      });
-      if (!res.ok) throw new Error("falha ao salvar");
-      setStep(4);
-    } catch {
-      setSaveError("Não foi possível salvar. Tente novamente.");
-    } finally {
-      setSaving(false);
-    }
-  }, [about]);
 
   const setDay = (k: string, day: DayHours | null) => {
     if (!sched) return;
@@ -207,26 +194,6 @@ export default function OnboardingPage() {
 
       {step === 3 && (
         <Card>
-          <StepHeader icon={<BookOpen className="h-5 w-5" />} title="O que a Livia precisa saber" />
-          <Label>Conte um pouco sobre o seu negócio</Label>
-          <Textarea
-            value={about}
-            onChange={(e) => setAbout(e.target.value)}
-            placeholder="Ex.: Clínica de fisioterapia especializada em reabilitação esportiva."
-            autoFocus
-          />
-          <p className="mt-2 text-xs text-ink-400">
-            Serviços, preços e perguntas frequentes você pode adicionar depois em "Conhecimento".
-          </p>
-          <Button className="mt-6 w-full" disabled={!about || saving} onClick={saveConhecimento}>
-            {saving ? "Salvando…" : "Continuar"}
-          </Button>
-          {saveError && <p className="mt-2 text-center text-sm text-danger-fg">{saveError}</p>}
-        </Card>
-      )}
-
-      {step === 4 && (
-        <Card>
           <StepHeader icon={<MessageCircle className="h-5 w-5" />} title="Conectar WhatsApp" />
           <p className="mb-4 text-sm text-ink-500">
             Você pode conectar agora ou fazer isso depois, direto no menu WhatsApp.
@@ -240,24 +207,30 @@ export default function OnboardingPage() {
             onRetry={() => setWaPhase("idle")}
           />
           <div className="mt-6 flex gap-3">
-            <Button variant="secondary" className="flex-1" onClick={() => setStep(5)}>
+            <Button variant="secondary" className="flex-1" onClick={() => setStep(4)}>
               Conectar depois
             </Button>
-            <Button className="flex-1" onClick={() => setStep(5)}>
+            <Button className="flex-1" onClick={() => setStep(4)}>
               Continuar
             </Button>
           </div>
         </Card>
       )}
 
-      {step === 5 && (
+      {step === 4 && (
         <Card className="text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success-bg text-success-fg">
             <CheckCircle2 className="h-7 w-7" />
           </div>
           <h1 className="mb-2 text-xl font-bold text-ink-900">Tudo pronto!</h1>
-          <p className="mb-6 text-sm text-ink-500">Você já pode acompanhar tudo pela Visão geral do painel.</p>
-          <Button className="w-full" onClick={() => router.push("/painel")}>
+          <p className="mb-6 text-sm text-ink-500">
+            O básico do seu estabelecimento está configurado. O próximo passo é ensinar a Livia sobre o seu
+            negócio, em &quot;Conhecimento&quot;.
+          </p>
+          <Button className="w-full" onClick={() => router.push("/painel/conhecimento")}>
+            Ensinar a Livia agora
+          </Button>
+          <Button variant="secondary" className="mt-3 w-full" onClick={() => router.push("/painel")}>
             Ir para o painel
           </Button>
         </Card>

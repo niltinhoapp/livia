@@ -52,6 +52,10 @@ export default function KnowledgePanel() {
 
   const [activeTemplateId, setActiveTemplateId] = useState<string>(KNOWLEDGE_TEMPLATES[0]!.id);
   const [confirmApply, setConfirmApply] = useState(false);
+  // Decisão de primeira entrada (nada foi salvo ainda): "usar modelo" ou
+  // "começar do zero". Some assim que houver QUALQUER conteúdo salvo — nunca
+  // reaparece por cima de dado já existente.
+  const [firstVisitDismissed, setFirstVisitDismissed] = useState(false);
 
   const load = useCallback(() => {
     setLoadError(false);
@@ -117,6 +121,19 @@ export default function KnowledgePanel() {
 
   const activeTemplate = KNOWLEDGE_TEMPLATES.find((t) => t.id === activeTemplateId)!;
   const suggested = suggestedTemplateFor(establishmentType);
+  // "Primeira entrada": nenhum campo de treinamento foi preenchido ainda
+  // (nem manualmente, nem por um onboarding que não mexe mais nisso).
+  const hasAnyContent = Boolean(
+    about.trim() ||
+      paymentMethods.trim() ||
+      importantInfo.trim() ||
+      toneGuidelines.trim() ||
+      prohibitions.trim() ||
+      handoffTriggers.trim() ||
+      services.length > 0 ||
+      faqs.length > 0,
+  );
+  const showFirstVisitChoice = !hasAnyContent && !firstVisitDismissed;
 
   function applyTemplate(t: KnowledgeTemplate) {
     // Só preenche o que estiver vazio — nunca sobrescreve o que já existe.
@@ -137,39 +154,66 @@ export default function KnowledgePanel() {
         description="Conte pra Livia como seu negócio funciona. Quanto mais completo, melhor ela atende — e ela só fala o que estiver aqui, nunca inventa."
       />
 
-      {/* ---- Modelo por segmento ---- */}
-      <Card className="mb-5 border-dashed bg-primary-light/30">
-        <div className="mb-3 flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <p className="text-sm font-semibold text-ink-900">Não sabe por onde começar?</p>
-        </div>
-        <p className="mb-3 text-sm text-ink-500">
-          Escolha um modelo pronto pro seu tipo de negócio. Ele só preenche os campos que ainda estão vazios — nada do que você já escreveu é apagado.
-        </p>
-        <div className="mb-3 flex flex-wrap gap-2">
-          {KNOWLEDGE_TEMPLATES.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTemplateId(t.id)}
-              className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition-colors ${
-                activeTemplateId === t.id
-                  ? "border-primary bg-primary text-white"
-                  : "border-line bg-white text-ink-700 hover:bg-line/30"
-              }`}
+      {/* ---- Primeira entrada: nada foi preenchido ainda ---- */}
+      {showFirstVisitChoice ? (
+        <Card className="mb-5 border-primary/30 bg-primary-light/30">
+          <div className="mb-2 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <p className="text-sm font-semibold text-ink-900">Como você quer começar?</p>
+          </div>
+          <p className="mb-4 text-sm text-ink-500">
+            {suggested
+              ? `Pelo seu segmento, temos um modelo pronto de "${suggested.label}" — já preenche tudo pra você revisar e ajustar.`
+              : "Temos modelos prontos por segmento — já preenchem tudo pra você revisar e ajustar."}
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <Button
+              onClick={() => {
+                applyTemplate(suggested ?? activeTemplate);
+                setFirstVisitDismissed(true);
+              }}
             >
-              {t.label}
-              {suggested?.id === t.id && (
-                <span className="ml-1.5 rounded-full bg-success-bg px-1.5 py-0.5 text-[10px] font-bold text-success-fg">
-                  recomendado
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-        <Button size="sm" onClick={() => setConfirmApply(true)}>
-          Usar o modelo &quot;{activeTemplate.label}&quot;
-        </Button>
-      </Card>
+              Usar modelo recomendado
+            </Button>
+            <Button variant="secondary" onClick={() => setFirstVisitDismissed(true)}>
+              Começar do zero
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Card className="mb-5 border-dashed bg-primary-light/30">
+          <div className="mb-3 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <p className="text-sm font-semibold text-ink-900">Não sabe por onde começar?</p>
+          </div>
+          <p className="mb-3 text-sm text-ink-500">
+            Escolha um modelo pronto pro seu tipo de negócio. Ele só preenche os campos que ainda estão vazios — nada do que você já escreveu é apagado.
+          </p>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {KNOWLEDGE_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveTemplateId(t.id)}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition-colors ${
+                  activeTemplateId === t.id
+                    ? "border-primary bg-primary text-white"
+                    : "border-line bg-white text-ink-700 hover:bg-line/30"
+                }`}
+              >
+                {t.label}
+                {suggested?.id === t.id && (
+                  <span className="ml-1.5 rounded-full bg-success-bg px-1.5 py-0.5 text-[10px] font-bold text-success-fg">
+                    recomendado
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <Button size="sm" onClick={() => setConfirmApply(true)}>
+            Usar o modelo &quot;{activeTemplate.label}&quot;
+          </Button>
+        </Card>
+      )}
 
       <ConfirmDialog
         open={confirmApply}
