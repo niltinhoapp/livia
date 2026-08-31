@@ -1,4 +1,4 @@
-import { LayoutDashboard, CalendarDays, BookOpen, Settings, MessageCircle } from "lucide-react";
+import { LayoutDashboard, CalendarDays, BookOpen, Settings, MessageCircle, MessagesSquare } from "lucide-react";
 
 export interface NavItem {
   href: string;
@@ -12,6 +12,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/painel", label: "Visão geral", mobileLabel: "Início", icon: LayoutDashboard },
   { href: "/painel/agenda", label: "Agenda", mobileLabel: "Agenda", icon: CalendarDays },
+  { href: "/painel/conversas", label: "Conversas", mobileLabel: "Chat", icon: MessagesSquare },
   { href: "/painel/whatsapp", label: "WhatsApp", mobileLabel: "WhatsApp", icon: MessageCircle },
   { href: "/painel/conhecimento", label: "Conhecimento", mobileLabel: "Saber", icon: BookOpen },
   { href: "/painel/configuracoes", label: "Configurações", mobileLabel: "Config", icon: Settings },

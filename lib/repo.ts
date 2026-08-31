@@ -344,6 +344,44 @@ export async function setConversationStatus(
     .update({ status });
 }
 
+// Lista as conversas do estabelecimento pra tela /painel/conversas — mais
+// recentes primeiro. `sub(establishmentId, ...)` já restringe à subcoleção
+// do tenant, então não há risco de vazar conversa de outro estabelecimento.
+export async function listConversations(
+  establishmentId: string,
+  limitCount = 50,
+): Promise<Conversation[]> {
+  const snap = await sub(establishmentId, "conversations")
+    .orderBy("lastMessageAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Conversation);
+}
+
+export async function getConversation(
+  establishmentId: string,
+  conversationId: string,
+): Promise<Conversation | null> {
+  const doc = await sub(establishmentId, "conversations").doc(conversationId).get();
+  return doc.exists ? (doc.data() as Conversation) : null;
+}
+
+// Mensagens de uma conversa em ordem cronológica, pra exibir na tela (não
+// confundir com o histórico deslizante usado pela IA em loadConversation).
+export async function listMessages(
+  establishmentId: string,
+  conversationId: string,
+  limitCount = 100,
+): Promise<Message[]> {
+  const snap = await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .collection("messages")
+    .orderBy("at", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Message).reverse();
+}
+
 // Dedupe: a Meta reenvia webhooks. Guardamos os IDs já processados por
 // alguns minutos pra não responder duas vezes à mesma mensagem.
 export async function alreadyProcessed(waMessageId: string): Promise<boolean> {

@@ -110,8 +110,10 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // Registra a mensagem do cliente.
   await appendMessage(est.id, conversation.id, "customer", customerText, msg.id);
 
-  // Se a conversa já está com humano, o bot fica quieto (não atropela o atendente).
-  if (conversation.status === "human") return;
+  // Se a conversa já está com humano OU aguardando humano (handoff), o bot
+  // fica quieto — não atropela o atendente nem continua respondendo depois
+  // de identificar que precisa de humano.
+  if (conversation.status === "human" || conversation.status === "handoff") return;
 
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
   // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
@@ -149,7 +151,10 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
 
   if (handoff) {
-    await setConversationStatus(est.id, conversation.id, "human");
+    // "handoff" != "human": a Livia identificou que precisa de atendente e
+    // PAROU de responder sozinha, mas ninguém assumiu ainda — só um clique
+    // em "Assumir conversa" em /painel/conversas vira "human" de verdade.
+    await setConversationStatus(est.id, conversation.id, "handoff");
     // TODO: notificar o dono/atendente (push, e-mail ou painel).
   }
 }
