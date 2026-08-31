@@ -17,6 +17,11 @@ const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
+// Informações FACTUAIS do negócio — o que a Livia pode falar sobre o
+// estabelecimento (serviços, preços, pagamento, regras). Separado de
+// knowledgeGuidanceToText (que é sobre COMO falar) para o prompt deixar
+// claro pra IA a diferença entre "dado que existe" e "orientação de
+// comportamento".
 function knowledgeToText(kb: KnowledgeBase | null): string {
   if (!kb) return "(Nenhuma informação cadastrada ainda.)";
   const parts: string[] = [];
@@ -37,6 +42,8 @@ function knowledgeToText(kb: KnowledgeBase | null): string {
           .join("\n"),
     );
   }
+  if (kb.paymentMethods) parts.push(`Formas de pagamento: ${kb.paymentMethods}`);
+  if (kb.importantInfo) parts.push(`Informações importantes para o cliente: ${kb.importantInfo}`);
   if (kb.faqs?.length) {
     parts.push(
       "Perguntas frequentes:\n" +
@@ -44,7 +51,26 @@ function knowledgeToText(kb: KnowledgeBase | null): string {
     );
   }
   if (kb.notes) parts.push(`Observações: ${kb.notes}`);
+  if (parts.length === 0) return "(Nenhuma informação cadastrada ainda.)";
   return parts.join("\n\n");
+}
+
+// Orientação de COMPORTAMENTO cadastrada pelo comerciante em "Ensine a
+// Livia" — como falar, o que nunca fazer, quando chamar humano. Isto entra
+// nas regras do prompt (não na seção de "informações do estabelecimento"),
+// mas nunca pode enfraquecer o medicalGuardrail nem os handoffKeywords já
+// existentes — só complementa.
+function knowledgeGuidanceToText(kb: KnowledgeBase | null): string[] {
+  if (!kb) return [];
+  const lines: string[] = [];
+  if (kb.toneGuidelines) lines.push(`Estilo de conversa definido pelo estabelecimento: ${kb.toneGuidelines}`);
+  if (kb.prohibitions) lines.push(`O estabelecimento pediu explicitamente para você NUNCA: ${kb.prohibitions}`);
+  if (kb.handoffTriggers) {
+    lines.push(
+      `O estabelecimento pediu para transferir para um atendente humano (usando ${HANDOFF_TOKEN}) nestas situações: ${kb.handoffTriggers}`,
+    );
+  }
+  return lines;
 }
 
 const WEEKDAYS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
@@ -79,6 +105,10 @@ function buildSystemPrompt(est: Establishment, kb: KnowledgeBase | null, nowHuma
       "NUNCA dê diagnóstico ou orientação médica/clínica/de saúde. Para dúvidas assim, oriente a agendar uma consulta ou falar com um profissional.",
     );
   }
+  // Orientação cadastrada pelo comerciante em "Ensine a Livia" — vem DEPOIS
+  // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
+  // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
+  rules.push(...knowledgeGuidanceToText(kb));
   if (bot.bookingEnabled) {
     rules.push(
       "Você PODE agendar. Regras do agendamento:",
