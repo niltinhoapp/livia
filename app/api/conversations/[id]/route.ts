@@ -11,6 +11,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getConversation, listMessages, setConversationStatus } from "@/lib/repo";
 
+// Mesmo motivo de app/api/conversations/route.ts: força no-store explícito
+// pra garantir que status/histórico nunca sejam servidos de um cache.
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
