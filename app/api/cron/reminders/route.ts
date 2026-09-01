@@ -48,6 +48,7 @@ export async function GET(req: NextRequest) {
         const whenLocal = formatLocal(a.startAt, config.utcOffsetMinutes);
         await sendTemplate(
           est.whatsapp,
+          est.id,
           a.contactPhone,
           config.reminderTemplateName,
           config.reminderTemplateLang,

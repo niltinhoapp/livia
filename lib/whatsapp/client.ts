@@ -29,10 +29,35 @@ export function normalizePhone(raw: string): string {
 // transitório do Embedded Signup (só tem PIN, nunca token) e "disconnected"
 // não tem credencial válida. Falha explícita em qualquer outro caso, nunca
 // monta um Authorization vazio/inválido.
-function resolveSendCredentials(wa: EstablishmentWhatsapp): {
+// TEMPORÁRIO (gravação do App Review, só Preview): quando as três envs abaixo
+// existem E o envio é para o `establishmentId` de teste, usa o número/token
+// de teste da Meta em vez do Firestore. As três nunca existem em Production,
+// então lá este bloco nunca dispara. E mesmo em Preview, qualquer OUTRO
+// estabelecimento (a Odonto real inclusa) segue 100% pelo caminho normal —
+// a checagem de `establishmentId` é o que impede o bypass de vazar para
+// outro tenant só porque as envs de teste existem no ambiente. O token de
+// teste já vem em texto puro da Meta (não é EncryptedToken); segue as MESMAS
+// regras de nunca logar/persistir — só usado localmente para montar o header
+// Authorization. Remover após a gravação.
+function resolveTestCredentials(establishmentId: string): { phoneNumberId: string; accessToken: string } | null {
+  const phoneNumberId = process.env.WHATSAPP_TEST_PHONE_NUMBER_ID;
+  const accessToken = process.env.WHATSAPP_TEST_ACCESS_TOKEN;
+  const testEstablishmentId = process.env.WHATSAPP_TEST_ESTABLISHMENT_ID;
+  if (!phoneNumberId || !accessToken || !testEstablishmentId) return null;
+  if (establishmentId !== testEstablishmentId) return null;
+  return { phoneNumberId, accessToken };
+}
+
+function resolveSendCredentials(
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
+): {
   phoneNumberId: string;
   accessToken: string;
 } {
+  const test = resolveTestCredentials(establishmentId);
+  if (test) return test;
+
   if (wa.status !== "connected") {
     throw new Error(`WhatsApp não está conectado (status atual: "${wa.status}").`);
   }
@@ -45,10 +70,11 @@ function resolveSendCredentials(wa: EstablishmentWhatsapp): {
 // Envia texto livre (só válido dentro da janela de 24h aberta pelo cliente).
 export async function sendText(
   wa: EstablishmentWhatsapp,
+  establishmentId: string,
   toPhone: string,
   text: string,
 ): Promise<{ waMessageId?: string }> {
-  const { phoneNumberId, accessToken } = resolveSendCredentials(wa);
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
   const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
@@ -80,12 +106,13 @@ export async function sendText(
 // {{1}}, {{2}}... do corpo, na ordem.
 export async function sendTemplate(
   wa: EstablishmentWhatsapp,
+  establishmentId: string,
   toPhone: string,
   templateName: string,
   languageCode: string,
   params: string[] = [],
 ): Promise<{ waMessageId?: string }> {
-  const { phoneNumberId, accessToken } = resolveSendCredentials(wa);
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
   const components =
     params.length > 0
       ? [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }]
@@ -121,12 +148,13 @@ export async function sendTemplate(
 // o "visto" azul enquanto a IA formula a resposta).
 export async function markAsRead(
   wa: EstablishmentWhatsapp,
+  establishmentId: string,
   waMessageId: string,
 ): Promise<void> {
   let phoneNumberId: string;
   let accessToken: string;
   try {
-    ({ phoneNumberId, accessToken } = resolveSendCredentials(wa));
+    ({ phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId));
   } catch {
     return; // best effort — mesma postura do .catch abaixo, não interrompe o fluxo
   }

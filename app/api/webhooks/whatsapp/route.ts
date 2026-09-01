@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   findEstablishmentByPhoneNumberId,
+  getEstablishment,
   getKnowledgeBase,
   loadConversation,
   appendMessage,
@@ -26,7 +27,7 @@ import { sendText, markAsRead } from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
 import { findNextAppointment, setStatus } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
-import type { Establishment } from "@/types";
+import type { Establishment, EstablishmentWhatsapp } from "@/types";
 
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
@@ -41,7 +42,11 @@ export async function GET(req: NextRequest) {
 
 // Valida X-Hub-Signature-256 (sha256=<hmac do corpo cru com META_APP_SECRET>).
 function verifySignature(rawBody: string, header: string | null): boolean {
-  const secret = process.env.META_APP_SECRET;
+  // .trim() aqui é defensivo: valores colados manualmente numa env var (ex.
+  // via prompt interativo do `vercel env add`) podem carregar um espaço ou
+  // quebra de linha extra no final, o que quebraria o HMAC silenciosamente
+  // sem nenhum erro visível — só a assinatura nunca batendo.
+  const secret = process.env.META_APP_SECRET?.trim();
   if (!secret || !header?.startsWith("sha256=")) return false;
   const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
   const provided = header.slice("sha256=".length);
@@ -88,18 +93,40 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // Dedupe de reentrega.
   if (msg.id && (await alreadyProcessed(msg.id))) return;
 
-  const est = await findEstablishmentByPhoneNumberId(
-    value.metadata.phone_number_id,
-  );
-  if (!est || !est.whatsapp || est.whatsapp.status !== "connected") return;
+  // TEMPORÁRIO (gravação do App Review, só Preview): se o phone_number_id
+  // recebido é o número de teste da Meta, resolve direto pro estabelecimento
+  // fixo de teste (nunca escreve nada no Firestore) e ignora o gate de
+  // "connected" — só nesse caminho. Nenhuma das envs existe em Production,
+  // então isTestPhoneNumber é sempre false lá e o comportamento não muda.
+  // Remover após a gravação.
+  const testPhoneNumberId = process.env.WHATSAPP_TEST_PHONE_NUMBER_ID;
+  const testEstablishmentId = process.env.WHATSAPP_TEST_ESTABLISHMENT_ID;
+  const isTestPhoneNumber =
+    Boolean(testPhoneNumberId) && value.metadata.phone_number_id === testPhoneNumberId;
+
+  let est: Establishment | null;
+  if (isTestPhoneNumber && testEstablishmentId) {
+    est = await getEstablishment(testEstablishmentId);
+    if (!est) return;
+  } else {
+    est = await findEstablishmentByPhoneNumberId(value.metadata.phone_number_id);
+    if (!est || !est.whatsapp || est.whatsapp.status !== "connected") return;
+  }
   if (est.status !== "active") return;
+
+  // No caminho de teste, est.whatsapp pode não existir (ou estar
+  // "connecting") — resolveSendCredentials() ignora esse valor por completo
+  // quando as envs de teste estão presentes, então este placeholder nunca é
+  // usado de fato para autenticar; só satisfaz o tipo.
+  const wa: EstablishmentWhatsapp =
+    est.whatsapp ?? { wabaId: "", phoneNumberId: "", status: "connecting", pin: { ciphertext: "", iv: "", authTag: "" } };
 
   const contactPhone = msg.from;
   const contactName = value.contacts?.[0]?.profile?.name ?? null;
   const customerText = msg.text.body;
 
   // Marca como lida (feedback visual pro cliente).
-  if (msg.id) await markAsRead(est.whatsapp, msg.id);
+  if (msg.id) await markAsRead(wa, est.id, msg.id);
 
   const { conversation, history } = await loadConversation(
     est.id,
@@ -124,10 +151,10 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
       if (intent === "confirm") {
         await setStatus(est.id, next.id, "confirmed");
-        await replyAndLog(est, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
+        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
       } else {
         await setStatus(est.id, next.id, "cancelled");
-        await replyAndLog(est, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
+        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
       }
       return;
     }
@@ -147,7 +174,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     contactName,
   });
 
-  const sent = await sendText(est.whatsapp, contactPhone, reply);
+  const sent = await sendText(wa, est.id, contactPhone, reply);
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
 
   if (handoff) {
@@ -171,13 +198,14 @@ function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
 }
 
 async function replyAndLog(
-  est: Establishment,
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
   conversationId: string,
   toPhone: string,
   text: string,
 ): Promise<void> {
-  const sent = await sendText(est.whatsapp!, toPhone, text);
-  await appendMessage(est.id, conversationId, "bot", text, sent.waMessageId);
+  const sent = await sendText(wa, establishmentId, toPhone, text);
+  await appendMessage(establishmentId, conversationId, "bot", text, sent.waMessageId);
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
