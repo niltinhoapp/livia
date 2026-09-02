@@ -239,18 +239,58 @@ export async function releaseWhatsappConnectionAttempt(
   });
 }
 
-// Acha o estabelecimento dono de um phone_number_id (o webhook chega com ele).
-// Query num campo aninhado exige índice; em produção, criar índice composto.
+// Quantos candidatos buscar antes de escolher o conectado. Um mesmo
+// phone_number_id pode aparecer em mais de um estabelecimento — tipicamente
+// quando tentativas de conexão anteriores (de outra conta, ou de um tenant
+// de teste) gravaram o mesmo número e ficaram para trás como "connecting"/
+// "disconnected". Na prática são pouquíssimos documentos; o teto existe só
+// para a query nunca ser ilimitada.
+const PHONE_NUMBER_OWNER_CANDIDATES = 10;
+
+// Acha o estabelecimento CONECTADO dono de um phone_number_id (o webhook
+// chega com ele).
+//
+// O filtro por status é aplicado DEPOIS de buscar os candidatos, de
+// propósito: uma segunda cláusula de igualdade em campo aninhado
+// (whatsapp.status) poderia exigir um índice composto, e uma query que falha
+// aqui derruba o atendimento inteiro — o webhook engole a exceção e a
+// mensagem some. Buscar por phoneNumberId usa o índice de campo único que o
+// Firestore já mantém sozinho, e a filtragem em memória sobre um punhado de
+// documentos é irrelevante em custo.
+//
+// ANTES este método fazia `.limit(1)` e devolvia um documento QUALQUER com
+// aquele número, deixando o webhook checar o status depois. Com dois
+// estabelecimentos compartilhando o mesmo phone_number_id, o Firestore podia
+// devolver o não conectado — e o webhook descartava a mensagem em silêncio,
+// sem procurar o outro. Era não determinístico: a mesma conta podia receber
+// ou perder mensagens entre requisições.
 export async function findEstablishmentByPhoneNumberId(
   phoneNumberId: string,
 ): Promise<Establishment | null> {
   const snap = await db
     .collection("establishments")
     .where("whatsapp.phoneNumberId", "==", phoneNumberId)
-    .limit(1)
+    .limit(PHONE_NUMBER_OWNER_CANDIDATES)
     .get();
-  if (snap.empty) return null;
-  return snap.docs[0]!.data() as Establishment;
+
+  const connected = snap.docs
+    .map((d) => d.data() as Establishment)
+    .filter((est) => est.whatsapp?.status === "connected");
+
+  if (connected.length === 0) return null;
+
+  // Mais de um estabelecimento CONECTADO no mesmo número é um estado
+  // inválido que este código não tem como desempatar corretamente (as
+  // mensagens pertencem a um só dono). Não adivinha em silêncio: registra
+  // para investigação e segue com o primeiro, mantendo o atendimento de pé.
+  if (connected.length > 1) {
+    console.error(
+      `[livia webhook] phone_number_id ${phoneNumberId} está conectado em ${connected.length} estabelecimentos ` +
+        `(${connected.map((e) => e.id).join(", ")}) — usando o primeiro; corrigir os dados.`,
+    );
+  }
+
+  return connected[0]!;
 }
 
 export async function getKnowledgeBase(
