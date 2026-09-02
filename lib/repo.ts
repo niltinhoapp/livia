@@ -382,6 +382,39 @@ export async function listMessages(
   return snap.docs.map((d) => d.data() as Message).reverse();
 }
 
+// Apaga TODAS as conversas (e suas mensagens) de UM estabelecimento — usado
+// pela ferramenta de limpeza em /painel/conversas (ex.: preparar o painel
+// pra gravação de vídeo). NUNCA faz exclusão global de collection: `sub()`
+// já escopa tudo à subcoleção establishments/{establishmentId}/conversations,
+// que é fisicamente separada da de qualquer outro tenant no Firestore — não
+// há como isso vazar para outro estabelecimento. Não toca em appointments,
+// meta/knowledge, schedule, whatsapp ou no doc do estabelecimento em si;
+// só conversas + suas mensagens.
+export async function clearConversations(
+  establishmentId: string,
+): Promise<{ deletedConversations: number; deletedMessages: number }> {
+  const convsSnap = await sub(establishmentId, "conversations").get();
+
+  let deletedConversations = 0;
+  let deletedMessages = 0;
+
+  for (const convDoc of convsSnap.docs) {
+    const msgsSnap = await convDoc.ref.collection("messages").get();
+    // Firestore aceita no máx. 500 operações por batch — 450 dá margem.
+    for (let i = 0; i < msgsSnap.docs.length; i += 450) {
+      const chunk = msgsSnap.docs.slice(i, i + 450);
+      const batch = db.batch();
+      chunk.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      deletedMessages += chunk.length;
+    }
+    await convDoc.ref.delete();
+    deletedConversations++;
+  }
+
+  return { deletedConversations, deletedMessages };
+}
+
 // Dedupe: a Meta reenvia webhooks. Guardamos os IDs já processados por
 // alguns minutos pra não responder duas vezes à mesma mensagem.
 export async function alreadyProcessed(waMessageId: string): Promise<boolean> {

@@ -6,12 +6,19 @@
 // Em mobile, lista e conversa não cabem lado a lado: mostra uma coisa de
 // cada vez (lista, ou a conversa com um botão "Voltar").
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2 } from "lucide-react";
 import type { Conversation, Message } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+
+// "Limpar conversas" só existe para o tenant demo (Odonto) — usado pra
+// deixar o painel vazio antes de gravações de demonstração. A trava real é
+// no backend (app/api/conversations/clear/route.ts, checa a sessão); isto
+// aqui só evita mostrar um botão que sempre falharia pra outro estabelecimento.
+const CLEAR_CONVERSATIONS_ESTABLISHMENT_ID = "demo";
 
 const STATUS_LABEL: Record<Conversation["status"], { label: string; tone: StatusTone; icon: typeof Bot }> = {
   bot: { label: "Livia atendendo", tone: "success", icon: Bot },
@@ -26,6 +33,10 @@ export default function ConversationsPage() {
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [error, setError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [canClear, setCanClear] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState(false);
 
   const loadList = useCallback(() => {
     fetch("/api/conversations")
@@ -43,6 +54,29 @@ export default function ConversationsPage() {
     return () => clearInterval(interval);
   }, [loadList]);
 
+  useEffect(() => {
+    fetch("/api/establishment")
+      .then((r) => r.json())
+      .then((j) => setCanClear(j.establishment?.id === CLEAR_CONVERSATIONS_ESTABLISHMENT_ID))
+      .catch(() => setCanClear(false));
+  }, []);
+
+  async function handleClearConversations() {
+    setClearing(true);
+    setClearError(false);
+    try {
+      const res = await fetch("/api/conversations/clear", { method: "POST" });
+      if (!res.ok) throw new Error("falha ao limpar");
+      setConfirmClear(false);
+      setSelectedId(null);
+      loadList();
+    } catch {
+      setClearError(true);
+    } finally {
+      setClearing(false);
+    }
+  }
+
   if (error) return <ErrorState onRetry={loadList} />;
   if (!conversations) return <LoadingState />;
 
@@ -54,10 +88,35 @@ export default function ConversationsPage() {
         title="Conversas"
         description="Acompanhe o que a Livia está conversando no WhatsApp e assuma quando precisar."
         action={
-          <Button variant="secondary" size="sm" onClick={loadList}>
-            <RefreshCw className="h-3.5 w-3.5" /> Atualizar
-          </Button>
+          <div className="flex items-center gap-2">
+            {canClear && (
+              <Button variant="danger" size="sm" onClick={() => setConfirmClear(true)}>
+                <Trash2 className="h-3.5 w-3.5" /> Limpar conversas
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={loadList}>
+              <RefreshCw className="h-3.5 w-3.5" /> Atualizar
+            </Button>
+          </div>
         }
+      />
+
+      {clearError && (
+        <p className="mb-4 text-sm font-semibold text-danger-fg">
+          Não foi possível limpar as conversas. Tente novamente.
+        </p>
+      )}
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="Limpar conversas?"
+        description="Tem certeza que deseja limpar todas as conversas deste estabelecimento? Esta ação não poderá ser desfeita."
+        confirmLabel={clearing ? "Limpando…" : "Limpar conversas"}
+        cancelLabel="Cancelar"
+        danger
+        confirmDisabled={clearing}
+        onConfirm={handleClearConversations}
+        onCancel={() => setConfirmClear(false)}
       />
 
       <div className="flex overflow-hidden rounded-card border border-line bg-white" style={{ height: "70vh" }}>
