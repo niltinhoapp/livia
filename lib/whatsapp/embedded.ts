@@ -36,8 +36,8 @@ const GRAPH_BASE_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
 // ganho de segurança. Já o App Secret é sempre server-only (META_APP_SECRET,
 // nunca NEXT_PUBLIC_*).
 function loadAppCredentials(): { appId: string; appSecret: string } {
-  const appId = process.env.NEXT_PUBLIC_META_APP_ID;
-  const appSecret = process.env.META_APP_SECRET;
+  const appId = process.env.NEXT_PUBLIC_META_APP_ID?.trim();
+  const appSecret = process.env.META_APP_SECRET?.trim();
   if (!appId || !appSecret) {
     throw new Error(
       "NEXT_PUBLIC_META_APP_ID / META_APP_SECRET ausentes — não é possível falar com a Graph API da Meta.",
@@ -117,8 +117,8 @@ async function graphJson(
 export async function exchangeCodeForToken(code: string): Promise<string> {
   const { appId, appSecret } = loadAppCredentials();
   const url =
-    `${GRAPH_BASE_URL}/oauth/access_token?client_id=${appId}` +
-    `&client_secret=${appSecret}&code=${encodeURIComponent(code)}`;
+    `${GRAPH_BASE_URL}/oauth/access_token?client_id=${encodeURIComponent(appId)}` +
+    `&client_secret=${encodeURIComponent(appSecret)}&code=${encodeURIComponent(code)}`;
 
   let res: Response;
   try {
@@ -149,7 +149,7 @@ export async function refreshBusinessToken(currentToken: string): Promise<string
   const { appId, appSecret } = loadAppCredentials();
   const url =
     `${GRAPH_BASE_URL}/oauth/access_token?grant_type=fb_exchange_token` +
-    `&client_id=${appId}&client_secret=${appSecret}` +
+    `&client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}` +
     `&fb_exchange_token=${encodeURIComponent(currentToken)}`;
   const body = await graphJson(await fetch(url), "refreshBusinessToken", [currentToken, appSecret]);
   const token = body.access_token as string | undefined;
