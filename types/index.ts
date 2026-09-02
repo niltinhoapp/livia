@@ -37,8 +37,11 @@ export interface Establishment {
 //                      tratado como conexão válida por nenhum consumidor
 //                      (webhook, painel) — só "connected" habilita o canal.
 //   "connected"     -> sequência completa; accessToken cifrado presente.
-//   "disconnected"  -> reservado para o futuro fluxo de desconexão (ainda
-//                      não implementado nesta etapa).
+//   "disconnected"  -> o estabelecimento desconectou pelo painel. Mantém
+//                      wabaId/phoneNumberId e os PINs já cifrados para
+//                      permitir reconectar o MESMO número depois sem gerar
+//                      um PIN novo (que a Meta recusaria com 133005). NÃO
+//                      tem accessToken: nada é enviado nem recebido.
 export interface EstablishmentWhatsapp {
   wabaId: string;
   phoneNumberId: string;
@@ -48,12 +51,31 @@ export interface EstablishmentWhatsapp {
   // decryptPin em lib/whatsapp/tokenCrypto.ts). Campo separado do
   // accessToken mesmo cifrado — usos e ciclos de vida diferentes. Presente
   // já no estado "connecting" (é o primeiro dado persistido do fluxo).
-  pin: EncryptedToken;
+  //
+  // LEGADO: era o único PIN guardado, sempre o do `phoneNumberId` corrente.
+  // Continua sendo lido (e migrado para `pinsByPhoneNumberId`) em documentos
+  // criados antes do mapa existir, mas escritas novas alimentam o mapa.
+  pin?: EncryptedToken;
+  // PIN por número, cifrado, indexado pelo phone_number_id.
+  //
+  // O PIN de 2 etapas pertence ao NÚMERO na Meta, não à conexão: uma vez
+  // registrado, aquele número só aceita re-registro com o MESMO PIN (erro
+  // 133005 caso contrário). Guardar um PIN único quebrava o caso real de um
+  // cliente trocar de número e depois voltar para o anterior — o PIN do
+  // antigo teria sido sobrescrito e o retorno seria impossível. O mapa
+  // preserva o PIN de cada número já registrado por este estabelecimento.
+  //
+  // A chave é o phone_number_id (só dígitos), seguro como nome de campo do
+  // Firestore.
+  pinsByPhoneNumberId?: Record<string, EncryptedToken>;
   // Presente somente quando status === "connected". Nunca em texto puro —
   // sempre o resultado de encryptToken() (lib/whatsapp/tokenCrypto.ts).
   accessToken?: EncryptedToken;
   connectedAt?: number;
   tokenRefreshedAt?: number;
+  // Quando o estabelecimento desconectou pelo painel (POST
+  // /api/whatsapp/disconnect). Só presente no estado "disconnected".
+  disconnectedAt?: number;
   // Quando a claim ("connecting") foi criada/retomada.
   claimedAt?: number;
   // Lease exclusiva da tentativa em andamento (só relevante enquanto

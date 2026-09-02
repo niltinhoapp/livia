@@ -129,7 +129,16 @@ export async function POST(req: NextRequest) {
   if (claim.outcome === "conflict") {
     return NextResponse.json({ error: "CONNECTION_IN_PROGRESS" }, { status: 409 });
   }
-  const { pin, attemptId } = claim; // "claimed" (novo) ou "resumed" (retomando)
+  if (claim.outcome === "number_in_use") {
+    // Outro estabelecimento já está conectado neste número. Recusado na
+    // origem: dois donos no mesmo phone_number_id tornam o roteamento do
+    // webhook ambíguo, e não há como desempatar corretamente depois.
+    logFailure("claim (número já conectado em outro estabelecimento)", id);
+    return NextResponse.json({ error: "NUMBER_IN_USE" }, { status: 409 });
+  }
+  // "claimed" (novo), "resumed" (retomando) ou "reconnected" (mesmo número
+  // depois de uma desconexão pelo painel — PIN reaproveitado).
+  const { pin, attemptId } = claim;
 
   // 2. code -> business token do estabelecimento (só em memória).
   let accessToken: string;

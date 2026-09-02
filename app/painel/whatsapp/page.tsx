@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsapp/WhatsAppConnectionCard";
 import { useEmbeddedSignup, type EmbeddedSignupResult } from "@/components/whatsapp/useEmbeddedSignup";
 import { mapErrorToPhase } from "@/components/whatsapp/errorMapping";
@@ -32,6 +33,7 @@ export default function WhatsAppPage() {
   const [status, setStatus] = useState<ConnectStatus | null>(null);
   const [error, setError] = useState(false);
   const [phase, setPhase] = useState<WhatsAppPhase>("idle");
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const load = useCallback(() => {
     setError(false);
@@ -92,6 +94,25 @@ export default function WhatsAppPage() {
     start();
   }, [start]);
 
+  // Desconectar: a Livia para de atender pelo número, mas nada do negócio é
+  // apagado — o backend preserva o PIN do número justamente para que
+  // reconectar depois seja possível (ver app/api/whatsapp/disconnect).
+  const handleDisconnectConfirm = useCallback(async () => {
+    setConfirmDisconnect(false);
+    setPhase("disconnecting");
+    try {
+      const res = await fetch("/api/whatsapp/disconnect", { method: "POST" });
+      if (res.ok) {
+        load(); // GET é a fonte da verdade — volta para "idle"
+        return;
+      }
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      setPhase(mapErrorToPhase(body.error ?? ""));
+    } catch {
+      setPhase("error-recoverable");
+    }
+  }, [load]);
+
   if (error) return <ErrorState onRetry={load} />;
   if (!status) return <LoadingState />;
 
@@ -103,7 +124,23 @@ export default function WhatsAppPage() {
         phase={phase}
         connectedAt={status.connectedAt}
         onConnectClick={handleConnectClick}
+        onDisconnectClick={() => setConfirmDisconnect(true)}
         onRetry={load}
+      />
+
+      <ConfirmDialog
+        open={confirmDisconnect}
+        title="Desconectar o WhatsApp?"
+        description={
+          "A Livia para de responder pelo seu WhatsApp. Seu número continua funcionando normalmente, e " +
+          "suas conversas, agendamentos e informações do negócio continuam salvos. Você pode reconectar " +
+          "o mesmo número quando quiser."
+        }
+        confirmLabel="Desconectar"
+        cancelLabel="Cancelar"
+        danger
+        onConfirm={handleDisconnectConfirm}
+        onCancel={() => setConfirmDisconnect(false)}
       />
 
       {process.env.NODE_ENV === "development" && (
@@ -123,9 +160,11 @@ function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange:
     "awaiting-meta",
     "finalizing",
     "connected",
+    "disconnecting",
     "in-progress",
     "error-recoverable",
     "error-attention",
+    "error-number-in-use",
   ];
   return (
     <div className="mt-6 rounded-control border border-dashed border-line p-3">

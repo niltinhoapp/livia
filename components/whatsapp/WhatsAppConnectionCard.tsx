@@ -17,44 +17,90 @@ export type WhatsAppPhase =
   | "awaiting-meta" // popup aberto, aguardando o lojista na Meta
   | "finalizing" // popup fechou, backend processando (POST /api/whatsapp/connect)
   | "connected" // sucesso
+  | "disconnecting" // botão "Desconectar" confirmado, backend processando
   | "in-progress" // CONNECTION_IN_PROGRESS / ALREADY_CONNECTED — já tem uma tentativa rodando
   | "error-recoverable" // EXCHANGE_FAILED, STALE_ATTEMPT, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
-  | "error-attention"; // OWNERSHIP_MISMATCH, SUBSCRIBE_FAILED, REGISTER_FAILED — algo a checar na Meta
+  | "error-attention" // OWNERSHIP_MISMATCH, SUBSCRIBE_FAILED, REGISTER_FAILED — algo a checar na Meta
+  | "error-number-in-use"; // NUMBER_IN_USE — o número já está conectado em outra conta
 
 interface WhatsAppConnectionCardProps {
   phase: WhatsAppPhase;
   connectedAt?: number | null;
   onConnectClick: () => void;
+  // Opcional: o botão "Desconectar" só aparece onde há um fluxo real de
+  // desconexão por trás (hoje /painel/whatsapp). O onboarding usa este card
+  // como demonstração e não expõe a ação.
+  onDisconnectClick?: () => void;
   onRetry: () => void;
 }
 
-export function WhatsAppConnectionCard({ phase, connectedAt, onConnectClick, onRetry }: WhatsAppConnectionCardProps) {
+export function WhatsAppConnectionCard({
+  phase,
+  connectedAt,
+  onConnectClick,
+  onDisconnectClick,
+  onRetry,
+}: WhatsAppConnectionCardProps) {
   if (phase === "connected") {
     return (
       <Card className="border-success/30 bg-success-bg/30">
-        <div className="flex items-start gap-4">
+        <div className="flex flex-wrap items-start gap-4">
           <div className="rounded-full bg-success-bg p-2.5 text-success-fg">
             <CheckCircle2 className="h-6 w-6" />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="font-semibold text-ink-900">WhatsApp conectado</p>
             <p className="mt-1 text-sm text-ink-500">
               A Livia já pode responder pelo WhatsApp do seu negócio
               {connectedAt ? ` desde ${new Date(connectedAt).toLocaleDateString("pt-BR")}` : ""}.
             </p>
           </div>
+          {onDisconnectClick && (
+            <Button size="sm" variant="secondary" onClick={onDisconnectClick}>
+              Desconectar
+            </Button>
+          )}
         </div>
       </Card>
     );
   }
 
-  if (phase === "connecting" || phase === "awaiting-meta" || phase === "finalizing") {
+  if (phase === "error-number-in-use") {
+    return (
+      <Card className="border-danger/30 bg-danger-bg/20">
+        <div className="flex items-start gap-4">
+          <div className="rounded-full bg-danger-bg p-2.5 text-danger-fg">
+            <ShieldAlert className="h-6 w-6" />
+          </div>
+          <div className="flex-1">
+            <p className="font-semibold text-ink-900">Esse número já está em uso</p>
+            <p className="mt-1 text-sm text-ink-500">
+              O número escolhido já está conectado em outra conta da Livia. Desconecte-o por lá antes de
+              conectá-lo aqui, ou escolha outro número.
+            </p>
+            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>
+              Tentar novamente
+            </Button>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  if (
+    phase === "connecting" ||
+    phase === "awaiting-meta" ||
+    phase === "finalizing" ||
+    phase === "disconnecting"
+  ) {
     const label =
       phase === "connecting"
         ? "Abrindo a conexão com a Meta…"
         : phase === "awaiting-meta"
           ? "Siga os passos na janela da Meta para escolher seu número…"
-          : "Finalizando a conexão…";
+          : phase === "finalizing"
+            ? "Finalizando a conexão…"
+            : "Desconectando…";
     return (
       <Card>
         <div className="flex flex-col items-center gap-3 py-6 text-center">

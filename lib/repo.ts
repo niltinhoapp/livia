@@ -1,12 +1,13 @@
 // Repositório: leitura/escrita das coleções do Firestore.
 import { randomUUID } from "node:crypto";
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import type {
   Establishment,
   EstablishmentType,
+  EstablishmentWhatsapp,
   EncryptedToken,
   BotConfig,
   KnowledgeBase,
@@ -68,6 +69,78 @@ export async function upsertEstablishmentConfig(
 // Centralizado aqui — se precisar ajustar, é o único lugar.
 export const WHATSAPP_CONNECT_LEASE_TTL_MS = 8 * 60 * 1000;
 
+// Quantos documentos inspecionar ao procurar estabelecimentos que
+// compartilham um phone_number_id ou uma WABA. Um mesmo número pode aparecer
+// em mais de um documento — tipicamente porque tentativas de conexão
+// anteriores o gravaram e ficaram para trás como "connecting"/"disconnected".
+// Na prática são pouquíssimos; o teto existe só para a query nunca ser
+// ilimitada.
+const TENANT_LOOKUP_CANDIDATES = 10;
+
+// PIN cifrado que este estabelecimento já tem para ESTE número, se houver.
+//
+// Lê primeiro o mapa por número; se não achar, aceita o campo legado `pin`
+// — mas SOMENTE quando ele se refere ao mesmo número (documentos antigos
+// guardavam um PIN único, sempre o do `phoneNumberId` corrente). Nunca
+// devolve o PIN de um número para outro: registrar com PIN errado é
+// exatamente o erro 133005.
+function storedPinFor(
+  wa: EstablishmentWhatsapp | undefined,
+  phoneNumberId: string,
+): EncryptedToken | undefined {
+  const fromMap = wa?.pinsByPhoneNumberId?.[phoneNumberId];
+  if (fromMap) return fromMap;
+  if (wa?.pin && wa.phoneNumberId === phoneNumberId) return wa.pin;
+  return undefined;
+}
+
+// Mapa de PINs com o deste número adicionado, preservando os já existentes.
+// Preservar é o ponto: o cliente pode trocar de número e voltar ao anterior
+// depois, e o número antigo continua exigindo o PIN antigo na Meta.
+//
+// Também recolhe o `pin` legado para dentro do mapa. Sem isso, uma troca de
+// número perderia o PIN do formato antigo para sempre: a claim nova
+// substitui o objeto `whatsapp` inteiro, e o campo legado sairia junto —
+// exatamente o cenário que o mapa existe para evitar.
+function pinsWith(
+  wa: EstablishmentWhatsapp | undefined,
+  phoneNumberId: string,
+  pin: EncryptedToken,
+): Record<string, EncryptedToken> {
+  const pins: Record<string, EncryptedToken> = { ...(wa?.pinsByPhoneNumberId ?? {}) };
+  if (wa?.pin && wa.phoneNumberId && !pins[wa.phoneNumberId]) {
+    pins[wa.phoneNumberId] = wa.pin;
+  }
+  pins[phoneNumberId] = pin;
+  return pins;
+}
+
+// Existe OUTRO estabelecimento (≠ selfId) já conectado neste phone_number_id?
+//
+// Dois estabelecimentos conectados no mesmo número deixam o roteamento do
+// webhook ambíguo (ver findEstablishmentByPhoneNumberId) — as mensagens
+// pertencem a um só dono e não há como desempatar corretamente depois. Por
+// isso a checagem acontece ANTES de assumir a claim, e não como conserto.
+//
+// Filtra o status em memória de propósito: uma segunda cláusula de igualdade
+// em campo aninhado poderia exigir índice composto, e uma query que falha
+// aqui bloquearia conexões legítimas.
+async function otherConnectedEstablishmentWithNumber(
+  tx: Transaction,
+  phoneNumberId: string,
+  selfId: string,
+): Promise<string | null> {
+  const query = db
+    .collection("establishments")
+    .where("whatsapp.phoneNumberId", "==", phoneNumberId)
+    .limit(TENANT_LOOKUP_CANDIDATES);
+  const snap = await tx.get(query);
+  const owner = snap.docs.find(
+    (d) => d.id !== selfId && (d.data() as Establishment).whatsapp?.status === "connected",
+  );
+  return owner?.id ?? null;
+}
+
 export type ClaimWhatsappResult =
   // Claim nova: ninguém estava conectando/conectado — o PIN já foi gerado e
   // persistido cifrado (status "connecting") DENTRO desta transação, antes
@@ -79,6 +152,16 @@ export type ClaimWhatsappResult =
   // liberada após uma falha) — reaproveita o PIN já persistido (nunca gera
   // outro) e assume uma lease NOVA com attemptId novo.
   | { outcome: "resumed"; pin: string; attemptId: string }
+  // O estabelecimento havia DESCONECTADO pelo painel e está reconectando o
+  // MESMO número, que já tem PIN guardado — reaproveita esse PIN. É o que
+  // torna desconectar/reconectar possível: um PIN novo seria recusado pela
+  // Meta com 133005, porque a verificação em 2 etapas do número continua
+  // valendo mesmo depois da desconexão.
+  | { outcome: "reconnected"; pin: string; attemptId: string }
+  // Outro estabelecimento já está conectado neste phone_number_id. Recusa
+  // antes de assumir a claim — dois donos no mesmo número tornam o
+  // roteamento do webhook ambíguo e sem conserto correto depois.
+  | { outcome: "number_in_use" }
   // Já há uma conexão "connected" válida — não é sobrescrita.
   | { outcome: "already_connected" }
   // Há uma lease ATIVA (outra requisição em andamento agora) para o mesmo
@@ -103,12 +186,45 @@ export async function claimWhatsappConnection(
 ): Promise<ClaimWhatsappResult> {
   const ref = establishmentRef(id);
   return db.runTransaction(async (tx) => {
+    // Leituras primeiro (exigência do Firestore: nenhuma leitura depois de
+    // escrever na mesma transação).
+    const numberOwner = await otherConnectedEstablishmentWithNumber(tx, phoneNumberId, id);
     const snap = await tx.get(ref);
     const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
     const now = Date.now();
 
+    // Número já pertence a outro estabelecimento conectado — recusa antes de
+    // tocar em qualquer coisa.
+    if (numberOwner) {
+      return { outcome: "number_in_use" as const };
+    }
+
     if (existing?.status === "connected") {
       return { outcome: "already_connected" as const };
+    }
+
+    // Reconexão do MESMO número depois de uma desconexão pelo painel:
+    // reaproveita o PIN guardado para ele. Se (por dados antigos ou limpeza
+    // manual) não houver PIN guardado, cai adiante na claim nova e gera um —
+    // é a única opção possível, e um eventual 133005 aparece com diagnóstico
+    // claro em vez de estourar aqui.
+    if (existing?.status === "disconnected" && existing.phoneNumberId === phoneNumberId) {
+      const saved = storedPinFor(existing, phoneNumberId);
+      if (saved) {
+        const attemptId = randomUUID();
+        tx.update(ref, {
+          "whatsapp.wabaId": wabaId,
+          "whatsapp.status": "connecting",
+          "whatsapp.attemptId": attemptId,
+          "whatsapp.leaseExpiresAt": now + WHATSAPP_CONNECT_LEASE_TTL_MS,
+          "whatsapp.claimedAt": now,
+          // Migra o PIN legado para o mapa na primeira reconexão, sem perder
+          // nenhum PIN já registrado para outros números.
+          "whatsapp.pinsByPhoneNumberId": pinsWith(existing, phoneNumberId, saved),
+          "whatsapp.disconnectedAt": FieldValue.delete(),
+        });
+        return { outcome: "reconnected" as const, pin: decryptPin(saved), attemptId };
+      }
     }
 
     if (existing?.status === "connecting") {
@@ -128,23 +244,37 @@ export async function claimWhatsappConnection(
         return { outcome: "conflict" as const };
       }
 
-      const attemptId = randomUUID();
-      tx.update(ref, {
-        "whatsapp.attemptId": attemptId,
-        "whatsapp.leaseExpiresAt": now + WHATSAPP_CONNECT_LEASE_TTL_MS,
-        "whatsapp.claimedAt": now,
-      });
-      return { outcome: "resumed" as const, pin: decryptPin(existing.pin), attemptId };
+      // Sem PIN guardado para este número (documento antigo ou limpo
+      // manualmente) não há o que retomar — cai na claim nova abaixo, que
+      // gera um PIN.
+      const saved = storedPinFor(existing, phoneNumberId);
+      if (saved) {
+        const attemptId = randomUUID();
+        tx.update(ref, {
+          "whatsapp.attemptId": attemptId,
+          "whatsapp.leaseExpiresAt": now + WHATSAPP_CONNECT_LEASE_TTL_MS,
+          "whatsapp.claimedAt": now,
+          "whatsapp.pinsByPhoneNumberId": pinsWith(existing, phoneNumberId, saved),
+        });
+        return { outcome: "resumed" as const, pin: decryptPin(saved), attemptId };
+      }
     }
 
-    // Nova claim: nenhuma tentativa anterior para este estabelecimento.
+    // Claim nova: primeira conexão do estabelecimento, ou troca para um
+    // número diferente do que estava guardado.
+    //
+    // O mapa de PINs dos números ANTERIORES é preservado de propósito: este
+    // update substitui o objeto `whatsapp` inteiro, e sem carregar o mapa
+    // adiante o PIN do número antigo se perderia — impedindo o cliente de
+    // voltar para ele depois (a Meta continuaria exigindo aquele PIN).
     const pin = generateRandomPin();
+    const encryptedPin = encryptPin(pin);
     const attemptId = randomUUID();
     const whatsapp = {
       wabaId,
       phoneNumberId,
       status: "connecting" as const,
-      pin: encryptPin(pin),
+      pinsByPhoneNumberId: pinsWith(existing, phoneNumberId, encryptedPin),
       attemptId,
       claimedAt: now,
       leaseExpiresAt: now + WHATSAPP_CONNECT_LEASE_TTL_MS,
@@ -177,9 +307,10 @@ export async function claimWhatsappConnection(
 // `attemptId` — se outra tentativa já assumiu (nossa lease expirou no meio
 // do caminho e alguém mais tomou posse) ou a conexão já foi concluída por
 // outro caminho, esta função recusa escrever "connected" e devolve
-// `{ ok: false }`. Preserva o `pin` já persistido pela claim (nunca
-// reescrito aqui); attemptId/leaseExpiresAt são removidos por não fazerem
-// mais sentido depois de "connected".
+// `{ ok: false }`. Preserva os PINs já persistidos pela claim (nunca
+// reescritos aqui) — inclusive os de números anteriores, que continuam
+// necessários se o cliente voltar para um deles; attemptId/leaseExpiresAt são
+// removidos por não fazerem mais sentido depois de "connected".
 export async function finalizeWhatsappConnection(
   id: string,
   attemptId: string,
@@ -239,13 +370,86 @@ export async function releaseWhatsappConnectionAttempt(
   });
 }
 
-// Quantos candidatos buscar antes de escolher o conectado. Um mesmo
-// phone_number_id pode aparecer em mais de um estabelecimento — tipicamente
-// quando tentativas de conexão anteriores (de outra conta, ou de um tenant
-// de teste) gravaram o mesmo número e ficaram para trás como "connecting"/
-// "disconnected". Na prática são pouquíssimos documentos; o teto existe só
-// para a query nunca ser ilimitada.
-const PHONE_NUMBER_OWNER_CANDIDATES = 10;
+// Algum OUTRO estabelecimento (≠ selfId) está conectado usando esta MESMA
+// WABA? A inscrição de webhooks da Meta é por WABA, não por número — remover
+// a inscrição por causa de uma desconexão derrubaria os webhooks de todos os
+// outros números daquela WABA. Quem desconecta só pode desinscrever se a
+// resposta aqui for `false`.
+export async function hasOtherConnectedEstablishmentWithWaba(
+  wabaId: string,
+  selfId: string,
+): Promise<boolean> {
+  const snap = await db
+    .collection("establishments")
+    .where("whatsapp.wabaId", "==", wabaId)
+    .limit(TENANT_LOOKUP_CANDIDATES)
+    .get();
+  return snap.docs.some(
+    (d) => d.id !== selfId && (d.data() as Establishment).whatsapp?.status === "connected",
+  );
+}
+
+export type DisconnectWhatsappResult =
+  // Estava conectado e foi desconectado agora.
+  | { outcome: "disconnected" }
+  // Não havia conexão (nunca conectou, ou já estava desconectado) — tratado
+  // como sucesso idempotente: um botão não deve dar erro por clique repetido.
+  | { outcome: "already_disconnected" }
+  // Há uma tentativa de conexão em andamento com lease ativa — desconectar
+  // agora correria com o finalize dela.
+  | { outcome: "in_progress" };
+
+// Desconecta o WhatsApp do estabelecimento: a Livia para de enviar e de
+// atender por aquele número, mas NADA do negócio é apagado.
+//
+// O que é preservado, e por quê:
+//   - `pinsByPhoneNumberId` (e o `pin` legado): o PIN de 2 etapas pertence ao
+//     NÚMERO na Meta e continua valendo depois da desconexão — sem ele, uma
+//     reconexão futura geraria um PIN novo e a Meta recusaria com 133005;
+//   - `wabaId`/`phoneNumberId`: identificam o número para reconectar depois e
+//     permitem casar com o PIN certo. Manter o phoneNumberId aqui só é seguro
+//     porque o webhook passou a exigir status "connected" (ver
+//     findEstablishmentByPhoneNumberId);
+//   - `registeredAt`: histórico de que a Livia registrou o número.
+//
+// O que sai: `accessToken` (a credencial em si — a reconexão emite outra) e os
+// campos que descrevem uma conexão ativa. Conversas, mensagens, agenda e base
+// de conhecimento vivem em subcoleções e não são tocadas.
+//
+// NÃO faz deregister do número na Meta: desconectar da Livia não pode
+// desmontar a configuração de WhatsApp do cliente. A remoção da inscrição de
+// webhooks é responsabilidade do chamador (precisa do accessToken e da guarda
+// de WABA compartilhada) — ver app/api/whatsapp/disconnect/route.ts.
+export async function disconnectWhatsapp(id: string): Promise<DisconnectWhatsappResult> {
+  const ref = establishmentRef(id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+
+    if (!existing || existing.status === "disconnected") {
+      return { outcome: "already_disconnected" as const };
+    }
+
+    if (existing.status === "connecting") {
+      const leaseActive =
+        typeof existing.leaseExpiresAt === "number" && existing.leaseExpiresAt > Date.now();
+      if (leaseActive) return { outcome: "in_progress" as const };
+      // Lease expirada: é uma tentativa abandonada, não uma conexão viva.
+      // Segue para a limpeza abaixo, que a encerra formalmente.
+    }
+
+    tx.update(ref, {
+      "whatsapp.status": "disconnected",
+      "whatsapp.disconnectedAt": Date.now(),
+      "whatsapp.accessToken": FieldValue.delete(),
+      "whatsapp.connectedAt": FieldValue.delete(),
+      "whatsapp.tokenRefreshedAt": FieldValue.delete(),
+      "whatsapp.attemptId": FieldValue.delete(),
+      "whatsapp.leaseExpiresAt": FieldValue.delete(),
+    });
+    return { outcome: "disconnected" as const };
+  });
+}
 
 // Acha o estabelecimento CONECTADO dono de um phone_number_id (o webhook
 // chega com ele).
@@ -270,7 +474,7 @@ export async function findEstablishmentByPhoneNumberId(
   const snap = await db
     .collection("establishments")
     .where("whatsapp.phoneNumberId", "==", phoneNumberId)
-    .limit(PHONE_NUMBER_OWNER_CANDIDATES)
+    .limit(TENANT_LOOKUP_CANDIDATES)
     .get();
 
   const connected = snap.docs

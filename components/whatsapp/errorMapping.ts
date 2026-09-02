@@ -6,6 +6,9 @@ import type { WhatsAppPhase } from "./WhatsAppConnectionCard";
 
 export function mapErrorToPhase(code: string): WhatsAppPhase {
   if (code === "CONNECTION_IN_PROGRESS" || code === "ALREADY_CONNECTED") return "in-progress";
+  // O número pertence a outra conta da Livia — nada a "tentar de novo" aqui,
+  // a saída é desconectar lá ou escolher outro número.
+  if (code === "NUMBER_IN_USE") return "error-number-in-use";
   if (code === "OWNERSHIP_MISMATCH" || code === "SUBSCRIBE_FAILED" || code === "REGISTER_FAILED") return "error-attention";
   return "error-recoverable"; // EXCHANGE_FAILED, STALE_ATTEMPT, INVALID_PAYLOAD, INTERNAL_ERROR
 }

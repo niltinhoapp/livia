@@ -195,6 +195,30 @@ export async function subscribeAppToWaba(wabaId: string, token: string): Promise
   );
 }
 
+// Remove o app da Livia das inscrições de webhook da WABA do estabelecimento
+// — o inverso de subscribeAppToWaba, usado quando o estabelecimento
+// desconecta pelo painel. Sem isto a Meta continuaria entregando as mensagens
+// do cliente para a Livia (que as descartaria, já que o webhook só atende
+// estabelecimento "connected") — o problema não é funcional, é continuar
+// RECEBENDO dados de quem pediu para desconectar.
+//
+// A inscrição é por WABA, não por número: quem chama precisa garantir que
+// nenhum outro estabelecimento conectado usa a mesma WABA antes de remover
+// (ver app/api/whatsapp/disconnect/route.ts).
+//
+// Deliberadamente NÃO existe aqui um "deregister" do número: desconectar da
+// Livia não pode desmontar a configuração de WhatsApp do cliente na Meta.
+export async function unsubscribeAppFromWaba(wabaId: string, token: string): Promise<void> {
+  await graphJson(
+    await fetch(`${GRAPH_BASE_URL}/${wabaId}/subscribed_apps`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    "unsubscribeAppFromWaba",
+    [token],
+  );
+}
+
 // Códigos de erro documentados pela Meta para POST /{phone_number_id}/register
 // (docs: business-messaging/whatsapp/business-phone-numbers/registration) que
 // representam falha REAL — nunca devem ser tratados como sucesso, mesmo que a
