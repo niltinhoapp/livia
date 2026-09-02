@@ -46,15 +46,66 @@ function loadAppCredentials(): { appId: string; appSecret: string } {
   return { appId, appSecret };
 }
 
+// Diagnóstico SANITIZADO de uma falha na Graph API, anexado ao Error lançado
+// (propriedade `graphError`). Só campos de diagnóstico da própria Meta —
+// nunca token, app secret ou o `code` do OAuth. `message` só é incluída
+// depois de conferir que não contém nenhum dos segredos passados em
+// `redact` (a Meta não os devolve, mas não confiamos nisso sem checar).
+export type GraphErrorInfo = {
+  httpStatus?: number;
+  type?: string;
+  code?: number;
+  subcode?: number;
+  message?: string;
+  fbtraceId?: string;
+  networkFailure?: true;
+};
+
+export function graphErrorOf(err: unknown): GraphErrorInfo | undefined {
+  return (err as { graphError?: GraphErrorInfo })?.graphError;
+}
+
+function attachGraphError(err: Error, info: GraphErrorInfo): Error {
+  (err as Error & { graphError?: GraphErrorInfo }).graphError = info;
+  return err;
+}
+
+function safeMessage(message: string | undefined, redact: string[]): string | undefined {
+  if (!message) return undefined;
+  return redact.some((s) => s && message.includes(s)) ? undefined : message;
+}
+
 // Formata o corpo de erro da Graph API em uma mensagem útil, SEM jamais
 // incluir token/secret (nenhum dos dois aparece nesses payloads de erro da
 // Meta, mas o parsing aqui é propositalmente restrito aos campos de erro).
-async function graphJson(res: Response, action: string): Promise<Record<string, unknown>> {
+async function graphJson(
+  res: Response,
+  action: string,
+  redact: string[] = [],
+): Promise<Record<string, unknown>> {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    const err = (body as { error?: { message?: string; code?: number; error_user_title?: string } }).error;
+    const err = (
+      body as {
+        error?: {
+          message?: string;
+          type?: string;
+          code?: number;
+          error_subcode?: number;
+          error_user_title?: string;
+          fbtrace_id?: string;
+        };
+      }
+    ).error;
     const detail = err?.error_user_title ?? err?.message ?? JSON.stringify(body);
-    throw new Error(`Graph API (${action}) ${res.status}: ${detail}`);
+    throw attachGraphError(new Error(`Graph API (${action}) ${res.status}: ${detail}`), {
+      httpStatus: res.status,
+      type: err?.type,
+      code: err?.code,
+      subcode: err?.error_subcode,
+      message: safeMessage(err?.message, redact),
+      fbtraceId: err?.fbtrace_id,
+    });
   }
   return body;
 }
@@ -68,10 +119,23 @@ export async function exchangeCodeForToken(code: string): Promise<string> {
   const url =
     `${GRAPH_BASE_URL}/oauth/access_token?client_id=${appId}` +
     `&client_secret=${appSecret}&code=${encodeURIComponent(code)}`;
-  const body = await graphJson(await fetch(url), "exchangeCodeForToken");
+
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    throw attachGraphError(new Error("Graph API (exchangeCodeForToken): falha de rede."), {
+      networkFailure: true,
+    });
+  }
+
+  const body = await graphJson(res, "exchangeCodeForToken", [code, appSecret]);
   const token = body.access_token as string | undefined;
   if (!token) {
-    throw new Error("Graph API (exchangeCodeForToken): resposta sem access_token.");
+    throw attachGraphError(
+      new Error("Graph API (exchangeCodeForToken): resposta sem access_token."),
+      { httpStatus: res.status, message: "resposta 200 sem access_token" },
+    );
   }
   return token;
 }
@@ -87,7 +151,7 @@ export async function refreshBusinessToken(currentToken: string): Promise<string
     `${GRAPH_BASE_URL}/oauth/access_token?grant_type=fb_exchange_token` +
     `&client_id=${appId}&client_secret=${appSecret}` +
     `&fb_exchange_token=${encodeURIComponent(currentToken)}`;
-  const body = await graphJson(await fetch(url), "refreshBusinessToken");
+  const body = await graphJson(await fetch(url), "refreshBusinessToken", [currentToken, appSecret]);
   const token = body.access_token as string | undefined;
   if (!token) {
     throw new Error("Graph API (refreshBusinessToken): resposta sem access_token.");
@@ -112,6 +176,7 @@ export async function getWabaPhoneNumbers(wabaId: string, token: string): Promis
       headers: { Authorization: `Bearer ${token}` },
     }),
     "getWabaPhoneNumbers",
+    [token],
   );
   const data = (body.data as Array<{ id?: string }> | undefined) ?? [];
   return data.map((p) => p.id).filter((id): id is string => Boolean(id));
@@ -126,6 +191,7 @@ export async function subscribeAppToWaba(wabaId: string, token: string): Promise
       headers: { Authorization: `Bearer ${token}` },
     }),
     "subscribeAppToWaba",
+    [token],
   );
 }
 
@@ -177,31 +243,53 @@ export async function registerPhoneNumber(
   if (res.ok) return { registered: true, alreadyRegistered: false };
 
   const body = (await res.json().catch(() => ({}))) as {
-    error?: { code?: number; error_subcode?: number; message?: string; error_user_title?: string };
+    error?: {
+      code?: number;
+      error_subcode?: number;
+      message?: string;
+      type?: string;
+      error_user_title?: string;
+      fbtrace_id?: string;
+    };
   };
   const code = body.error?.code;
   const subcode = body.error?.error_subcode;
   // Só como diagnóstico complementar no erro lançado — nunca decide sucesso.
   const diagnosticText = body.error?.error_user_title ?? body.error?.message ?? "";
+  const info: GraphErrorInfo = {
+    httpStatus: res.status,
+    type: body.error?.type,
+    code,
+    subcode,
+    // PIN e token nunca podem vazar pela mensagem da Meta.
+    message: safeMessage(body.error?.message, [token, pin]),
+    fbtraceId: body.error?.fbtrace_id,
+  };
 
   if (code !== undefined && REGISTER_ALREADY_EXISTS_CODES.has(code)) {
     return { registered: false, alreadyRegistered: true };
   }
 
   if (code !== undefined && REGISTER_KNOWN_FAILURE_CODES.has(code)) {
-    throw new Error(
-      `Graph API (registerPhoneNumber): erro conhecido ${code}` +
-        (subcode ? `/${subcode}` : "") +
-        (diagnosticText ? ` — ${diagnosticText}` : ""),
+    throw attachGraphError(
+      new Error(
+        `Graph API (registerPhoneNumber): erro conhecido ${code}` +
+          (subcode ? `/${subcode}` : "") +
+          (diagnosticText ? ` — ${diagnosticText}` : ""),
+      ),
+      info,
     );
   }
 
   // Código desconhecido/ausente: nunca vira sucesso silencioso.
-  throw new Error(
-    `Graph API (registerPhoneNumber): erro não reconhecido (HTTP ${res.status}` +
-      (code !== undefined ? `, code ${code}` : "") +
-      (subcode !== undefined ? `/${subcode}` : "") +
-      `)` +
-      (diagnosticText ? ` — ${diagnosticText}` : ""),
+  throw attachGraphError(
+    new Error(
+      `Graph API (registerPhoneNumber): erro não reconhecido (HTTP ${res.status}` +
+        (code !== undefined ? `, code ${code}` : "") +
+        (subcode !== undefined ? `/${subcode}` : "") +
+        `)` +
+        (diagnosticText ? ` — ${diagnosticText}` : ""),
+    ),
+    info,
   );
 }

@@ -32,16 +32,25 @@ import {
   getWabaPhoneNumbers,
   subscribeAppToWaba,
   registerPhoneNumber,
+  graphErrorOf,
 } from "@/lib/whatsapp/embedded";
 import { encryptToken } from "@/lib/whatsapp/tokenCrypto";
 
 const ID_PATTERN = /^\d+$/;
 
-// Só a categoria interna + estabelecimento + etapa — nunca o texto de erro
-// vindo da Meta (pode conter fragmentos de query/diagnóstico que não
-// controlamos) e nunca token/code/pin/secret, que nunca chegam a esta função.
-function logFailure(step: string, establishmentId: string): void {
-  console.error(`[whatsapp connect] falha em "${step}" (estabelecimento=${establishmentId})`);
+// Categoria interna + estabelecimento + etapa. Quando a falha veio da Graph
+// API, inclui também o diagnóstico SANITIZADO da própria Meta (status, type,
+// code, subcode, message já filtrada e fbtrace_id) — é o que permite
+// distinguir, por exemplo, "App Secret errado" (code 1, "Error validating
+// client secret") de "code expirado" ou de falta de permissão. Nunca inclui
+// token, app secret, code OAuth ou PIN: ver safeMessage() em
+// lib/whatsapp/embedded.ts.
+function logFailure(step: string, establishmentId: string, err?: unknown): void {
+  const graph = err !== undefined ? graphErrorOf(err) : undefined;
+  const detail = graph ? ` graph=${JSON.stringify(graph)}` : "";
+  console.error(
+    `[whatsapp connect] falha em "${step}" (estabelecimento=${establishmentId})${detail}`,
+  );
 }
 
 // Libera a lease (best-effort — se falhar, o TTL da lease garante que a
@@ -53,8 +62,9 @@ async function abort(
   step: string,
   errorCode: string,
   status: number,
+  err?: unknown,
 ): Promise<NextResponse> {
-  logFailure(step, id);
+  logFailure(step, id, err);
   await releaseWhatsappConnectionAttempt(id, attemptId).catch(() => {});
   return NextResponse.json({ error: errorCode }, { status });
 }
@@ -103,7 +113,16 @@ export async function POST(req: NextRequest) {
 
   // 1. Assume a lease exclusiva — também é aqui que o PIN nasce e já fica
   // persistido cifrado, antes de qualquer chamada Graph API.
-  const claim = await claimWhatsappConnection(id, wabaId, phoneNumberId);
+  // O try/catch existe porque esta etapa depende de WHATSAPP_TOKEN_ENC_KEY:
+  // sem a env, `encryptPin` lança e a rota devolvia um 500 sem nenhum log
+  // útil, aparecendo no painel só como "Algo deu errado ao conectar".
+  let claim: Awaited<ReturnType<typeof claimWhatsappConnection>>;
+  try {
+    claim = await claimWhatsappConnection(id, wabaId, phoneNumberId);
+  } catch (err) {
+    logFailure("claim", id, err);
+    return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
+  }
   if (claim.outcome === "already_connected") {
     return NextResponse.json({ error: "ALREADY_CONNECTED" }, { status: 409 });
   }
@@ -116,8 +135,8 @@ export async function POST(req: NextRequest) {
   let accessToken: string;
   try {
     accessToken = await exchangeCodeForToken(code);
-  } catch {
-    return abort(id, attemptId, "exchange", "EXCHANGE_FAILED", 502);
+  } catch (err) {
+    return abort(id, attemptId, "exchange", "EXCHANGE_FAILED", 502, err);
   }
 
   // 3. Verificação de posse: consulta os números da WABA COM o token
@@ -135,15 +154,15 @@ export async function POST(req: NextRequest) {
     if (!numbers.includes(phoneNumberId)) {
       return abort(id, attemptId, "ownership (phoneNumberId fora da lista da WABA)", "OWNERSHIP_MISMATCH", 502);
     }
-  } catch {
-    return abort(id, attemptId, "ownership", "OWNERSHIP_MISMATCH", 502);
+  } catch (err) {
+    return abort(id, attemptId, "ownership", "OWNERSHIP_MISMATCH", 502, err);
   }
 
   // 4. Inscreve o app da Livia na WABA (webhooks).
   try {
     await subscribeAppToWaba(wabaId, accessToken);
-  } catch {
-    return abort(id, attemptId, "subscribe", "SUBSCRIBE_FAILED", 502);
+  } catch (err) {
+    return abort(id, attemptId, "subscribe", "SUBSCRIBE_FAILED", 502, err);
   }
 
   // 5. Registra o número com o PIN já persistido cifrado no passo 1. Só dois
@@ -159,8 +178,8 @@ export async function POST(req: NextRequest) {
     if (result.registered) registeredAt = Date.now();
     // alreadyRegistered === true: não fomos nós que registramos agora,
     // registeredAt fica ausente de propósito (ver types/index.ts).
-  } catch {
-    return abort(id, attemptId, "register", "REGISTER_FAILED", 502);
+  } catch (err) {
+    return abort(id, attemptId, "register", "REGISTER_FAILED", 502, err);
   }
 
   // 6. Só agora — com toda a sequência obrigatória concluída — cifra o
@@ -173,8 +192,8 @@ export async function POST(req: NextRequest) {
       accessToken: encryptToken(accessToken),
       registeredAt,
     });
-  } catch {
-    return abort(id, attemptId, "finalize", "INTERNAL_ERROR", 500);
+  } catch (err) {
+    return abort(id, attemptId, "finalize", "INTERNAL_ERROR", 500, err);
   }
 
   if (!finalized.ok) {
