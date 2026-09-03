@@ -11,6 +11,7 @@ import type {
   DayHours,
   Appointment,
   AppointmentStatus,
+  KnowledgeService,
 } from "@/types";
 
 // ---- Config padrão (Seg-Sex 9-18 com almoço 12-13, Sáb 9-13) ----
@@ -72,8 +73,57 @@ export interface Slot {
   startAt: number; // epoch UTC
 }
 
-// Calcula os horários livres de um dia, descontando pausas, antecedência
-// mínima e agendamentos já existentes (que se sobrepõem).
+// Motivo pelo qual um horário NÃO é reservável. `null` = reservável.
+export type NotBookableReason =
+  | "closed_day" // estabelecimento não abre nesse dia
+  | "outside_hours" // fora do expediente (ou não cabe até o fechamento)
+  | "during_break" // dentro de uma pausa (almoço)
+  | "too_soon" // viola a antecedência mínima (leadHours)
+  | "overlap"; // colide com um agendamento ativo
+
+// ---- REGRA ÚNICA DE "SLOT RESERVÁVEL" ----
+//
+// Esta é a ÚNICA definição de horário reservável do sistema. A listagem
+// (computeSlots) e a criação (assertBookable) chamam exatamente esta função,
+// com a mesma duração resolvida pelo backend — foi a divergência entre as
+// duas que fez a Livia oferecer horários que a criação recusava, e que
+// deixava a criação aceitar horários que a listagem jamais ofereceria
+// (dentro da pausa, fora do expediente, sem antecedência mínima).
+//
+// Considera: expediente, pausa, leadHours, sobreposição, status bloqueantes,
+// duração real e timezone (via localToEpoch/utcOffsetMinutes na conversão
+// feita por quem chama).
+export function slotBookability(
+  config: ScheduleConfig,
+  startAt: number,
+  durationMin: number,
+  existing: Appointment[],
+  now = Date.now(),
+  // Remarcação: o próprio agendamento não pode colidir consigo mesmo.
+  excludeId?: string,
+): NotBookableReason | null {
+  // Instante -> "relógio de parede" local, para comparar com expediente/pausa.
+  const local = new Date(startAt + config.utcOffsetMinutes * 60000);
+  const dateStr = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
+  const day = config.days[String(weekdayOf(dateStr))];
+  if (!day) return "closed_day";
+
+  const startMin = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const endMin = startMin + durationMin;
+  if (startMin < hmToMinutes(day.open) || endMin > hmToMinutes(day.close)) return "outside_hours";
+
+  const breaks = (day.breaks ?? []).map((b) => ({ start: hmToMinutes(b.start), end: hmToMinutes(b.end) }));
+  if (breaks.some((b) => startMin < b.end && b.start < endMin)) return "during_break";
+
+  if (startAt < now + config.leadHours * 3600000) return "too_soon";
+
+  const endAt = startAt + durationMin * 60000;
+  const colide = existing.some(
+    (a) => a.id !== excludeId && isActive(a) && startAt < a.startAt + a.durationMin * 60000 && a.startAt < endAt,
+  );
+  return colide ? "overlap" : null;
+}
+
 export function computeSlots(
   config: ScheduleConfig,
   dateStr: string,
@@ -86,28 +136,13 @@ export function computeSlots(
 
   const open = hmToMinutes(day.open);
   const close = hmToMinutes(day.close);
-  const breaks = (day.breaks ?? []).map((b) => ({
-    start: hmToMinutes(b.start),
-    end: hmToMinutes(b.end),
-  }));
-  const minStart = now + config.leadHours * 3600000;
-
-  // Ocupados = agendamentos ativos (não cancelados / no_show).
-  const busy = existing
-    .filter((a) => a.status !== "cancelled" && a.status !== "no_show")
-    .map((a) => ({ start: a.startAt, end: a.startAt + a.durationMin * 60000 }));
 
   const slots: Slot[] = [];
   for (let t = open; t + durationMin <= close; t += config.slotMinutes) {
-    const slotEndMin = t + durationMin;
-    // dentro de uma pausa?
-    if (breaks.some((b) => t < b.end && b.start < slotEndMin)) continue;
-
     const startAt = localToEpoch(dateStr, t, config.utcOffsetMinutes);
-    const endAt = startAt + durationMin * 60000;
-    if (startAt < minStart) continue; // respeita antecedência mínima
-    if (busy.some((b) => startAt < b.end && b.start < endAt)) continue; // ocupado
-
+    // Um horário só entra na lista se a MESMA regra usada na criação disser
+    // que ele é reservável agora.
+    if (slotBookability(config, startAt, durationMin, existing, now) !== null) continue;
     slots.push({ time: minutesToHM(t), startAt });
   }
   return slots;
@@ -375,6 +410,91 @@ async function queryCustomerAppointments(
 // IA (lib/ai/tools.ts) quanto pelas rotas do painel — centralizado aqui pra
 // não reimplementar a mesma checagem em cada lugar que cria/remarca.
 // `excludeId` evita que um agendamento colida "consigo mesmo" ao remarcar.
+// ---- DURAÇÃO: autoridade do BACKEND ----
+//
+// O modelo pode identificar QUAL serviço o cliente quer, mas nunca quantos
+// minutos ele dura — era isso que permitia listar horários com 60min e
+// validar a criação com 30min (ou vice-versa), fazendo as duas contas
+// discordarem.
+//
+// Limitação conhecida e deliberada: hoje não existe catálogo de serviços com
+// duração estruturada. `KnowledgeService.durationText` é texto livre ("40
+// min", "1h"), preenchido pelo comerciante. Interpretamos esse texto quando
+// ele é claro e caímos em `config.defaultDurationMin` quando não é — sem
+// criar um módulo de serviços novo. Duração individual confiável por serviço
+// fica para o roadmap.
+export function parseDurationText(text: string | null | undefined): number | null {
+  if (!text) return null;
+  const t = text.trim().toLowerCase();
+
+  // "1:30"
+  const relogio = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (relogio) return dentroDaFaixa(Number(relogio[1]) * 60 + Number(relogio[2]));
+
+  // "1h30", "1 h 30", "1h30min" — horas seguidas de minutos soltos. Precisa
+  // vir antes da leitura isolada de horas, senão "1h30" viraria só 60.
+  const horaEMinuto = t.match(/(\d+)\s*h(?:oras?)?\s*(\d{1,2})/);
+  if (horaEMinuto) return dentroDaFaixa(Number(horaEMinuto[1]) * 60 + Number(horaEMinuto[2]));
+
+  let total = 0;
+  const horas = t.match(/(\d+)\s*(h|hora)/);
+  const minutos = t.match(/(\d+)\s*(min|minuto)/);
+  if (horas) total += Number(horas[1]) * 60;
+  if (minutos) total += Number(minutos[1]);
+
+  // Só um número solto ("40") — assume minutos.
+  if (!total) {
+    const solto = t.match(/^(\d{1,3})$/);
+    if (solto) total = Number(solto[1]);
+  }
+  return dentroDaFaixa(total);
+}
+
+function dentroDaFaixa(min: number): number | null {
+  return min > 0 && min <= 8 * 60 ? min : null;
+}
+
+// Comparação de nome de serviço tolerante: o cliente (e o modelo) escrevem
+// "avaliacao" para um serviço cadastrado como "Avaliação".
+function chaveServico(nome: string): string {
+  return nome
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+}
+
+export function resolveServiceDuration(
+  config: ScheduleConfig,
+  services: KnowledgeService[] | undefined,
+  serviceName: string | undefined,
+): number {
+  if (serviceName && services?.length) {
+    const alvo = chaveServico(serviceName);
+    const achado =
+      services.find((s) => chaveServico(s.name) === alvo) ??
+      services.find((s) => chaveServico(s.name).includes(alvo) || alvo.includes(chaveServico(s.name)));
+    const parsed = parseDurationText(achado?.durationText);
+    if (parsed) return parsed;
+  }
+  return config.defaultDurationMin;
+}
+
+// Validação FINAL no momento da criação. Relê a agenda (protege contra
+// concorrência real: alguém pode ter reservado entre a listagem e a escolha)
+// e aplica exatamente a mesma regra da listagem.
+export async function assertBookable(
+  establishmentId: string,
+  config: ScheduleConfig,
+  startAt: number,
+  durationMin: number,
+  now = Date.now(),
+  excludeId?: string,
+): Promise<NotBookableReason | null> {
+  const existing = await listAppointments(establishmentId, startAt - 24 * 3600000, startAt + 48 * 3600000);
+  return slotBookability(config, startAt, durationMin, existing, now, excludeId);
+}
+
 export async function hasScheduleConflict(
   establishmentId: string,
   startAt: number,

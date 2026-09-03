@@ -16,7 +16,9 @@ import {
   computeSlots,
   createAppointment,
   localToEpoch,
-  hasScheduleConflict,
+  assertBookable,
+  resolveServiceDuration,
+  type NotBookableReason,
   findNextAppointment,
   updateAppointment,
   setStatus,
@@ -40,7 +42,18 @@ export interface ToolResult {
   ok: boolean;
   data?: unknown;
   error?: string;
+  // Motivo estruturado quando um horário não é reservável — o modelo
+  // comunica, mas quem decidiu foi o backend (ver slotBookability).
+  reasonCode?: NotBookableReason;
 }
+
+const NOT_BOOKABLE_MESSAGE: Record<NotBookableReason, string> = {
+  closed_day: "o estabelecimento não abre nesse dia; ofereça outro dia",
+  outside_hours: "esse horário está fora do expediente; ofereça um horário dentro do funcionamento",
+  during_break: "esse horário cai no intervalo de almoço; ofereça outro",
+  too_soon: "esse horário está muito próximo de agora (antecedência mínima); ofereça um mais adiante",
+  overlap: "esse horário acabou de ser ocupado; ofereça outro",
+};
 
 export interface ToolDefinition {
   name: string;
@@ -196,12 +209,12 @@ const findAvailableAppointments: ToolDefinition = {
   enabled: (ctx) => ctx.est.bot.bookingEnabled,
   schema: fn(
     "find_available_appointments",
-    "Retorna os horários livres REAIS de um dia. Use antes de oferecer qualquer horário — nunca chute.",
+    "Retorna os horários livres REAIS de um dia. Use antes de oferecer qualquer horário — nunca chute. Informe o serviço para que a duração correta seja aplicada.",
     {
       type: "object",
       properties: {
         date: { type: "string", description: "Data no formato YYYY-MM-DD" },
-        durationMin: { type: "number", description: "Duração em minutos (opcional; usa o padrão do estabelecimento)" },
+        serviceName: { type: "string", description: "Serviço desejado, como o cliente pediu" },
       },
       required: ["date"],
     },
@@ -212,12 +225,17 @@ const findAvailableAppointments: ToolDefinition = {
       return { ok: false, error: "date inválida (use YYYY-MM-DD)" };
     }
     const config = ctx.config!;
-    const duration = typeof args.durationMin === "number" ? args.durationMin : config.defaultDurationMin;
+    // Duração é decisão do BACKEND, nunca do modelo — ver
+    // resolveServiceDuration em lib/scheduling.ts.
+    const serviceName = typeof args.serviceName === "string" ? args.serviceName : undefined;
+    const duration = resolveServiceDuration(config, ctx.kb?.services, serviceName);
     const dayStart = localToEpoch(date, 0, config.utcOffsetMinutes);
     const existing = await listAppointments(ctx.est.id, dayStart, dayStart + 24 * 3600000);
     const slots = computeSlots(config, date, duration, existing).slice(0, 12);
     if (slots.length === 0) return { ok: true, data: { date, slots: [], note: "Sem horários livres neste dia." } };
-    return { ok: true, data: { date, slots } };
+    // `durationMin` volta só como informação: quem cria resolve de novo pela
+    // mesma função, então listagem e criação não têm como divergir.
+    return { ok: true, data: { date, durationMin: duration, slots } };
   },
 };
 
@@ -230,7 +248,6 @@ const createAppointmentTool: ToolDefinition = {
     properties: {
       serviceName: { type: "string" },
       startAt: { type: "number", description: "epoch em ms de um horário retornado por find_available_appointments" },
-      durationMin: { type: "number" },
       contactName: { type: "string", description: "nome do cliente, se souber" },
     },
     required: ["serviceName", "startAt"],
@@ -240,11 +257,14 @@ const createAppointmentTool: ToolDefinition = {
       return { ok: false, error: "serviceName e startAt são obrigatórios" };
     }
     const config = ctx.config!;
-    const duration = typeof args.durationMin === "number" ? args.durationMin : config.defaultDurationMin;
+    // MESMA resolução de duração usada na listagem — é isso que garante que
+    // um horário oferecido continue reservável aqui.
+    const duration = resolveServiceDuration(config, ctx.kb?.services, args.serviceName);
 
-    if (await hasScheduleConflict(ctx.est.id, args.startAt, duration)) {
-      return { ok: false, error: "esse horário acabou de ser ocupado; ofereça outro" };
-    }
+    // Validação final com a MESMA regra da listagem, relendo a agenda (protege
+    // contra concorrência real entre a oferta e a escolha).
+    const reason = await assertBookable(ctx.est.id, config, args.startAt, duration);
+    if (reason) return { ok: false, error: NOT_BOOKABLE_MESSAGE[reason], reasonCode: reason };
 
     await createAppointment(ctx.est.id, {
       contactPhone: ctx.contactPhone,
@@ -404,7 +424,6 @@ const rescheduleAppointment: ToolDefinition = {
       type: "object",
       properties: {
         newStartAt: { type: "number", description: "epoch em ms do novo horário, vindo de find_available_appointments" },
-        newDurationMin: { type: "number" },
       },
       required: ["newStartAt"],
     },
@@ -414,10 +433,12 @@ const rescheduleAppointment: ToolDefinition = {
     const appt = await findNextAppointment(ctx.est.id, normalizePhone(ctx.contactPhone));
     if (!appt) return { ok: false, error: "nenhum agendamento ativo encontrado para remarcar" };
 
-    const duration = typeof args.newDurationMin === "number" ? args.newDurationMin : appt.durationMin;
-    if (await hasScheduleConflict(ctx.est.id, args.newStartAt, duration, appt.id)) {
-      return { ok: false, error: "esse horário acabou de ser ocupado; ofereça outro" };
-    }
+    // Duração do BACKEND (pelo serviço do próprio agendamento), nunca do
+    // modelo — e a MESMA regra de reservabilidade da listagem/criação, senão
+    // uma remarcação poderia cair dentro do almoço ou fora do expediente.
+    const duration = resolveServiceDuration(ctx.config!, ctx.kb?.services, appt.serviceName);
+    const reason = await assertBookable(ctx.est.id, ctx.config!, args.newStartAt, duration, Date.now(), appt.id);
+    if (reason) return { ok: false, error: NOT_BOOKABLE_MESSAGE[reason], reasonCode: reason };
 
     await updateAppointment(ctx.est.id, appt.id, {
       startAt: args.newStartAt,
