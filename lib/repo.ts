@@ -991,10 +991,37 @@ export async function clearConversations(
 
 // Dedupe: a Meta reenvia webhooks. Guardamos os IDs já processados por
 // alguns minutos pra não responder duas vezes à mesma mensagem.
+// Aquisição ATÔMICA do id da mensagem. O par get()+set() anterior não era
+// atômico: a Meta reentrega rápido e o Vercel roda as invocações em
+// paralelo, então as duas liam "não existe" e as duas processavam —
+// resposta duplicada e, no pior caso, ferramenta de escrita executada duas
+// vezes.
+//
+// `create()` falha com ALREADY_EXISTS (código gRPC 6) quando o documento já
+// existe; a checagem e a escrita acontecem numa única operação no servidor,
+// então duas chamadas concorrentes nunca adquirem o mesmo id.
+//
+// Falha DEPOIS da aquisição: o id permanece gravado e a reentrega da Meta é
+// descartada. É de propósito — a mensagem já pode ter sido enviada ao
+// cliente antes do erro, e liberar a trava reprocessaria (resposta dobrada,
+// possível agendamento duplicado). Mantém o mesmo comportamento de antes
+// desta correção (at-most-once) em vez de trocá-lo por um pior.
 export async function alreadyProcessed(waMessageId: string): Promise<boolean> {
   const ref = db.collection("_processed_wa_messages").doc(waMessageId);
-  const snap = await ref.get();
-  if (snap.exists) return true;
-  await ref.set({ at: Date.now() });
-  return false;
+  try {
+    await ref.create({ at: Date.now() });
+    return false; // adquirido agora por ESTA execução
+  } catch (err) {
+    if (isAlreadyExists(err)) return true; // outra execução já adquiriu
+    throw err; // erro real de infraestrutura — não engolir
+  }
+}
+
+// ALREADY_EXISTS do Firestore: código gRPC 6. Checa também a mensagem porque
+// o emulador/algumas versões do SDK só trazem o texto.
+function isAlreadyExists(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  if (!e) return false;
+  if (e.code === 6 || e.code === "already-exists") return true;
+  return typeof e.message === "string" && e.message.includes("ALREADY_EXISTS");
 }
