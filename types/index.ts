@@ -280,6 +280,12 @@ export type IntentType =
   | "schedule_appointment"
   | "reschedule_appointment"
   | "cancel_appointment"
+  // Pergunta sobre um agendamento QUE JÁ EXISTE ("tenho consulta hoje?",
+  // "qual horário marquei?"). Diferente de schedule_appointment: aqui o
+  // cliente não quer marcar nada, quer saber o que já está marcado. Esta
+  // intenção OBRIGA o backend a consultar a agenda antes de gerar a
+  // resposta (ver lib/ai/brain.ts) — não é uma sugestão ao modelo.
+  | "check_appointment"
   | "ask_price"
   | "ask_hours"
   | "ask_address"

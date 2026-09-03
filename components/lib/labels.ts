@@ -22,6 +22,7 @@ export const INTENT_LABEL: Record<IntentType, string> = {
   schedule_appointment: "Quer agendar",
   reschedule_appointment: "Quer remarcar",
   cancel_appointment: "Quer cancelar",
+  check_appointment: "Consultou agendamento",
   ask_price: "Perguntou preço",
   ask_hours: "Perguntou horário",
   ask_address: "Perguntou endereço",

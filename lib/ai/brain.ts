@@ -150,6 +150,7 @@ function buildSystemPrompt(
   customerProfile: CustomerProfile | null,
   task: ConversationTask | null,
   intent: Intent,
+  appointmentLookup: { ok: boolean; data?: unknown } | null,
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
@@ -221,7 +222,66 @@ function buildSystemPrompt(
     sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
   }
 
-  return sections.join("\n");
+  // Resultado da consulta OBRIGATÓRIA à agenda (intenção check_appointment).
+  // Os dados já estão aqui: não há nada a "verificar depois".
+  if (appointmentLookup) {
+    sections.push(
+      "",
+      "=== AGENDA REAL DESTE CLIENTE (consultada agora) ===",
+      appointmentLookup.ok
+        ? JSON.stringify(appointmentLookup.data)
+        : "A consulta à agenda FALHOU. Não invente nenhum horário: diga que não conseguiu checar agora e transfira para um atendente.",
+      appointmentLookup.ok
+        ? "Estes são os dados reais da agenda, já consultados. Responda AGORA com base neles, citando serviço e horário. É PROIBIDO dizer que vai verificar, pedir um momento ou mandar aguardar — a consulta já foi feita e o resultado está acima."
+        : "",
+    );
+  }
+
+  return sections.filter((s) => s !== "").join("\n");
+}
+
+// Frases que prometem uma verificação futura que NUNCA vai acontecer (a
+// execução termina quando a resposta é enviada). Usadas para barrar essa
+// resposta quando os dados já estavam disponíveis.
+// "aguardando" NÃO entra: é legítimo descrevendo o status do agendamento
+// ("aguardando sua confirmação"). Só a forma imperativa ("aguarde") é
+// enrolação. Regex frouxa demais aqui descartaria respostas corretas.
+const STALLING_PATTERNS =
+  /\b(vou verificar|vou checar|vou consultar|vou dar uma olhada|deixa eu (ver|verificar|conferir|checar)|um momento|um instante|aguarde|já (te )?retorno|já volto|volto já|verifico e (te )?aviso|te retorno|te aviso em seguida)\b/i;
+
+export function looksLikeStalling(reply: string): boolean {
+  return STALLING_PATTERNS.test(reply);
+}
+
+// Resposta determinística montada a partir dos dados REAIS da agenda. Usada
+// quando o modelo enrola mesmo tendo os dados no prompt — assim "aguarde" é
+// estruturalmente impossível neste fluxo, e não uma regra que o modelo pode
+// ignorar.
+export function composeAppointmentReply(data: unknown): string | null {
+  const parsed = data as
+    | { appointments?: { serviceName?: string; day?: string; time?: string; date?: string; status?: string }[] }
+    | undefined;
+  const appointments = parsed?.appointments;
+  if (!Array.isArray(appointments)) return null;
+
+  if (appointments.length === 0) {
+    return "Procurei aqui e não encontrei nenhum horário marcado no seu nome. Quer que eu veja os horários disponíveis pra você?";
+  }
+
+  const partes = appointments.map((a) => {
+    const quando = a.day === "hoje" || a.day === "amanhã" ? a.day : a.date;
+    const servico = a.serviceName ? `${a.serviceName} ` : "";
+    const pendente = a.status === "pending" ? " (aguardando sua confirmação)" : "";
+    return `${servico}${quando} às ${a.time}${pendente}`;
+  });
+
+  const lista = partes.length === 1 ? partes[0] : partes.map((p) => `• ${p}`).join("\n");
+  const temPendente = appointments.some((a) => a.status === "pending");
+  const fecho = temPendente ? " Posso confirmar sua presença?" : "";
+
+  return appointments.length === 1
+    ? `Sim! Seu horário está marcado: ${lista}.${fecho}`
+    : `Você tem estes horários marcados:\n${lista}${fecho}`;
 }
 
 export interface BrainInput {
@@ -273,19 +333,35 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile };
   const tools = toolsFor(toolCtx);
 
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(est, kb, now.human, customerProfile, task, intent) },
-    ...history.map((m) => ({
-      role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
-      content: m.text,
-    })),
-  ];
-
   let booked = false;
   let rescheduled = false;
   let cancelled = false;
   let handoffRequested = false;
   const toolCalls: ToolCallRecord[] = [];
+
+  // ---- Consulta OBRIGATÓRIA à fonte de verdade ----
+  // Quando a mensagem é deterministicamente uma pergunta sobre um
+  // agendamento existente, o backend consulta a agenda ANTES de gerar a
+  // resposta e injeta o resultado no prompt. Não é uma instrução ao modelo:
+  // com tool_choice em "auto" ele podia (e em Production, fez) responder em
+  // texto sem chamar ferramenta nenhuma — respondeu "vou verificar, um
+  // momento" com um Appointment real existindo na agenda.
+  let appointmentLookup: Awaited<ReturnType<typeof runTool>> | null = null;
+  if (intent.type === "check_appointment") {
+    appointmentLookup = await runTool("get_customer_appointments", {}, toolCtx);
+    toolCalls.push({ name: "get_customer_appointments", args: {} });
+  }
+
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content: buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup),
+    },
+    ...history.map((m) => ({
+      role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
+      content: m.text,
+    })),
+  ];
 
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
@@ -324,17 +400,47 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     let reply = msg.content?.trim() ?? "";
-    const handoff = handoffRequested || reply.includes(HANDOFF_TOKEN);
+    let handoff = handoffRequested || reply.includes(HANDOFF_TOKEN);
     if (reply.includes(HANDOFF_TOKEN)) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
+
+    // Trava determinística do fluxo de consulta de agenda: se a consulta deu
+    // certo, os dados JÁ estão disponíveis — enrolar ("vou verificar", "um
+    // momento") ou transferir é sempre errado aqui. Substitui por uma
+    // resposta montada a partir do Appointment real, em vez de confiar que o
+    // modelo obedeceu ao prompt (em Production ele não obedeceu).
+    if (appointmentLookup?.ok) {
+      if (!reply || looksLikeStalling(reply)) {
+        const composed = composeAppointmentReply(appointmentLookup.data);
+        if (composed) {
+          reply = composed;
+          handoff = false; // a consulta funcionou: não há motivo para transferir
+        }
+      }
+    } else if (appointmentLookup && !appointmentLookup.ok) {
+      // A consulta à agenda falhou de verdade — aí sim é caso de humano,
+      // dito claramente, sem prometer voltar depois.
+      reply = "Não consegui checar a agenda agora. Vou chamar uma pessoa da equipe pra te confirmar isso, tudo bem?";
+      handoff = true;
+    }
+
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
     return { reply, handoff, booked, rescheduled, cancelled, toolCalls };
   }
 
-  // Estouro do loop de ferramentas sem resposta final. A mensagem anterior
-  // aqui ("já te retorno") era uma promessa VAZIA: nada continuava depois do
-  // return, e o cliente ficava esperando para sempre. Agora transfere de
-  // verdade — handoff: true faz o webhook mudar a conversa para "handoff" e
-  // avisa que alguém vai assumir.
+  // Estouro do loop de ferramentas sem resposta final. Se a consulta de
+  // agenda tinha dado certo, responde com o dado real em vez de transferir —
+  // a informação estava disponível o tempo todo.
+  if (appointmentLookup?.ok) {
+    const composed = composeAppointmentReply(appointmentLookup.data);
+    if (composed) {
+      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls };
+    }
+  }
+
+  // A mensagem anterior aqui ("já te retorno") era uma promessa VAZIA: nada
+  // continuava depois do return, e o cliente ficava esperando para sempre.
+  // Agora transfere de verdade — handoff: true faz o webhook mudar a conversa
+  // para "handoff" e avisa que alguém vai assumir.
   return {
     reply: "Vou chamar uma pessoa da equipe para te ajudar com isso, tudo bem? Já já alguém te responde por aqui.",
     handoff: true,
