@@ -17,13 +17,14 @@ const AMANHA_09H = HOJE_09H + 24 * 3600000;
 // agendamento que já passou HOJE continua sendo encontrado).
 const AGORA = new Date("2026-09-03T17:00:00.000Z").getTime();
 
-const listCustomerAppointments = vi.fn();
+const listActiveCustomerAppointments = vi.fn();
 const findNextAppointment = vi.fn();
 const getAppointment = vi.fn();
 const setStatus = vi.fn();
 
 vi.mock("@/lib/scheduling", () => ({
-  listCustomerAppointments: (...a: unknown[]) => listCustomerAppointments(...a),
+  listActiveCustomerAppointments: (...a: unknown[]) => listActiveCustomerAppointments(...a),
+  listCustomerAppointments: vi.fn(async () => []),
   findNextAppointment: (...a: unknown[]) => findNextAppointment(...a),
   getAppointment: (...a: unknown[]) => getAppointment(...a),
   setStatus: (...a: unknown[]) => setStatus(...a),
@@ -90,7 +91,7 @@ beforeEach(() => {
 
 describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   it("(1) 'tenho consulta hoje?' devolve o Appointment real de hoje às 09:00", async () => {
-    listCustomerAppointments.mockResolvedValue([appointment()]);
+    listActiveCustomerAppointments.mockResolvedValue([appointment()]);
 
     const result = await runTool("get_customer_appointments", {}, ctx);
 
@@ -108,16 +109,16 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   });
 
   it("busca a partir do INÍCIO do dia local — um horário das 09:00 ainda aparece às 14:00", async () => {
-    listCustomerAppointments.mockResolvedValue([appointment()]);
+    listActiveCustomerAppointments.mockResolvedValue([appointment()]);
     await runTool("get_customer_appointments", {}, ctx);
 
-    const [, , from] = listCustomerAppointments.mock.calls[0] as [string, string, number];
+    const [, , from] = listActiveCustomerAppointments.mock.calls[0] as [string, string, number];
     expect(from).toBe(startOfLocalDay(AGORA, OFFSET));
     expect(from).toBeLessThan(HOJE_09H);
   });
 
   it("(2) status pending é reportado como reservado aguardando confirmação — nunca como confirmado nem inexistente", async () => {
-    listCustomerAppointments.mockResolvedValue([appointment({ status: "pending" })]);
+    listActiveCustomerAppointments.mockResolvedValue([appointment({ status: "pending" })]);
 
     const result = await runTool("get_customer_appointments", {}, ctx);
     const data = result.data as { appointments: { status: string; statusMeaning: string }[] };
@@ -128,7 +129,7 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   });
 
   it("(3) 'qual horário marquei?' devolve dados estruturados da fonte de verdade", async () => {
-    listCustomerAppointments.mockResolvedValue([appointment()]);
+    listActiveCustomerAppointments.mockResolvedValue([appointment()]);
     const result = await runTool("get_customer_appointments", {}, ctx);
     const data = result.data as { appointments: Record<string, unknown>[] };
 
@@ -138,7 +139,7 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   });
 
   it("(4) agendamento de hoje e de amanhã não são confundidos", async () => {
-    listCustomerAppointments.mockResolvedValue([
+    listActiveCustomerAppointments.mockResolvedValue([
       appointment({ id: "hoje", startAt: HOJE_09H }),
       appointment({ id: "amanha", startAt: AMANHA_09H }),
     ]);
@@ -151,7 +152,7 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   });
 
   it("(6) sem agendamento: devolve lista vazia e uma nota — nunca inventa horário", async () => {
-    listCustomerAppointments.mockResolvedValue([]);
+    listActiveCustomerAppointments.mockResolvedValue([]);
 
     const result = await runTool("get_customer_appointments", {}, ctx);
     const data = result.data as { appointments: unknown[]; note?: string };
@@ -162,13 +163,18 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
   });
 
   it("cancelados e faltas não são apresentados como agendamento ativo", async () => {
-    listCustomerAppointments.mockResolvedValue([
-      appointment({ id: "cancelado", status: "cancelled" }),
-      appointment({ id: "faltou", status: "no_show" }),
-    ]);
+    // O filtro de status desceu para lib/scheduling.ts
+    // (listActiveCustomerAppointments): mantê-lo aqui, DEPOIS do limit da
+    // query, era o bug — N cancelados consumiam o limite e escondiam um
+    // agendamento ativo. Aqui provamos que a ferramenta usa a leitura que
+    // garante o filtro; que ela filtra de fato está em
+    // lib/scheduling.appointmentLookup.test.ts.
+    listActiveCustomerAppointments.mockResolvedValue([]);
 
     const result = await runTool("get_customer_appointments", {}, ctx);
     const data = result.data as { appointments: unknown[] };
+
+    expect(listActiveCustomerAppointments).toHaveBeenCalledTimes(1);
     expect(data.appointments).toEqual([]);
   });
 });

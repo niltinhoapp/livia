@@ -11,7 +11,7 @@ import type OpenAI from "openai";
 import type { Appointment, Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile } from "@/types";
 import {
   listAppointments,
-  listCustomerAppointments,
+  listActiveCustomerAppointments,
   getAppointment,
   computeSlots,
   createAppointment,
@@ -292,8 +292,9 @@ const getCustomerAppointments: ToolDefinition = {
     // aparecendo quando o cliente pergunta às 14:00.
     const from = args.includePast === false ? Date.now() : startOfLocalDay(Date.now(), offset);
 
-    const appointments = await listCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), from);
-    const active = appointments.filter((a) => a.status !== "cancelled" && a.status !== "no_show");
+    // listActiveCustomerAppointments já pagina e filtra: cancelamentos não
+    // consomem o limite nem escondem um agendamento ativo.
+    const active = await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), from);
 
     if (active.length === 0) {
       return {
