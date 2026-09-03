@@ -3,7 +3,7 @@
 // para consultar horários livres e criar agendamentos sozinha, durante a
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import OpenAI from "openai";
-import type { Establishment, KnowledgeBase, Message } from "@/types";
+import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask } from "@/types";
 import {
   getScheduleConfig,
   listAppointments,
@@ -11,6 +11,7 @@ import {
   createAppointment,
   localToEpoch,
 } from "@/lib/scheduling";
+import type { ToolCallRecord } from "@/lib/ai/taskState";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -88,7 +89,62 @@ function nowLocal(offsetMin: number): { dateStr: string; human: string } {
   };
 }
 
-function buildSystemPrompt(est: Establishment, kb: KnowledgeBase | null, nowHuman: string): string {
+// Fatos do cliente que a Livia já sabe, vindos SOMENTE do perfil persistido
+// (lib/repo.ts: upsertCustomerProfile, sempre escrito com dado
+// determinístico — nunca inferência da IA). Isto é uma fonte de verdade,
+// igual à base de conhecimento: a IA deve usar o que está aqui, não
+// perguntar de novo nem contradizer sem o cliente dizer o contrário agora.
+function customerProfileToText(profile: CustomerProfile | null): string | null {
+  if (!profile) return null;
+  const parts: string[] = [];
+  if (profile.name) parts.push(`Nome: ${profile.name}`);
+  if (profile.lastService) parts.push(`Último serviço: ${profile.lastService}`);
+  if (profile.preferredProfessional) parts.push(`Profissional preferido: ${profile.preferredProfessional}`);
+  if (profile.preferredTime) parts.push(`Horário preferido: ${profile.preferredTime}`);
+  if (profile.frequentAddress) parts.push(`Endereço frequente: ${profile.frequentAddress}`);
+  if (parts.length === 0) return null;
+  return parts.join("\n");
+}
+
+const TASK_STATE_LABEL: Record<ConversationTask["state"], string> = {
+  collect_service: "ainda precisa descobrir qual serviço o cliente quer",
+  collect_date: "ainda precisa descobrir o dia/horário desejado",
+  check_availability: "estava consultando horários livres",
+  offer_options: "já ofereceu horários e aguarda o cliente escolher",
+  confirm: "aguardando confirmação final do cliente antes de criar o agendamento",
+  create_appointment: "acabou de tentar criar o agendamento",
+};
+
+const TASK_TYPE_LABEL: Record<ConversationTask["type"], string> = {
+  schedule_appointment: "agendar um novo horário",
+  reschedule_appointment: "remarcar um horário existente",
+  cancel_appointment: "cancelar um horário existente",
+};
+
+// Continuidade de tarefa (Fase 4): sem isto, cada mensagem reinicia o
+// raciocínio do zero e a IA pode voltar a perguntar o que o cliente já
+// respondeu antes.
+function taskToText(task: ConversationTask | null): string | null {
+  if (!task) return null;
+  const lines = [
+    `Há uma tarefa em andamento: ${TASK_TYPE_LABEL[task.type]}.`,
+    `Etapa atual: ${TASK_STATE_LABEL[task.state]}.`,
+  ];
+  const collected = Object.entries(task.collectedData);
+  if (collected.length > 0) {
+    lines.push(`Já coletado: ${collected.map(([k, v]) => `${k}=${v}`).join(", ")}.`);
+  }
+  lines.push("Continue de onde parou — não recomece as perguntas já respondidas.");
+  return lines.join("\n");
+}
+
+function buildSystemPrompt(
+  est: Establishment,
+  kb: KnowledgeBase | null,
+  nowHuman: string,
+  customerProfile: CustomerProfile | null,
+  task: ConversationTask | null,
+): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
   const rules: string[] = [
@@ -124,7 +180,19 @@ function buildSystemPrompt(est: Establishment, kb: KnowledgeBase | null, nowHuma
   rules.push(
     `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e inclua o marcador ${HANDOFF_TOKEN} ao final (ele não aparece para o cliente).`,
   );
-  return [rules.join("\n"), "", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb)].join("\n");
+  const sections = [rules.join("\n"), "", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb)];
+
+  const profileText = customerProfileToText(customerProfile);
+  if (profileText) {
+    sections.push("", "=== O QUE VOCÊ JÁ SABE SOBRE ESTE CLIENTE ===", profileText);
+  }
+
+  const taskText = taskToText(task);
+  if (taskText) {
+    sections.push("", "=== TAREFA EM ANDAMENTO ===", taskText);
+  }
+
+  return sections.join("\n");
 }
 
 // ---- Ferramentas expostas à IA (só quando bookingEnabled) ----
@@ -169,16 +237,25 @@ export interface BrainInput {
   history: Message[]; // ordem cronológica, já com a mensagem atual do cliente
   contactPhone: string;
   contactName: string | null;
+  // Fase 1 e 4: memória do cliente e tarefa em andamento, já carregadas pelo
+  // chamador (webhook) — brain.ts só consome, nunca lê/grava Firestore
+  // diretamente, mantendo esta função sem I/O de persistência.
+  customerProfile: CustomerProfile | null;
+  task: ConversationTask | null;
 }
 
 export interface BrainResult {
   reply: string;
   handoff: boolean;
   booked: boolean;
+  // Ferramentas efetivamente chamadas nesta rodada, em ordem — usado por
+  // lib/ai/taskState.ts para derivar o próximo estado da tarefa (Fase 4) sem
+  // duplicar a lógica de quando cada ferramenta roda.
+  toolCalls: ToolCallRecord[];
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset (para contexto de data e para as ferramentas). Sem booking, evita
@@ -188,7 +265,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const now = nowLocal(offset);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(est, kb, now.human) },
+    { role: "system", content: buildSystemPrompt(est, kb, now.human, customerProfile, task) },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
       content: m.text,
@@ -196,6 +273,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   ];
 
   let booked = false;
+  const toolCalls: ToolCallRecord[] = [];
 
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
@@ -216,8 +294,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         try {
           const args = JSON.parse(tc.function.arguments || "{}");
           if (tc.function.name === "check_availability") {
+            toolCalls.push({ name: "check_availability", args });
             result = await runCheckAvailability(est, config!, args);
           } else if (tc.function.name === "create_appointment") {
+            toolCalls.push({ name: "create_appointment", args });
             const r = await runCreateAppointment(est, config!, args, contactPhone, contactName, offset);
             if (r.ok) booked = true;
             result = r;
@@ -236,13 +316,14 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     const handoff = reply.includes(HANDOFF_TOKEN);
     if (handoff) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked };
+    return { reply, handoff, booked, toolCalls };
   }
 
   return {
     reply: "Deixa eu confirmar isso com a equipe e já te retorno, tudo bem?",
     handoff: false,
     booked,
+    toolCalls,
   };
 }
 

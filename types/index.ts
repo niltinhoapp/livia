@@ -173,6 +173,16 @@ export interface Conversation {
   status: "bot" | "handoff" | "human" | "closed";
   lastMessageAt: number;
   createdAt: number;
+  // Última intenção detectada na mensagem mais recente do cliente.
+  lastIntent?: IntentType;
+  // Etapa da tarefa em andamento (ex.: agendamento) — ausente quando não há
+  // tarefa ativa.
+  task?: ConversationTask;
+  // Resumo curto e estruturado, gerado só em momentos relevantes (handoff ou
+  // agendamento concluído — nunca a cada mensagem, por custo). Alimenta o
+  // atendimento humano e a continuidade numa próxima conversa.
+  summary?: string;
+  summaryUpdatedAt?: number;
 }
 
 // ---- Agenda ----
@@ -219,6 +229,72 @@ export interface ScheduleConfig {
   // Template aprovado usado no lembrete (envio fora da janela de 24h exige HSM).
   reminderTemplateName: string | null;
   reminderTemplateLang: string;
+  updatedAt: number;
+}
+
+// ---- Inteligência: memória do cliente, intenção e estado da tarefa ----
+// (docs/ORDEM-IMPLEMENTACAO-INTELIGENCIA.md, Fases 1-5)
+
+// Perfil persistente por cliente, dentro de cada tenant — o que a Livia
+// "lembra" de um cliente recorrente. Guarda FATOS, nunca o histórico de
+// conversa (isso já vive em Conversation/Message). Todo campo aqui só é
+// escrito com dado determinístico (nome do contato do WhatsApp, serviço de
+// um agendamento realmente criado, intenção de um classificador
+// determinístico) — nunca por inferência da IA, que poderia registrar um
+// "fato" errado como se fosse confiável. Documento: establishments/{id}/customers/{telefone normalizado}.
+export interface CustomerProfile {
+  phone: string; // telefone normalizado, mesmo id de Conversation
+  establishmentId: string;
+  name: string | null;
+  preferredProfessional: string | null;
+  preferredTime: string | null;
+  frequentAddress: string | null;
+  lastService: string | null;
+  lastIntent: IntentType | null;
+  notes: string | null; // observação livre, só editável manualmente (painel futuro) — nunca escrita pela IA
+  lastInteractionAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Objetivo principal detectado numa mensagem do cliente. Classificação
+// DETERMINÍSTICA (palavras-chave/regex em lib/ai/intent.ts) — sem custo de
+// IA. `confidence` reflete a força do sinal léxico, não uma probabilidade de
+// modelo.
+export type IntentType =
+  | "schedule_appointment"
+  | "reschedule_appointment"
+  | "cancel_appointment"
+  | "ask_price"
+  | "ask_hours"
+  | "ask_address"
+  | "human_handoff"
+  | "complaint"
+  | "general_question";
+
+export interface Intent {
+  type: IntentType;
+  confidence: number; // 0–1
+  entities: Record<string, string>;
+}
+
+// Em qual etapa de uma tarefa em andamento (hoje só agendamento) a conversa
+// está — permite continuar sem recomeçar do zero numa mensagem seguinte.
+// Persistido em Conversation.task; limpo quando a tarefa conclui (agendamento
+// criado) ou é abandonada por uma intenção nova incompatível.
+export type TaskState =
+  | "collect_service"
+  | "collect_date"
+  | "check_availability"
+  | "offer_options"
+  | "confirm"
+  | "create_appointment";
+
+export interface ConversationTask {
+  type: "schedule_appointment" | "reschedule_appointment" | "cancel_appointment";
+  state: TaskState;
+  collectedData: Record<string, string | number>;
+  missingData: string[];
   updatedAt: number;
 }
 

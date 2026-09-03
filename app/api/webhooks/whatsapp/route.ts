@@ -21,13 +21,21 @@ import {
   loadConversation,
   appendMessage,
   setConversationStatus,
+  setConversationIntent,
+  setConversationTask,
+  setConversationSummary,
+  getCustomerProfile,
+  upsertCustomerProfile,
   alreadyProcessed,
 } from "@/lib/repo";
 import { sendText, markAsRead } from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
+import { detectIntent } from "@/lib/ai/intent";
+import { deriveTaskState } from "@/lib/ai/taskState";
+import { summarizeConversation } from "@/lib/ai/summarize";
 import { findNextAppointment, setStatus } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
-import type { Establishment, EstablishmentWhatsapp } from "@/types";
+import type { Establishment, EstablishmentWhatsapp, ConversationTask } from "@/types";
 
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
@@ -166,16 +174,50 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     { id: msg.id ?? "cur", role: "customer" as const, text: customerText, at: Date.now() },
   ];
 
-  const { reply, handoff } = await think({
+  // Fase 3 (determinística, sem custo de IA) + Fase 1: carregados ANTES da
+  // IA para virarem contexto do prompt (fonte de verdade sobre o cliente e
+  // sobre em que etapa da tarefa a conversa está — Fase 4/5).
+  const detectedIntent = detectIntent(customerText);
+  const customerProfile = await getCustomerProfile(est.id, contactPhone);
+  const existingTask: ConversationTask | null = conversation.task ?? null;
+
+  const { reply, handoff, booked, toolCalls } = await think({
     est,
     kb,
     history: historyForAI,
     contactPhone,
     contactName,
+    customerProfile,
+    task: existingTask,
   });
 
   const sent = await sendText(wa, est.id, contactPhone, reply);
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
+
+  // Fase 4: deriva e persiste o próximo estado da tarefa a partir do que a
+  // IA realmente fez nesta rodada — nunca do que ela disse que faria.
+  const nextTask = deriveTaskState({
+    existingTask,
+    intent: detectedIntent,
+    toolCalls,
+    booked,
+  });
+  await setConversationIntent(est.id, conversation.id, detectedIntent.type);
+  await setConversationTask(est.id, conversation.id, nextTask);
+
+  // Fase 1: só campos determinísticos — nome do cartão de contato do
+  // WhatsApp, intenção do classificador, e o serviço de um agendamento
+  // REALMENTE criado agora (nunca um palpite da IA sobre o que o cliente
+  // quer).
+  const bookedServiceName = booked
+    ? toolCalls.find((t) => t.name === "create_appointment" && typeof t.args.serviceName === "string")?.args
+        .serviceName as string | undefined
+    : undefined;
+  await upsertCustomerProfile(est.id, contactPhone, {
+    name: contactName ?? undefined,
+    lastIntent: detectedIntent.type,
+    lastService: bookedServiceName,
+  });
 
   if (handoff) {
     // "handoff" != "human": a Livia identificou que precisa de atendente e
@@ -183,6 +225,15 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     // em "Assumir conversa" em /painel/conversas vira "human" de verdade.
     await setConversationStatus(est.id, conversation.id, "handoff");
     // TODO: notificar o dono/atendente (push, e-mail ou painel).
+  }
+
+  // Fase 2: resumo só nos momentos relevantes (handoff ou agendamento
+  // concluído) — nunca a cada mensagem, pelo custo de mais uma chamada de IA.
+  if (handoff || booked) {
+    const summary = await summarizeConversation(contactName, historyForAI, {
+      kind: handoff ? "handoff" : "booked",
+    });
+    if (summary) await setConversationSummary(est.id, conversation.id, summary);
   }
 }
 

@@ -14,6 +14,9 @@ import type {
   Conversation,
   Message,
   MessageRole,
+  CustomerProfile,
+  ConversationTask,
+  IntentType,
 } from "@/types";
 
 export function defaultBotConfig(): BotConfig {
@@ -518,6 +521,69 @@ export async function saveKnowledgeBase(
   return kb;
 }
 
+// ---- Memória do cliente (Fase 1) ----
+// establishments/{id}/customers/{telefone normalizado} — mesmo id usado por
+// Conversation, então os dois documentos sempre correspondem ao mesmo
+// contato dentro do tenant.
+
+export async function getCustomerProfile(
+  establishmentId: string,
+  phone: string,
+): Promise<CustomerProfile | null> {
+  const id = normalizePhone(phone);
+  const doc = await sub(establishmentId, "customers").doc(id).get();
+  return doc.exists ? (doc.data() as CustomerProfile) : null;
+}
+
+// Patch determinístico: só campos que o CHAMADOR já sabe com certeza (nome
+// vindo do cartão de contato do WhatsApp, serviço de um agendamento
+// realmente criado, intenção do classificador determinístico). Esta função
+// não julga a qualidade do dado — quem chama é responsável por nunca passar
+// uma inferência fraca da IA aqui. `undefined` num campo significa "não
+// atualizar", nunca "apagar" — um dado confiável já salvo não é substituído
+// por ausência de informação numa mensagem posterior.
+export async function upsertCustomerProfile(
+  establishmentId: string,
+  phone: string,
+  patch: Partial<
+    Pick<
+      CustomerProfile,
+      "name" | "preferredProfessional" | "preferredTime" | "frequentAddress" | "lastService" | "lastIntent"
+    >
+  >,
+): Promise<void> {
+  const id = normalizePhone(phone);
+  const ref = sub(establishmentId, "customers").doc(id);
+  const now = Date.now();
+  const snap = await ref.get();
+
+  const fields: Record<string, unknown> = { lastInteractionAt: now, updatedAt: now };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) fields[key] = value;
+  }
+
+  if (snap.exists) {
+    await ref.update(fields);
+    return;
+  }
+
+  const profile: CustomerProfile = {
+    phone: id,
+    establishmentId,
+    name: patch.name ?? null,
+    preferredProfessional: patch.preferredProfessional ?? null,
+    preferredTime: patch.preferredTime ?? null,
+    frequentAddress: patch.frequentAddress ?? null,
+    lastService: patch.lastService ?? null,
+    lastIntent: patch.lastIntent ?? null,
+    notes: null,
+    lastInteractionAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await ref.set(profile);
+}
+
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens
 // pra dar contexto à IA.
 export async function loadConversation(
@@ -586,6 +652,44 @@ export async function setConversationStatus(
   await sub(establishmentId, "conversations")
     .doc(conversationId)
     .update({ status });
+}
+
+// Grava a intenção detectada (determinística, ver lib/ai/intent.ts) na
+// mensagem mais recente da conversa. Não é uma escrita "importante" o
+// suficiente para uma transação — perder uma atualização por corrida rara
+// aqui não tem efeito prático (a próxima mensagem já sobrescreve).
+export async function setConversationIntent(
+  establishmentId: string,
+  conversationId: string,
+  intent: IntentType,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ lastIntent: intent });
+}
+
+// Estado da tarefa em andamento (Fase 4) — `task: null` limpa o campo
+// (tarefa concluída ou nunca iniciada).
+export async function setConversationTask(
+  establishmentId: string,
+  conversationId: string,
+  task: ConversationTask | null,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ task: task ?? FieldValue.delete() });
+}
+
+// Resumo estruturado (Fase 2) — só chamado nos gatilhos definidos (handoff,
+// agendamento concluído), nunca por mensagem.
+export async function setConversationSummary(
+  establishmentId: string,
+  conversationId: string,
+  summary: string,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ summary, summaryUpdatedAt: Date.now() });
 }
 
 // Lista as conversas do estabelecimento pra tela /painel/conversas — mais
