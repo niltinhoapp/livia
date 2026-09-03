@@ -11,6 +11,10 @@ export interface ShellData {
   type: EstablishmentType;
   exists: boolean;
   whatsappConnected: boolean;
+  // false quando Establishment.status !== "active" (conta suspensa): a Livia
+  // não atende e o dono precisa enxergar isso. O campo já vinha na resposta
+  // de /api/establishment e era descartado aqui — nenhuma requisição nova.
+  serviceActive: boolean;
 }
 
 // `refetchKey` (normalmente o pathname atual) força uma nova busca sempre
@@ -36,6 +40,7 @@ export function useShellData(refetchKey?: string) {
           type: est.establishment?.type ?? "outro",
           exists: Boolean(est.exists),
           whatsappConnected: Boolean(wa.connected),
+          serviceActive: est.establishment?.status !== "suspended",
         });
       })
       .catch(() => {

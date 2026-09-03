@@ -36,6 +36,7 @@ import { detectIntent } from "@/lib/ai/intent";
 import { deriveTaskState } from "@/lib/ai/taskState";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
+import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
 import { findNextAppointment, setStatus } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask } from "@/types";
@@ -121,9 +122,11 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     if (!est) return;
   } else {
     est = await findEstablishmentByPhoneNumberId(value.metadata.phone_number_id);
+    // Causa TÉCNICA, não comercial: sem canal conectado não há como enviar
+    // nada de volta. Continua sendo um return silencioso de propósito — não
+    // existe caminho de resposta para avisar o cliente.
     if (!est || !est.whatsapp || est.whatsapp.status !== "connected") return;
   }
-  if (est.status !== "active") return;
 
   // No caminho de teste, est.whatsapp pode não existir (ou estar
   // "connecting") — resolveSendCredentials() ignora esse valor por completo
@@ -145,8 +148,28 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     contactName,
   );
 
-  // Registra a mensagem do cliente.
+  // Registra a mensagem do cliente. Acontece ANTES de qualquer decisão de
+  // parar o fluxo (estabelecimento inativo, handoff, humano no controle):
+  // "a Livia não responde" nunca pode significar "a mensagem sumiu".
   await appendMessage(est.id, conversation.id, "customer", customerText, msg.id);
+
+  // Estabelecimento comercialmente inativo (Establishment.status
+  // "suspended"). Antes disto o webhook simplesmente retornava e o cliente
+  // final ficava no silêncio absoluto — ele não tem relação nenhuma com o
+  // SaaS e não tem como saber que algo parou.
+  //
+  // A resposta é neutra de propósito: nada sobre trial, assinatura,
+  // cobrança ou pagamento, e nada que exponha a Livia como fornecedora. É
+  // uma causa COMERCIAL — distinta de canal desconectado (tratado acima,
+  // tecnicamente sem caminho de resposta) e de erro técnico (que continua
+  // subindo para o catch do POST, sem virar "conta inativa").
+  if (est.status !== "active") {
+    if (!warnedServicePausedRecently(history, Date.now())) {
+      await replyAndLog(wa, est.id, conversation.id, contactPhone, SERVICE_PAUSED_REPLY);
+    }
+    return;
+  }
+
 
   // Se a conversa já está com humano OU aguardando humano (handoff), o bot
   // fica quieto — não atropela o atendente nem continua respondendo depois

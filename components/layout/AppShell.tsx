@@ -26,6 +26,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Sidebar />
       <div className="flex min-h-screen flex-1 flex-col">
         <Header data={data} />
+        {data && !data.serviceActive ? (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6">
+            <strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo
+            automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo
+            registradas em Conversas. Fale com o suporte para reativar.
+          </div>
+        ) : null}
         <main className="flex-1 px-4 pb-24 pt-6 sm:px-6 lg:pb-10">{children}</main>
       </div>
       <MobileTabBar />
