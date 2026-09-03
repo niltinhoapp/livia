@@ -39,6 +39,7 @@ import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
 import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { readConfirmation } from "@/lib/ai/confirmation";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 export async function GET(req: NextRequest) {
@@ -341,11 +342,15 @@ function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
   const t = text.trim().toLowerCase();
   if (t.length > 30) return null; // resposta longa: deixa a IA tratar
 
-  const confirm = ["sim", "confirmo", "confirmar", "confirmado", "confirma", "ok", "isso", "pode confirmar", "vou sim", "com certeza", "👍"];
+  // Pedido explícito de cancelamento em resposta ao lembrete — inalterado.
   const cancel = ["cancelar", "cancela", "cancelado", "nao vou", "não vou", "desmarcar", "desmarca", "nao poderei", "não poderei"];
   if (cancel.some((w) => t.includes(w))) return "cancel";
-  if (confirm.some((w) => t === w || t.startsWith(w + " ") || t.includes(w))) return "confirm";
-  return null;
+
+  // A confirmação de presença passa a usar o matcher seguro. A versão
+  // anterior fazia `t.includes("isso")`, então "não é isso" era lido como
+  // CONFIRMAÇÃO — uma negação confirmando presença. Só "yes" inequívoco age;
+  // "no" e "unclear" devolvem null e a IA trata normalmente.
+  return readConfirmation(t) === "yes" ? "confirm" : null;
 }
 
 async function replyAndLog(
