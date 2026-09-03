@@ -16,8 +16,10 @@ export type ToolName =
   | "search_knowledge_base"
   | "get_customer_profile"
   | "update_customer_profile"
+  | "get_customer_appointments"
   | "find_available_appointments"
   | "create_appointment"
+  | "confirm_appointment"
   | "reschedule_appointment"
   | "cancel_appointment"
   | "request_human_handoff";

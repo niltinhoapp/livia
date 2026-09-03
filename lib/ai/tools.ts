@@ -8,9 +8,11 @@
 // lógica de negócio mora aqui, reaproveitando os motores existentes
 // (lib/scheduling.ts, lib/repo.ts) — nada é reimplementado.
 import type OpenAI from "openai";
-import type { Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile } from "@/types";
+import type { Appointment, Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile } from "@/types";
 import {
   listAppointments,
+  listCustomerAppointments,
+  getAppointment,
   computeSlots,
   createAppointment,
   localToEpoch,
@@ -256,6 +258,137 @@ const createAppointmentTool: ToolDefinition = {
   },
 };
 
+// ---- getCustomerAppointments ----
+// A agenda é a FONTE DE VERDADE sobre o que o cliente tem marcado. Sem esta
+// ferramenta a Livia não tinha como consultar um agendamento existente: a
+// única leitura de agenda exposta era find_available_appointments, que
+// devolve horários LIVRES — foi exatamente por isso que ela respondeu "não
+// consegui agendar, veja estes horários" para um cliente que já tinha
+// consulta marcada.
+//
+// As datas são resolvidas AQUI (com o offset do estabelecimento) e entregues
+// já rotuladas como "hoje"/"amanhã"/data concreta. O modelo não decide qual
+// agendamento é "hoje".
+const getCustomerAppointments: ToolDefinition = {
+  name: "get_customer_appointments",
+  enabled: () => true,
+  schema: fn(
+    "get_customer_appointments",
+    "Retorna os agendamentos REAIS deste cliente na agenda. Use SEMPRE que ele perguntar sobre um horário já marcado (ex.: 'confirma minha consulta', 'tenho consulta hoje?', 'qual horário marquei?', 'você marcou?') — nunca responda isso de memória.",
+    {
+      type: "object",
+      properties: {
+        includePast: {
+          type: "boolean",
+          description: "Incluir agendamentos que já passaram hoje (padrão: true, começa no início do dia de hoje).",
+        },
+      },
+    },
+  ),
+  async execute(ctx, args) {
+    const config = ctx.config ?? (await getScheduleConfig(ctx.est.id));
+    const offset = config.utcOffsetMinutes;
+    // Início do dia LOCAL de hoje — assim uma consulta às 09:00 continua
+    // aparecendo quando o cliente pergunta às 14:00.
+    const from = args.includePast === false ? Date.now() : startOfLocalDay(Date.now(), offset);
+
+    const appointments = await listCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), from);
+    const active = appointments.filter((a) => a.status !== "cancelled" && a.status !== "no_show");
+
+    if (active.length === 0) {
+      return {
+        ok: true,
+        data: { appointments: [], note: "Este cliente não tem nenhum agendamento ativo a partir de hoje." },
+      };
+    }
+
+    return {
+      ok: true,
+      data: {
+        today: localDateString(Date.now(), offset),
+        appointments: active.map((a) => ({
+          id: a.id,
+          serviceName: a.serviceName,
+          date: localDateString(a.startAt, offset),
+          time: localTimeString(a.startAt, offset),
+          // Rótulo relativo calculado pelo backend — o modelo não infere.
+          day: relativeDayLabel(a.startAt, offset),
+          durationMin: a.durationMin,
+          // "pending" = reservado, aguardando o cliente confirmar presença.
+          // "confirmed" = presença já confirmada. NUNCA tratar pending como
+          // inexistente: o horário ESTÁ reservado.
+          status: a.status,
+          statusMeaning:
+            a.status === "pending"
+              ? "horário reservado, aguardando confirmação do cliente"
+              : a.status === "confirmed"
+                ? "presença confirmada pelo cliente"
+                : a.status,
+          source: a.source,
+        })),
+      },
+    };
+  },
+};
+
+// ---- confirmAppointment ----
+// Única forma de levar um agendamento de "pending" para "confirmed".
+// Reaproveita setStatus (lib/scheduling.ts) — nenhum motor novo. O status só
+// muda se esta ferramenta devolver sucesso; texto da IA nunca confirma nada.
+const confirmAppointment: ToolDefinition = {
+  name: "confirm_appointment",
+  enabled: (ctx) => ctx.est.bot.bookingEnabled,
+  schema: fn(
+    "confirm_appointment",
+    "Confirma a PRESENÇA do cliente num agendamento que está aguardando confirmação. Use apenas quando ele disser explicitamente que vai comparecer (ex.: 'confirmo', 'sim, vou estar lá').",
+    {
+      type: "object",
+      properties: {
+        appointmentId: {
+          type: "string",
+          description: "id vindo de get_customer_appointments. Se omitido, confirma o próximo agendamento ativo.",
+        },
+      },
+    },
+  ),
+  async execute(ctx, args) {
+    const config = ctx.config ?? (await getScheduleConfig(ctx.est.id));
+    const phone = normalizePhone(ctx.contactPhone);
+
+    let target: Appointment | null = null;
+    if (typeof args.appointmentId === "string" && args.appointmentId) {
+      const found = await getAppointment(ctx.est.id, args.appointmentId);
+      // Trava de segurança: só confirma agendamento DESTE contato — um id
+      // vindo do modelo nunca pode alcançar o agendamento de outra pessoa.
+      if (found && normalizePhone(found.contactPhone) === phone) target = found;
+    } else {
+      target = await findNextAppointment(ctx.est.id, phone);
+    }
+
+    if (!target) return { ok: false, error: "nenhum agendamento ativo encontrado para confirmar" };
+    if (target.status === "confirmed") {
+      return {
+        ok: true,
+        data: { alreadyConfirmed: true, when: formatWhen(target.startAt, config.utcOffsetMinutes), serviceName: target.serviceName },
+      };
+    }
+    if (target.status !== "pending") {
+      return { ok: false, error: `agendamento com status "${target.status}" não pode ser confirmado` };
+    }
+
+    await setStatus(ctx.est.id, target.id, "confirmed");
+    return {
+      ok: true,
+      data: {
+        confirmed: true,
+        when: formatWhen(target.startAt, config.utcOffsetMinutes),
+        day: relativeDayLabel(target.startAt, config.utcOffsetMinutes),
+        serviceName: target.serviceName,
+      },
+    };
+  },
+};
+
 // ---- rescheduleAppointment ----
 // Opera sobre o PRÓXIMO agendamento ativo do cliente (mesma noção já usada
 // pelo fluxo de confirmação de lembrete no webhook) — a IA não maneja IDs de
@@ -339,8 +472,10 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   searchKnowledgeBase,
   getCustomerProfileTool,
   updateCustomerProfile,
+  getCustomerAppointments,
   findAvailableAppointments,
   createAppointmentTool,
+  confirmAppointment,
   rescheduleAppointment,
   cancelAppointment,
   requestHumanHandoff,
@@ -363,4 +498,38 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
 function formatWhen(startAt: number, offsetMin: number): string {
   const d = new Date(startAt + offsetMin * 60000);
   return `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")} às ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+// ---- Datas relativas resolvidas no BACKEND ----
+// O modelo errou "hoje/amanhã" porque ninguém resolvia isso pra ele: ele
+// recebia só epochs e o texto "Hoje é ...". Estas funções convertem um
+// instante para o calendário LOCAL do estabelecimento (utcOffsetMinutes) e
+// devolvem rótulo/data prontos — nenhuma inferência de data fica com a IA.
+export function startOfLocalDay(at: number, offsetMin: number): number {
+  const local = new Date(at + offsetMin * 60000);
+  const midnightLocalAsUtc = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+  return midnightLocalAsUtc - offsetMin * 60000;
+}
+
+export function localDateString(at: number, offsetMin: number): string {
+  const d = new Date(at + offsetMin * 60000);
+  return `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
+}
+
+export function localTimeString(at: number, offsetMin: number): string {
+  const d = new Date(at + offsetMin * 60000);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+// "hoje" / "amanhã" / "depois de amanhã" / a data concreta. Comparação por
+// dia de calendário local, nunca por diferença de horas (00:30 de amanhã
+// está a 1h de distância e ainda assim é "amanhã").
+export function relativeDayLabel(at: number, offsetMin: number, now = Date.now()): string {
+  const startToday = startOfLocalDay(now, offsetMin);
+  const startTarget = startOfLocalDay(at, offsetMin);
+  const diffDays = Math.round((startTarget - startToday) / (24 * 3600000));
+  if (diffDays === 0) return "hoje";
+  if (diffDays === 1) return "amanhã";
+  if (diffDays === -1) return "ontem";
+  return localDateString(at, offsetMin);
 }

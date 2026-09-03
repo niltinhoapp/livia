@@ -79,9 +79,18 @@ function nowLocal(offsetMin: number): { dateStr: string; human: string } {
   const da = String(d.getUTCDate()).padStart(2, "0");
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const dateStr = `${y}-${mo}-${da}`;
+  // "Amanhã" também vem resolvido: sem isso o modelo precisava calcular a
+  // data sozinho e errava (respondeu 04/09 como "amanhã" para uma pergunta
+  // sobre um agendamento de 03/09).
+  const t = new Date(Date.UTC(y, d.getUTCMonth(), d.getUTCDate()) + 24 * 3600000);
+  const tomorrowStr = `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
   return {
-    dateStr: `${y}-${mo}-${da}`,
-    human: `Hoje é ${WEEKDAYS[d.getUTCDay()]}, ${da}/${mo}/${y}, ${hh}:${mi} (horário local).`,
+    dateStr,
+    human:
+      `Hoje é ${WEEKDAYS[d.getUTCDay()]}, ${da}/${mo}/${y}, ${hh}:${mi} (horário local). ` +
+      `Em formato de data: hoje = ${dateStr}, amanhã = ${tomorrowStr}. ` +
+      `Nunca calcule "hoje"/"amanhã" de outra forma — use exatamente estas datas.`,
   };
 }
 
@@ -148,9 +157,17 @@ function buildSystemPrompt(
     `Você é ${persona}, a atendente virtual de "${est.name}".`,
     `Fale em português do Brasil, de forma ${bot.tone || "acolhedora e objetiva"}.`,
     "Responda SOMENTE com base nas informações do estabelecimento abaixo.",
-    "Se a informação não estiver aqui, NÃO invente: diga que vai verificar com a equipe e ofereça transferir para um atendente.",
+    "Se a informação não estiver aqui, NÃO invente: ofereça transferir para um atendente.",
     "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
     "Nunca invente preços, horários, endereços ou disponibilidade.",
+    // Regra estrutural: perguntas sobre um agendamento JÁ EXISTENTE só podem
+    // ser respondidas com o retorno da ferramenta. A memória da conversa, o
+    // resumo e o estado da tarefa NÃO são fonte de verdade sobre a agenda.
+    "SEMPRE que a pessoa perguntar sobre um horário que ela já marcou (\"confirma minha consulta\", \"tenho consulta hoje?\", \"qual horário marquei?\", \"você marcou?\", \"quando é meu horário?\"), use a ferramenta get_customer_appointments ANTES de responder. Nunca responda isso pelo histórico da conversa.",
+    "Um agendamento com status \"pending\" EXISTE e está reservado — diga o horário e que está aguardando a confirmação da pessoa. Nunca diga que não há agendamento nesse caso.",
+    // Antídoto para a promessa vazia: se a resposta depende de checar algo,
+    // ou checa agora (ferramenta) ou transfere. Nunca prometer e encerrar.
+    "NUNCA diga que vai verificar depois, que já retorna, ou peça para a pessoa aguardar: sua execução termina quando você responde, e ninguém continuaria a verificação. Ou use a ferramenta agora e responda com o resultado, ou transfira para um atendente com request_human_handoff.",
     nowHuman,
   ];
   if (bot.medicalGuardrail) {
@@ -169,8 +186,10 @@ function buildSystemPrompt(
       "- SEMPRE use a ferramenta find_available_appointments para ver horários livres reais antes de oferecer horários. Nunca chute horários.",
       "- Ofereça algumas opções de horário ao cliente.",
       "- Só depois que o cliente escolher e confirmar, use create_appointment com o startAt exato do horário escolhido (o valor vem de find_available_appointments).",
+      "- Antes de remarcar, cancelar ou confirmar qualquer coisa, use get_customer_appointments para ver o que a pessoa REALMENTE tem marcado.",
       "- Para remarcar um horário já existente, use reschedule_appointment (também com um startAt vindo de find_available_appointments).",
       "- Para cancelar, use cancel_appointment.",
+      "- Se a pessoa confirmar que vai comparecer (\"confirmo\", \"sim, vou\"), use confirm_appointment. O horário só passa a contar como confirmado se essa ferramenta devolver sucesso.",
       "- Após criar/remarcar/cancelar, confirme os detalhes (serviço, dia e hora) em uma frase curta.",
     );
   } else {
@@ -311,9 +330,14 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     return { reply, handoff, booked, rescheduled, cancelled, toolCalls };
   }
 
+  // Estouro do loop de ferramentas sem resposta final. A mensagem anterior
+  // aqui ("já te retorno") era uma promessa VAZIA: nada continuava depois do
+  // return, e o cliente ficava esperando para sempre. Agora transfere de
+  // verdade — handoff: true faz o webhook mudar a conversa para "handoff" e
+  // avisa que alguém vai assumir.
   return {
-    reply: "Deixa eu confirmar isso com a equipe e já te retorno, tudo bem?",
-    handoff: handoffRequested,
+    reply: "Vou chamar uma pessoa da equipe para te ajudar com isso, tudo bem? Já já alguém te responde por aqui.",
+    handoff: true,
     booked,
     rescheduled,
     cancelled,

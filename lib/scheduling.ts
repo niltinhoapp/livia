@@ -191,6 +191,32 @@ export async function updateAppointment(
   await sub(establishmentId, "appointments").doc(id).update(patch);
 }
 
+// Agendamentos de UM contato a partir de `from`, em ordem cronológica —
+// TODOS os status (o chamador decide o que fazer com cancelados/no-show).
+//
+// Mesma forma de query de findNextAppointment (igualdade em contactPhone +
+// range/orderBy em startAt), de propósito: reaproveita o índice composto que
+// já existe e é usado em produção pelo fluxo de lembrete, sem exigir índice
+// novo.
+//
+// É a FONTE DE VERDADE consultada pela ferramenta get_customer_appointments
+// (lib/ai/tools.ts) — a Livia nunca deve responder sobre um agendamento a
+// partir da memória da conversa.
+export async function listCustomerAppointments(
+  establishmentId: string,
+  contactPhone: string,
+  from: number,
+  limitCount = 10,
+): Promise<Appointment[]> {
+  const snap = await sub(establishmentId, "appointments")
+    .where("contactPhone", "==", contactPhone)
+    .where("startAt", ">=", from)
+    .orderBy("startAt", "asc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Appointment);
+}
+
 // Próximo agendamento ativo do contato (o mais cedo a partir de agora).
 export async function findNextAppointment(
   establishmentId: string,
