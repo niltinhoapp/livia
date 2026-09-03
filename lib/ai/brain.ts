@@ -337,6 +337,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   let rescheduled = false;
   let cancelled = false;
   let handoffRequested = false;
+  // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
+  let stallCorrected = false;
   const toolCalls: ToolCallRecord[] = [];
 
   // ---- Consulta OBRIGATÓRIA à fonte de verdade ----
@@ -420,6 +422,34 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // A consulta à agenda falhou de verdade — aí sim é caso de humano,
       // dito claramente, sem prometer voltar depois.
       reply = "Não consegui checar a agenda agora. Vou chamar uma pessoa da equipe pra te confirmar isso, tudo bem?";
+      handoff = true;
+    }
+
+    // ---- Regra geral: promessa de continuação inexistente ----
+    //
+    // Vale para QUALQUER turno, não só consulta de agenda. A execução termina
+    // aqui: nada roda depois para mandar uma segunda mensagem sozinha. Se o
+    // modelo enrolou ("vou verificar", "um momento"), damos UMA segunda
+    // passada com a correção explícita — ou ele responde com o que já tem, ou
+    // pede o dado que falta. Persistindo, transferimos de verdade em vez de
+    // deixar o cliente esperando por algo que nunca vem.
+    //
+    // Foi o caso real: o cliente disse "Nilton", ainda faltava o DIA, e a
+    // Livia respondeu "vou verificar a disponibilidade, um momento" — quando
+    // o certo era continuar pedindo o dia.
+    if (looksLikeStalling(reply) && !handoff) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content:
+            "A resposta acima prometeu verificar algo depois. Isso é impossível: sua execução termina agora e NENHUMA outra mensagem será enviada automaticamente. Reescreva a resposta seguindo exatamente uma destas opções: (a) se você já tem os dados ou pode obtê-los com uma ferramenta, use a ferramenta agora e responda com o resultado; (b) se falta alguma informação do cliente (dia, horário, serviço), PEÇA essa informação de forma direta; (c) se não há como resolver, chame request_human_handoff. Nunca diga 'vou verificar', 'um momento' ou 'aguarde'.",
+        });
+        continue;
+      }
+      // Segunda tentativa também enrolou: transfere de verdade.
+      reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
       handoff = true;
     }
 
