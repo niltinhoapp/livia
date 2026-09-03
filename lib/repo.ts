@@ -687,12 +687,21 @@ export async function listPendingTasks(
   establishmentId: string,
   limitCount = 50,
 ): Promise<PendingTask[]> {
+  // Só a igualdade na query (sem orderBy) — combinar `.where("status", "==",
+  // ...)` com `.orderBy("updatedAt", ...)` exige um índice composto que este
+  // projeto não tem, e a query falha em Production com FAILED_PRECONDITION
+  // (foi exatamente o que quebrou GET /api/conversations depois do Pacote 3
+  // passar a chamar esta função pela primeira vez). Ordena em memória depois
+  // — mesmo padrão já usado em findEstablishmentByPhoneNumberId (c7982fd) e
+  // documentado em todo o Pacote 3 como restrição deliberada; esta função
+  // só não tinha seguido a própria regra.
   const snap = await sub(establishmentId, "pendingTasks")
     .where("status", "==", "open")
-    .orderBy("updatedAt", "desc")
     .limit(limitCount)
     .get();
-  return snap.docs.map((d) => d.data() as PendingTask);
+  return snap.docs
+    .map((d) => d.data() as PendingTask)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 // ---- Memória do cliente (Fase 1) ----
