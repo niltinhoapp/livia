@@ -37,9 +37,9 @@ import { deriveTaskState } from "@/lib/ai/taskState";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
-import { findNextAppointment, setStatus } from "@/lib/scheduling";
+import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
-import type { Establishment, EstablishmentWhatsapp, ConversationTask } from "@/types";
+import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
@@ -227,7 +227,23 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // IA para virarem contexto do prompt (fonte de verdade sobre o cliente e
   // sobre em que etapa da tarefa a conversa está — Fase 4/5).
   const detectedIntent = detectIntent(customerText);
-  const customerProfile = await getCustomerProfile(est.id, contactPhone);
+  const storedProfile = await getCustomerProfile(est.id, contactPhone);
+  // Identidade: o nome pode já existir no sistema mesmo sem estar no perfil —
+  // o contato pode não ter nome público no WhatsApp (contactName null), mas
+  // ter dado o nome ao agendar. Sem esta resolução, a Livia perguntava de
+  // novo o nome de um cliente que ela já conhecia. Só busca nos agendamentos
+  // quando não há nome em lugar nenhum, então não pesa no caminho comum.
+  const knownName =
+    storedProfile?.name ??
+    contactName ??
+    (await findCustomerNameFromAppointments(est.id, contactPhone));
+  // O nome resolvido tem que chegar ao prompt já nesta mensagem — inclusive
+  // quando ainda não existe documento de perfil (primeira conversa de um
+  // cliente que já tinha agendamento).
+  const customerProfile: CustomerProfile | null =
+    storedProfile?.name || !knownName
+      ? storedProfile
+      : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
   const existingTask: ConversationTask | null = conversation.task ?? null;
 
   const { reply, handoff, booked, rescheduled, cancelled, toolCalls } = await think({
@@ -270,7 +286,11 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
         .serviceName as string | undefined)
     : undefined;
   await upsertCustomerProfile(est.id, contactPhone, {
-    name: contactName ?? undefined,
+    // `knownName` inclui o nome recuperado de um agendamento existente, então
+    // a identidade passa a viver no perfil e a busca acima não se repete nas
+    // próximas mensagens. Continua sendo dado determinístico (o próprio
+    // cliente informou ao agendar), nunca inferência da IA.
+    name: knownName ?? undefined,
     lastIntent: detectedIntent.type,
     lastService: bookedServiceName,
   });
@@ -348,4 +368,25 @@ interface WebhookBody {
       };
     }[];
   }[];
+}
+
+// Perfil mínimo em memória para quando a identidade é conhecida (via
+// agendamento) mas o documento de CustomerProfile ainda não existe. Nunca é
+// gravado assim — a persistência acontece pelo upsertCustomerProfile normal.
+function emptyProfile(establishmentId: string, phone: string): CustomerProfile {
+  const now = Date.now();
+  return {
+    phone: normalizePhone(phone),
+    establishmentId,
+    name: null,
+    preferredProfessional: null,
+    preferredTime: null,
+    frequentAddress: null,
+    lastService: null,
+    lastIntent: null,
+    notes: null,
+    lastInteractionAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
 }

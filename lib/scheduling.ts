@@ -410,6 +410,40 @@ async function queryCustomerAppointments(
 // IA (lib/ai/tools.ts) quanto pelas rotas do painel — centralizado aqui pra
 // não reimplementar a mesma checagem em cada lugar que cria/remarca.
 // `excludeId` evita que um agendamento colida "consigo mesmo" ao remarcar.
+// Quanto tempo para trás procuramos o nome do cliente em agendamentos.
+const IDENTITY_LOOKBACK_MS = 180 * 24 * 3600000;
+
+// Nome do cliente a partir dos agendamentos dele — fallback de identidade
+// quando o CustomerProfile ainda não tem nome (ex.: contato sem nome de
+// perfil no WhatsApp).
+//
+// Existe porque o nome JÁ estava no sistema e nada o lia: um cliente com
+// agendamento em nome de "Nilton" perguntou "Qual meu nome?" e a Livia
+// respondeu que não sabia. Não cria cadastro novo — só reaproveita o dado
+// que o próprio cliente forneceu ao agendar.
+//
+// Usa a mesma chave canônica de telefone das demais leituras
+// (listCustomerAppointments normaliza), então respeita a normalização do
+// Bloco 2. Janela e limite fechados para não virar leitura ilimitada.
+export async function findCustomerNameFromAppointments(
+  establishmentId: string,
+  contactPhone: string,
+  now = Date.now(),
+): Promise<string | null> {
+  const appointments = await listCustomerAppointments(
+    establishmentId,
+    contactPhone,
+    now - IDENTITY_LOOKBACK_MS,
+    20,
+  );
+  // Mais recente primeiro: o nome mais atual ganha.
+  for (let i = appointments.length - 1; i >= 0; i--) {
+    const nome = appointments[i]!.contactName?.trim();
+    if (nome) return nome;
+  }
+  return null;
+}
+
 // ---- DURAÇÃO: autoridade do BACKEND ----
 //
 // O modelo pode identificar QUAL serviço o cliente quer, mas nunca quantos
