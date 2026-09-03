@@ -669,8 +669,20 @@ export async function resolvePendingTask(establishmentId: string, conversationId
   await ref.update({ status: "resolved", resolvedAt: Date.now(), updatedAt: Date.now() });
 }
 
-// Lista de pendências abertas pra uso futuro (ex.: caixa de entrada
-// inteligente, Passo 11) — não tem UI própria ainda nesta entrega.
+// Pendência (aberta ou já resolvida) de UMA conversa específica — usado na
+// ficha de um cliente (Passo 10) e em checagens pontuais. Diferente de
+// listPendingTasks (que só lista as abertas): aqui é sempre 1 leitura por
+// id, sem query.
+export async function getPendingTask(
+  establishmentId: string,
+  conversationId: string,
+): Promise<PendingTask | null> {
+  const doc = await sub(establishmentId, "pendingTasks").doc(conversationId).get();
+  return doc.exists ? (doc.data() as PendingTask) : null;
+}
+
+// Lista de pendências abertas — usada pela caixa de entrada (Passo 11) e
+// pelas oportunidades (Passo 12).
 export async function listPendingTasks(
   establishmentId: string,
   limitCount = 50,
@@ -744,6 +756,22 @@ export async function upsertCustomerProfile(
     updatedAt: now,
   };
   await ref.set(profile);
+}
+
+// Lista de perfis pra tela de CRM (Passo 10) — mais recentes primeiro. Só
+// os campos do próprio CustomerProfile: nenhuma junção com conversas,
+// agendamentos ou pendências aqui (isso é responsabilidade da rota de
+// detalhe de UM cliente, não desta listagem — evita N+1 ao carregar a
+// lista inteira).
+export async function listCustomerProfiles(
+  establishmentId: string,
+  limitCount = 200,
+): Promise<CustomerProfile[]> {
+  const snap = await sub(establishmentId, "customers")
+    .orderBy("lastInteractionAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as CustomerProfile);
 }
 
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens
@@ -862,6 +890,26 @@ export async function listConversations(
   limitCount = 50,
 ): Promise<Conversation[]> {
   const snap = await sub(establishmentId, "conversations")
+    .orderBy("lastMessageAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Conversation);
+}
+
+// Conversas com atividade desde `since` — usado pelo painel diário (Passo
+// 13) e pela caixa de entrada. Range de campo único (lastMessageAt), sem
+// combinar com outra igualdade na query: não precisa de índice composto. O
+// filtro por lastIntent/status para métricas específicas é feito em memória
+// por quem chama — mesmo padrão já usado em findEstablishmentByPhoneNumberId
+// (c7982fd), deliberado pelo mesmo motivo (uma query que falha por índice
+// faltante aqui derrubaria o painel inteiro, não só uma mensagem).
+export async function listConversationsSince(
+  establishmentId: string,
+  since: number,
+  limitCount = 500,
+): Promise<Conversation[]> {
+  const snap = await sub(establishmentId, "conversations")
+    .where("lastMessageAt", ">=", since)
     .orderBy("lastMessageAt", "desc")
     .limit(limitCount)
     .get();

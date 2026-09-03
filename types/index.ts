@@ -207,6 +207,12 @@ export interface Appointment {
   createdAt: number;
   confirmedAt: number | null;
   reminderSentAt: number | null;
+  // Quando o status virou "cancelled" (lib/scheduling.ts: setStatus).
+  // Ausente em documentos criados antes deste campo existir — tratado como
+  // "não sabemos quando" em qualquer métrica que dependa disso (nunca
+  // aproximado a partir de outro campo), nunca contado como cancelamento de
+  // hoje sem essa evidência.
+  cancelledAt?: number | null;
 }
 
 export interface DayHours {
@@ -353,6 +359,41 @@ export interface PendingTask {
   updatedAt: number;
   resolvedAt: number | null;
   dueAt: number | null;
+}
+
+// ---- Caixa de entrada inteligente (Passo 11) ----
+// Classificação DERIVADA na hora da leitura (status/lastIntent/task/
+// pendingTask já existentes) — nunca persistida, nunca uma fonte de verdade
+// paralela. Ver lib/ai/inbox.ts.
+export type InboxCategory =
+  | "needs_human" // handoff ativo ou pendingTask awaiting_human
+  | "customer_waiting" // pendingTask awaiting_customer_confirmation
+  | "appointment_incomplete" // pendingTask appointment_started_incomplete
+  | "opportunity" // pendingTask exception_needs_establishment, ou outra oportunidade detectada
+  | "complaint" // intenção "complaint" nesta conversa
+  | "resolved"; // nada pendente
+
+// ---- Oportunidades e funil (Passo 12) ----
+// SEMPRE derivada de dados que já existem (pendingTasks, Intent,
+// Appointment) — nunca persistida como fato novo, nunca gerada por IA.
+// `evidence` é obrigatório e sempre aponta pra um dado concreto (nunca um
+// texto "explicando" livremente) — é o que impede falso positivo silencioso.
+export type OpportunityType =
+  | "handoff_waiting"
+  | "appointment_incomplete"
+  | "awaiting_confirmation"
+  | "complaint_unresolved"
+  | "price_inquiry_no_booking"
+  | "cancelled_no_rebooking";
+
+export interface Opportunity {
+  type: OpportunityType;
+  conversationId: string;
+  contactPhone: string;
+  contactName: string | null;
+  label: string; // curto, pra UI
+  evidence: string; // de onde veio (nome de campo/coleção), não texto de IA
+  detectedAt: number;
 }
 
 export type MessageRole = "customer" | "bot" | "agent";

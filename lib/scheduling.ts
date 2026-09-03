@@ -240,5 +240,41 @@ export function setStatus(
 ): Promise<void> {
   const patch: Record<string, unknown> = { status };
   if (status === "confirmed") patch.confirmedAt = Date.now();
+  // Única fonte de "quando foi cancelado" — sem isto, o painel diário
+  // (Passo 13) não teria como mostrar "cancelamentos hoje" com dado real; a
+  // alternativa seria inventar/aproximar, que é exatamente o que não pode
+  // acontecer.
+  if (status === "cancelled") patch.cancelledAt = Date.now();
   return updateAppointment(establishmentId, id, patch as Partial<Appointment>);
+}
+
+// ---- Consultas por intervalo de data (Passo 13 — painel diário) ----
+// Range de campo único (createdAt / cancelledAt), sem combinar com outra
+// igualdade — não precisa de índice composto, só o índice de campo único que
+// o Firestore já mantém sozinho. `limit` é generoso o bastante pro volume
+// diário de um único estabelecimento; existe só pra nunca ser ilimitado.
+export async function listAppointmentsCreatedSince(
+  establishmentId: string,
+  since: number,
+  limitCount = 500,
+): Promise<Appointment[]> {
+  const snap = await sub(establishmentId, "appointments")
+    .where("createdAt", ">=", since)
+    .orderBy("createdAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Appointment);
+}
+
+export async function listAppointmentsCancelledSince(
+  establishmentId: string,
+  since: number,
+  limitCount = 500,
+): Promise<Appointment[]> {
+  const snap = await sub(establishmentId, "appointments")
+    .where("cancelledAt", ">=", since)
+    .orderBy("cancelledAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as Appointment);
 }

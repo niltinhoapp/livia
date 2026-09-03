@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { listConversations } from "@/lib/repo";
+import { classifyConversationsForInbox } from "@/lib/dashboard";
 
 // Força dinâmico/no-store explicitamente: o tenant vem de req.cookies (não
 // de cookies() do next/headers), então o Next não detecta automaticamente
@@ -15,5 +16,9 @@ export async function GET(req: NextRequest) {
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const conversations = await listConversations(id);
-  return NextResponse.json({ conversations });
+  // Passo 11: cada conversa ganha `inboxCategory`, derivada de dados já
+  // existentes (status, PendingTask aberta, Opportunity) — não é uma rota
+  // paralela, é a mesma listagem só anotada.
+  const withInboxCategory = await classifyConversationsForInbox(id, conversations);
+  return NextResponse.json({ conversations: withInboxCategory });
 }

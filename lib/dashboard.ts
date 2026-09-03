@@ -1,0 +1,216 @@
+// Camada de orquestração dos Passos 10-13 (README.md/Plano Mestre): CRM,
+// caixa de entrada, oportunidades/funil e painel diário.
+//
+// Este arquivo só FAZ QUERIES e chama funções puras (lib/ai/opportunities.ts,
+// lib/ai/inbox.ts, lib/ai/funnel.ts) — nenhuma regra de classificação mora
+// aqui, pra manter a lógica testável sem Firestore. Toda query é de campo
+// único (range OU igualdade, nunca combinadas), limitada, e reaproveitada
+// entre métricas sempre que possível — ver o comentário de cada função pro
+// motivo de cada escolha.
+import {
+  listPendingTasks,
+  listConversationsSince,
+  listCustomerProfiles,
+  getCustomerProfile,
+  getConversation,
+  getPendingTask,
+} from "@/lib/repo";
+import {
+  listAppointments,
+  listAppointmentsCreatedSince,
+  listAppointmentsCancelledSince,
+} from "@/lib/scheduling";
+import { opportunitiesFromPendingTasks, priceInquiryOpportunities, cancelledNoRebookingOpportunities } from "@/lib/ai/opportunities";
+import { classifyConversation } from "@/lib/ai/inbox";
+import { computeFunnel, type FunnelResult } from "@/lib/ai/funnel";
+import { normalizePhone } from "@/lib/whatsapp/client";
+import type { Conversation, CustomerProfile, InboxCategory, IntentType, Opportunity, PendingTask } from "@/types";
+
+const THIRTY_DAYS_MS = 30 * 24 * 3600000;
+const NINETY_DAYS_MS = 90 * 24 * 3600000;
+
+// ---- Passo 12 — Oportunidades ----
+//
+// Custo: 4 queries fixas, cada uma limitada (não escala com o total de
+// dados do tenant) — nunca N+1. `upcoming` é buscado UMA vez e vira o Set de
+// telefones com agendamento ativo, reaproveitado pelas duas checagens que
+// precisam disso (preço sem agendar, cancelou sem remarcar).
+//
+// `preloadedPendingTasks` é opcional: quem já buscou a lista de pendências
+// pra outro motivo na mesma requisição (ex.: classifyConversationsForInbox)
+// passa ela aqui pra não repetir a mesma query duas vezes.
+export async function getOpportunities(
+  establishmentId: string,
+  preloadedPendingTasks?: PendingTask[],
+): Promise<Opportunity[]> {
+  const since30d = Date.now() - THIRTY_DAYS_MS;
+
+  const [pendingTasks, recentConversations, cancelledRecently, upcoming] = await Promise.all([
+    preloadedPendingTasks ? Promise.resolve(preloadedPendingTasks) : listPendingTasks(establishmentId),
+    listConversationsSince(establishmentId, since30d, 300),
+    listAppointmentsCancelledSince(establishmentId, since30d, 200),
+    listAppointments(establishmentId, Date.now(), Date.now() + NINETY_DAYS_MS),
+  ]);
+
+  const nameByConversationId = new Map<string, string | null>(recentConversations.map((c) => [c.id, c.contactName]));
+  const activePhones = new Set(
+    upcoming.filter((a) => a.status === "pending" || a.status === "confirmed").map((a) => normalizePhone(a.contactPhone)),
+  );
+  const hasActiveAppointment = (phone: string) => activePhones.has(normalizePhone(phone));
+
+  return [
+    ...opportunitiesFromPendingTasks(pendingTasks, nameByConversationId),
+    ...priceInquiryOpportunities(recentConversations, hasActiveAppointment),
+    ...cancelledNoRebookingOpportunities(cancelledRecently, hasActiveAppointment),
+  ];
+}
+
+// ---- Passo 11 — Caixa de entrada ----
+//
+// Reaproveita listConversations (já existe) + listPendingTasks +
+// getOpportunities — 3 buscas no total pra anotar a lista inteira, nunca uma
+// consulta por conversa.
+export interface InboxConversation extends Conversation {
+  inboxCategory: InboxCategory;
+}
+
+export async function classifyConversationsForInbox(
+  establishmentId: string,
+  conversations: Conversation[],
+): Promise<InboxConversation[]> {
+  const pendingTasks = await listPendingTasks(establishmentId);
+  const opportunities = await getOpportunities(establishmentId, pendingTasks);
+  const pendingByConversation = new Map(pendingTasks.map((pt) => [pt.conversationId, pt.type]));
+  const opportunityConversationIds = new Set(opportunities.map((o) => o.conversationId));
+
+  return conversations.map((c) => ({
+    ...c,
+    inboxCategory: classifyConversation({
+      status: c.status,
+      pendingTaskType: pendingByConversation.get(c.id),
+      hasOpportunity: opportunityConversationIds.has(c.id),
+    }),
+  }));
+}
+
+// ---- Passo 10 — CRM ----
+//
+// Lista: só CustomerProfile, sem junções (evita N+1 ao carregar muitos
+// clientes de uma vez). Detalhe de UM cliente: 3 leituras por id (perfil,
+// conversa, pendência) — aceitável por ser sob demanda, não em lote.
+export interface CustomerDetail {
+  profile: CustomerProfile;
+  // Resumo/contexto e pendência atual são derivados de Conversation e
+  // PendingTask — NUNCA copiados para dentro de CustomerProfile, pra não
+  // duplicar a fonte de verdade de cada um.
+  conversationSummary: string | null;
+  conversationId: string | null;
+  pendingTask: PendingTask | null;
+  // "ativo" = interagiu nos últimos 7 dias; "recente" = até 30 dias; "inativo"
+  // = mais que isso. Cálculo determinístico só sobre lastInteractionAt —
+  // nunca uma inferência de humor/satisfação.
+  relationshipStatus: "active" | "recent" | "inactive";
+}
+
+export async function listCustomers(establishmentId: string): Promise<CustomerProfile[]> {
+  return listCustomerProfiles(establishmentId);
+}
+
+export async function getCustomerDetail(establishmentId: string, phone: string): Promise<CustomerDetail | null> {
+  const profile = await getCustomerProfile(establishmentId, phone);
+  if (!profile) return null;
+
+  const conversationId = normalizePhone(phone);
+  const [conversation, pendingTask] = await Promise.all([
+    getConversation(establishmentId, conversationId),
+    getPendingTask(establishmentId, conversationId),
+  ]);
+
+  return {
+    profile,
+    conversationSummary: conversation?.summary ?? null,
+    conversationId: conversation?.id ?? null,
+    pendingTask: pendingTask?.status === "open" ? pendingTask : null,
+    relationshipStatus: relationshipStatusOf(profile.lastInteractionAt),
+  };
+}
+
+function relationshipStatusOf(lastInteractionAt: number): "active" | "recent" | "inactive" {
+  const days = (Date.now() - lastInteractionAt) / (24 * 3600000);
+  if (days <= 7) return "active";
+  if (days <= 30) return "recent";
+  return "inactive";
+}
+
+// ---- Passo 13 — Painel diário ----
+//
+// `todayStart`/`todayEnd` vêm de quem chama (a rota da API), calculados no
+// NAVEGADOR do dono — o mesmo padrão já usado por
+// GET /api/appointments?from=&to= (app/painel/page.tsx). Calcular o "hoje"
+// no servidor usaria o fuso do processo (UTC na Vercel), que erraria a
+// virada do dia pra quem está no Brasil.
+export interface DashboardMetrics {
+  funnel: FunnelResult;
+  agendamentosCriadosHoje: number;
+  cancelamentosHoje: number;
+  pendenciasAbertas: number;
+  conversasPrecisandoHumano: number;
+  intencoesFrequentesHoje: { intent: IntentType; count: number }[];
+  oportunidadesAbertas: number;
+  oportunidades: Opportunity[]; // mais recentes primeiro, já limitado pra exibição
+}
+
+export async function getDashboardMetrics(
+  establishmentId: string,
+  todayStart: number,
+  todayEnd: number,
+): Promise<DashboardMetrics> {
+  // pendingTasks é buscado antes e passado pra getOpportunities — evita
+  // repetir a mesma query (ver getOpportunities: `preloadedPendingTasks`).
+  const pendingTasks = await listPendingTasks(establishmentId, 200);
+  const [todayConvos, createdToday, cancelledToday, opportunities] = await Promise.all([
+    listConversationsSince(establishmentId, todayStart, 500),
+    listAppointmentsCreatedSince(establishmentId, todayStart, 500),
+    listAppointmentsCancelledSince(establishmentId, todayStart, 500),
+    getOpportunities(establishmentId, pendingTasks),
+  ]);
+
+  // `listConversationsSince` só tem limite inferior — descarta o que passou
+  // de `todayEnd` (relevante se a rota for chamada com um intervalo que não
+  // seja "hoje até agora").
+  const scopedConvos = todayConvos.filter((c) => c.lastMessageAt < todayEnd);
+  const scopedCreated = createdToday.filter((a) => a.createdAt < todayEnd);
+  const scopedCancelled = cancelledToday.filter((a) => (a.cancelledAt ?? 0) < todayEnd);
+
+  const SCHEDULE_INTENTS = new Set<IntentType>(["schedule_appointment", "reschedule_appointment"]);
+  const convosComIntencaoAgendar = scopedConvos.filter((c) => c.lastIntent && SCHEDULE_INTENTS.has(c.lastIntent));
+  const phonesComIntencao = new Set(convosComIntencaoAgendar.map((c) => normalizePhone(c.contactPhone)));
+  const agendamentosConcluidosHoje = scopedCreated.filter((a) => phonesComIntencao.has(normalizePhone(a.contactPhone))).length;
+
+  const funnel = computeFunnel({
+    atendimentos: scopedConvos.length,
+    intencaoAgendar: convosComIntencaoAgendar.length,
+    agendamentosConcluidos: agendamentosConcluidosHoje,
+  });
+
+  const intentCounts = new Map<IntentType, number>();
+  for (const c of scopedConvos) {
+    if (!c.lastIntent) continue;
+    intentCounts.set(c.lastIntent, (intentCounts.get(c.lastIntent) ?? 0) + 1);
+  }
+  const intencoesFrequentesHoje = [...intentCounts.entries()]
+    .map(([intent, count]) => ({ intent, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3);
+
+  return {
+    funnel,
+    agendamentosCriadosHoje: scopedCreated.length,
+    cancelamentosHoje: scopedCancelled.length,
+    pendenciasAbertas: pendingTasks.length,
+    conversasPrecisandoHumano: pendingTasks.filter((pt) => pt.type === "awaiting_human").length,
+    intencoesFrequentesHoje,
+    oportunidadesAbertas: opportunities.length,
+    oportunidades: [...opportunities].sort((a, b) => b.detectedAt - a.detectedAt).slice(0, 5),
+  };
+}

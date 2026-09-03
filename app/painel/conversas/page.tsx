@@ -6,14 +6,66 @@
 // Em mobile, lista e conversa não cabem lado a lado: mostra uma coisa de
 // cada vez (lista, ou a conversa com um botão "Voltar").
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2, GraduationCap } from "lucide-react";
-import type { Conversation, Message } from "@/types";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2, GraduationCap, Clock, CalendarClock, Sparkles, MessageCircleWarning, CheckCircle2 } from "lucide-react";
+import type { Conversation, InboxCategory, Message } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TeachDialog } from "@/components/knowledge/TeachDialog";
+import { INBOX_CATEGORY_LABEL } from "@/lib/ai/inbox";
+
+// Passo 11 — cada conversa vem anotada pelo backend (GET /api/conversations,
+// que já reaproveita PendingTask + Opportunity) com sua categoria. Nunca
+// recalculada aqui.
+type InboxConversation = Conversation & { inboxCategory: InboxCategory };
+
+const INBOX_ICON: Record<InboxCategory, typeof Bot> = {
+  needs_human: UserCheck,
+  customer_waiting: Clock,
+  appointment_incomplete: CalendarClock,
+  opportunity: Sparkles,
+  complaint: MessageCircleWarning,
+  resolved: CheckCircle2,
+};
+
+const INBOX_TONE: Record<InboxCategory, StatusTone> = {
+  needs_human: "danger",
+  customer_waiting: "warning",
+  appointment_incomplete: "warning",
+  opportunity: "info",
+  complaint: "danger",
+  resolved: "neutral",
+};
+
+type InboxFilter = "all" | "attention" | "opportunity" | "in_service" | "resolved";
+
+const FILTERS: { id: InboxFilter; label: string }[] = [
+  { id: "all", label: "Todas" },
+  { id: "attention", label: "Precisa de atenção" },
+  { id: "opportunity", label: "Oportunidades" },
+  { id: "in_service", label: "Em atendimento" },
+  { id: "resolved", label: "Concluídas" },
+];
+
+// "Em atendimento" e "Concluídas" olham o status bruto/categoria já
+// existentes — nenhum critério novo, só uma combinação pra exibição.
+function matchesFilter(c: InboxConversation, filter: InboxFilter): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "attention":
+      return c.inboxCategory === "needs_human" || c.inboxCategory === "complaint" || c.inboxCategory === "appointment_incomplete";
+    case "opportunity":
+      return c.inboxCategory === "opportunity";
+    case "in_service":
+      return c.status === "human";
+    case "resolved":
+      return c.inboxCategory === "resolved" && c.status !== "human";
+  }
+}
 
 // "Limpar conversas" só existe para o tenant demo (Odonto) — usado pra
 // deixar o painel vazio antes de gravações de demonstração. A trava real é
@@ -31,13 +83,20 @@ const STATUS_LABEL: Record<Conversation["status"], { label: string; tone: Status
 const LIST_REFRESH_MS = 15000;
 
 export default function ConversationsPage() {
-  const [conversations, setConversations] = useState<Conversation[] | null>(null);
+  const [conversations, setConversations] = useState<InboxConversation[] | null>(null);
   const [error, setError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<InboxFilter>("all");
   const [canClear, setCanClear] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState(false);
+
+  // Deep-link vindo do CRM (Passo 10: "Ver conversa completa") ou do painel
+  // diário (oportunidade) — /painel/conversas?conversa=<id> abre já
+  // selecionada, uma vez, sem brigar com a seleção manual do usuário depois.
+  const searchParams = useSearchParams();
+  const [appliedDeepLink, setAppliedDeepLink] = useState(false);
 
   const loadList = useCallback(() => {
     fetch("/api/conversations")
@@ -54,6 +113,15 @@ export default function ConversationsPage() {
     const interval = setInterval(loadList, LIST_REFRESH_MS);
     return () => clearInterval(interval);
   }, [loadList]);
+
+  useEffect(() => {
+    if (appliedDeepLink || !conversations) return;
+    const target = searchParams.get("conversa");
+    if (target && conversations.some((c) => c.id === target)) {
+      setSelectedId(target);
+    }
+    setAppliedDeepLink(true);
+  }, [appliedDeepLink, conversations, searchParams]);
 
   useEffect(() => {
     fetch("/api/establishment")
@@ -82,6 +150,7 @@ export default function ConversationsPage() {
   if (!conversations) return <LoadingState />;
 
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
+  const filtered = conversations.filter((c) => matchesFilter(c, filter));
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -120,16 +189,41 @@ export default function ConversationsPage() {
         onCancel={() => setConfirmClear(false)}
       />
 
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {FILTERS.map((f) => {
+          const count = f.id === "all" ? conversations.length : conversations.filter((c) => matchesFilter(c, f.id)).length;
+          return (
+            <button
+              key={f.id}
+              onClick={() => setFilter(f.id)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                filter === f.id ? "border-primary bg-primary text-white" : "border-line text-ink-500 hover:bg-line/20"
+              }`}
+            >
+              {f.label} {count > 0 && <span className="opacity-70">({count})</span>}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="flex overflow-hidden rounded-card border border-line bg-white" style={{ height: "70vh" }}>
         {/* Lista — some no mobile quando uma conversa está aberta */}
         <div className={`w-full shrink-0 overflow-y-auto border-r border-line sm:w-72 ${selectedId ? "hidden sm:block" : "block"}`}>
-          {conversations.length === 0 ? (
+          {filtered.length === 0 ? (
             <div className="p-4">
-              <EmptyState title="Nenhuma conversa ainda" description="As conversas do WhatsApp aparecem aqui." />
+              <EmptyState
+                title={conversations.length === 0 ? "Nenhuma conversa ainda" : "Nada por aqui"}
+                description={
+                  conversations.length === 0
+                    ? "As conversas do WhatsApp aparecem aqui."
+                    : "Nenhuma conversa nesse filtro no momento."
+                }
+              />
             </div>
           ) : (
-            conversations.map((c) => {
+            filtered.map((c) => {
               const s = STATUS_LABEL[c.status];
+              const InboxIcon = INBOX_ICON[c.inboxCategory];
               return (
                 <button
                   key={c.id}
@@ -142,9 +236,16 @@ export default function ConversationsPage() {
                     <p className="truncate text-sm font-semibold text-ink-900">{c.contactName ?? c.contactPhone}</p>
                     <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
                   </div>
-                  <p className="mt-1 text-xs text-ink-400">
-                    {new Date(c.lastMessageAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                  </p>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <p className="text-xs text-ink-400">
+                      {new Date(c.lastMessageAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                    {c.inboxCategory !== "resolved" && (
+                      <span className="flex items-center gap-1 text-[11px] font-semibold text-ink-500">
+                        <InboxIcon className="h-3 w-3" /> {INBOX_CATEGORY_LABEL[c.inboxCategory]}
+                      </span>
+                    )}
+                  </div>
                 </button>
               );
             })
