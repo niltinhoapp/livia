@@ -246,7 +246,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
   const existingTask: ConversationTask | null = conversation.task ?? null;
 
-  const { reply, handoff, booked, rescheduled, cancelled, toolCalls } = await think({
+  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId } = await think({
     est,
     kb,
     history: historyForAI,
@@ -275,7 +275,13 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     booked: operationCompleted,
   });
   await setConversationIntent(est.id, conversation.id, detectedIntent.type);
-  await setConversationTask(est.id, conversation.id, nextTask);
+  // Guarda o agendamento que está aguardando confirmação de cancelamento, pra
+  // que o "sim" da próxima mensagem cancele o ID EXATO — nunca "o próximo".
+  const taskToPersist =
+    nextTask && pendingCancelAppointmentId
+      ? { ...nextTask, collectedData: { ...nextTask.collectedData, appointmentId: pendingCancelAppointmentId } }
+      : nextTask;
+  await setConversationTask(est.id, conversation.id, taskToPersist);
 
   // Fase 1: só campos determinísticos — nome do cartão de contato do
   // WhatsApp, intenção do classificador, e o serviço de um agendamento
@@ -334,6 +340,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
 function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
   const t = text.trim().toLowerCase();
   if (t.length > 30) return null; // resposta longa: deixa a IA tratar
+
   const confirm = ["sim", "confirmo", "confirmar", "confirmado", "confirma", "ok", "isso", "pode confirmar", "vou sim", "com certeza", "👍"];
   const cancel = ["cancelar", "cancela", "cancelado", "nao vou", "não vou", "desmarcar", "desmarca", "nao poderei", "não poderei"];
   if (cancel.some((w) => t.includes(w))) return "cancel";

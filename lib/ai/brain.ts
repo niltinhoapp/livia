@@ -6,6 +6,7 @@ import OpenAI from "openai";
 import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
 import { parseTimeSelection } from "@/lib/ai/timeSelection";
+import { readConfirmation } from "@/lib/ai/confirmation";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
@@ -310,6 +311,111 @@ function bookingOutcomeSection(outcome: BookingOutcome | null): string {
   );
 }
 
+// ---- Cancelamento: o backend resolve o alvo e exige confirmação ----
+export type CancelOutcome =
+  | { kind: "none" } // nenhum agendamento ativo
+  | { kind: "needs_confirmation"; appointmentId: string; label: string }
+  | { kind: "ambiguous"; options: { id: string; label: string }[] }
+  | { kind: "cancelled"; label: string }
+  | { kind: "aborted" } // cliente disse que NÃO quer cancelar
+  | { kind: "failed"; error: string };
+
+function appointmentLabel(a: { serviceName?: string; day?: string; date?: string; time?: string }): string {
+  const quando = a.day === "hoje" || a.day === "amanhã" ? a.day : a.date;
+  return `${a.serviceName ?? "atendimento"} ${quando} às ${a.time}`;
+}
+
+// Resolve "cancela esse" com segurança:
+//   - já havia um alvo escolhido e o cliente confirmou -> cancela por ID;
+//   - já havia um alvo e o cliente negou -> aborta, sem cancelar nada;
+//   - exatamente um agendamento ativo -> alvo inequívoco, pede confirmação;
+//   - vários -> devolve a lista para a Livia PERGUNTAR qual, sem escolher.
+//
+// Nunca cancela direto na primeira mensagem, e nunca escolhe "o próximo"
+// silenciosamente (era o risco 8: com dois horários marcados, o errado podia
+// ser apagado).
+async function resolveCancellation(
+  input: BrainInput,
+  toolCtx: ToolContext,
+  toolCalls: ToolCallRecord[],
+): Promise<CancelOutcome | null> {
+  const { intent, task, history } = input;
+  const pendingId =
+    task?.type === "cancel_appointment" && typeof task.collectedData.appointmentId === "string"
+      ? task.collectedData.appointmentId
+      : undefined;
+
+  // Só age quando o cliente pediu cancelamento agora, ou quando já existe um
+  // cancelamento aguardando confirmação.
+  if (intent.type !== "cancel_appointment" && !pendingId) return null;
+
+  const ultima = [...history].reverse().find((m) => m.role === "customer");
+
+  // Etapa de confirmação de um alvo já escolhido.
+  if (pendingId && ultima) {
+    const resposta = readConfirmation(ultima.text);
+    if (resposta === "no") return { kind: "aborted" };
+    if (resposta === "yes") {
+      const result = await runTool("cancel_appointment", { appointmentId: pendingId }, toolCtx);
+      toolCalls.push({ name: "cancel_appointment", args: { appointmentId: pendingId } });
+      if (!result.ok) return { kind: "failed", error: result.error ?? "não foi possível cancelar" };
+      const data = result.data as { serviceName?: string; when?: string; day?: string };
+      return { kind: "cancelled", label: `${data.serviceName ?? "atendimento"} de ${data.when ?? ""}`.trim() };
+    }
+    // "unclear": mantém o alvo e pede confirmação inequívoca de novo.
+  }
+
+  const lookup = await runTool("get_customer_appointments", {}, toolCtx);
+  toolCalls.push({ name: "get_customer_appointments", args: {} });
+  if (!lookup.ok) return { kind: "failed", error: lookup.error ?? "não foi possível consultar a agenda" };
+
+  const data = lookup.data as { appointments?: { id: string; serviceName?: string; day?: string; date?: string; time?: string }[] };
+  const ativos = data.appointments ?? [];
+  if (ativos.length === 0) return { kind: "none" };
+
+  if (pendingId) {
+    const alvo = ativos.find((a) => a.id === pendingId);
+    if (alvo) return { kind: "needs_confirmation", appointmentId: alvo.id, label: appointmentLabel(alvo) };
+  }
+
+  if (ativos.length === 1) {
+    return { kind: "needs_confirmation", appointmentId: ativos[0]!.id, label: appointmentLabel(ativos[0]!) };
+  }
+  return { kind: "ambiguous", options: ativos.map((a) => ({ id: a.id, label: appointmentLabel(a) })) };
+}
+
+function cancelOutcomeSection(outcome: CancelOutcome | null): string {
+  if (!outcome) return "";
+  const cabecalho = "\n\n=== CANCELAMENTO (estado real apurado agora pelo sistema) ===\n";
+
+  switch (outcome.kind) {
+    case "none":
+      return cabecalho + "Este cliente NÃO tem nenhum agendamento ativo. Diga isso e ofereça agendar, se ele quiser.";
+    case "needs_confirmation":
+      return (
+        cabecalho +
+        `Agendamento identificado: ${outcome.label}. AINDA NÃO FOI CANCELADO. ` +
+        "Pergunte de forma clara se ele confirma o cancelamento desse horário e espere a resposta. NUNCA diga que já cancelou."
+      );
+    case "ambiguous":
+      return (
+        cabecalho +
+        `Existe MAIS DE UM agendamento ativo: ${outcome.options.map((o) => o.label).join(" | ")}. ` +
+        "NÃO cancele nada. Pergunte qual deles ele quer cancelar, listando data, horário e serviço."
+      );
+    case "cancelled":
+      return cabecalho + `CANCELAMENTO EXECUTADO com sucesso: ${outcome.label}. Confirme isso ao cliente, de forma curta.`;
+    case "aborted":
+      return cabecalho + "O cliente respondeu que NÃO quer cancelar. Nada foi cancelado. Confirme que o horário segue marcado.";
+    case "failed":
+      return (
+        cabecalho +
+        `A tentativa de cancelamento FALHOU (${outcome.error}). NUNCA diga que cancelou. ` +
+        "Explique que não foi possível e ofereça transferir para um atendente."
+      );
+  }
+}
+
 // Estados de tarefa em que o cliente pode estar escolhendo um horário.
 const AWAITING_TIME_CHOICE = new Set<ConversationTask["state"]>(["offer_options", "confirm", "check_availability"]);
 
@@ -441,6 +547,11 @@ export interface BrainResult {
   booked: boolean;
   rescheduled: boolean;
   cancelled: boolean;
+  // Agendamento aguardando confirmação de cancelamento. O webhook guarda
+  // isto em ConversationTask.collectedData.appointmentId para a próxima
+  // mensagem — é o que permite cancelar pelo ID EXATO depois do "sim", em vez
+  // de reescolher "o próximo" às cegas.
+  pendingCancelAppointmentId: string | null;
   // Ferramentas efetivamente chamadas nesta rodada, em ordem — usado por
   // lib/ai/taskState.ts para derivar o próximo estado da tarefa (Fase 4) sem
   // duplicar a lógica de quando cada ferramenta roda.
@@ -497,12 +608,21 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const bookingOutcome = booking ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
   if (bookingOutcome?.kind === "created") booked = true;
 
+  // Cancelamento: alvo resolvido e confirmação exigida pelo backend.
+  const cancelOutcome = booking ? await resolveCancellation(input, toolCtx, toolCalls) : null;
+  if (cancelOutcome?.kind === "cancelled") cancelled = true;
+  // Alvo que fica aguardando confirmação até a próxima mensagem — o webhook
+  // guarda isto na tarefa da conversa (collectedData.appointmentId).
+  const pendingCancelAppointmentId =
+    cancelOutcome?.kind === "needs_confirmation" ? cancelOutcome.appointmentId : null;
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
         buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup) +
-        bookingOutcomeSection(bookingOutcome),
+        bookingOutcomeSection(bookingOutcome) +
+        cancelOutcomeSection(cancelOutcome),
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
@@ -648,7 +768,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked, rescheduled, cancelled, toolCalls };
+    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
   }
 
   // Estouro do loop de ferramentas sem resposta final. Se a consulta de
@@ -657,7 +777,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (appointmentLookup?.ok) {
     const composed = composeAppointmentReply(appointmentLookup.data);
     if (composed) {
-      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls };
+      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
     }
   }
 
@@ -672,5 +792,6 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     rescheduled,
     cancelled,
     toolCalls,
+    pendingCancelAppointmentId,
   };
 }

@@ -23,6 +23,7 @@ import {
   updateAppointment,
   setStatus,
   weekdayOf,
+  isActive,
   getScheduleConfig,
 } from "@/lib/scheduling";
 import { getCustomerProfile, upsertCustomerProfile } from "@/lib/repo";
@@ -455,15 +456,48 @@ const rescheduleAppointment: ToolDefinition = {
 const cancelAppointment: ToolDefinition = {
   name: "cancel_appointment",
   enabled: (ctx) => ctx.est.bot.bookingEnabled,
-  schema: fn("cancel_appointment", "Cancela o próximo agendamento ativo do cliente.", {
-    type: "object",
-    properties: {},
-  }),
-  async execute(ctx) {
-    const appt = await findNextAppointment(ctx.est.id, normalizePhone(ctx.contactPhone));
-    if (!appt) return { ok: false, error: "nenhum agendamento ativo encontrado para cancelar" };
+  schema: fn(
+    "cancel_appointment",
+    "Cancela UM agendamento específico do cliente, identificado pelo id. Só use depois que a pessoa tiver confirmado explicitamente que quer cancelar aquele horário.",
+    {
+      type: "object",
+      properties: {
+        appointmentId: { type: "string", description: "id vindo de get_customer_appointments" },
+      },
+      required: ["appointmentId"],
+    },
+  ),
+  // Exige o id de propósito. Antes cancelava "o próximo agendamento ativo"
+  // (findNextAppointment) sem alvo explícito: com dois horários marcados,
+  // "cancela esse" apagava silenciosamente o mais próximo, que pode não ser
+  // o que estava sendo conversado. Quem resolve qual é "esse" é o backend
+  // (ver resolveCancellation em lib/ai/brain.ts), nunca o modelo por
+  // omissão.
+  async execute(ctx, args) {
+    if (typeof args.appointmentId !== "string" || !args.appointmentId) {
+      return { ok: false, error: "appointmentId é obrigatório — consulte get_customer_appointments antes" };
+    }
+    const appt = await getAppointment(ctx.est.id, args.appointmentId);
+    // Trava de posse: um id vindo do modelo nunca pode alcançar o
+    // agendamento de outra pessoa.
+    if (!appt || normalizePhone(appt.contactPhone) !== normalizePhone(ctx.contactPhone)) {
+      return { ok: false, error: "agendamento não encontrado para este cliente" };
+    }
+    if (!isActive(appt)) {
+      return { ok: false, error: `este agendamento já está "${appt.status}"` };
+    }
     await setStatus(ctx.est.id, appt.id, "cancelled");
-    return { ok: true, data: { serviceName: appt.serviceName } };
+    const config = ctx.config ?? (await getScheduleConfig(ctx.est.id));
+    return {
+      ok: true,
+      data: {
+        cancelled: true,
+        id: appt.id,
+        serviceName: appt.serviceName,
+        when: formatWhen(appt.startAt, config.utcOffsetMinutes),
+        day: relativeDayLabel(appt.startAt, config.utcOffsetMinutes),
+      },
+    };
   },
 };
 
