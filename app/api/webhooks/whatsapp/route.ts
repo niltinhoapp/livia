@@ -170,11 +170,30 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     return;
   }
 
-
-  // Se a conversa já está com humano OU aguardando humano (handoff), o bot
-  // fica quieto — não atropela o atendente nem continua respondendo depois
-  // de identificar que precisa de humano.
-  if (conversation.status === "human" || conversation.status === "handoff") return;
+  // Conversa com humano OU aguardando humano (handoff): a Livia fica quieta —
+  // não atropela o atendente nem continua respondendo depois de identificar
+  // que precisa de humano. A mensagem do cliente já foi persistida acima.
+  //
+  // O que faltava: só ficar quieta criava um beco sem saída. Ao clicar em
+  // "Assumir conversa" o painel resolve a pendência (PATCH assume, em
+  // app/api/conversations/[id]/route.ts) e a conversa passa a "human" — a
+  // partir daí toda mensagem nova do cliente caía neste return sem deixar
+  // rastro nenhum na fila de pendências, e a caixa de entrada classificava a
+  // conversa como "Sem pendência" enquanto o cliente continuava escrevendo.
+  //
+  // Agora cada mensagem nova durante handoff/human reabre a MESMA pendência
+  // (doc id = conversationId, ver lib/repo.ts: upsertPendingTask — não cria
+  // fila paralela nem duplica documento), então a conversa volta a aparecer
+  // como "Precisa de humano". A saída continua sendo explícita e manual:
+  // "Devolver para Livia" no painel. Nenhum retorno automático — a Livia não
+  // pode voltar a responder enquanto um atendente estiver no controle.
+  if (conversation.status === "human" || conversation.status === "handoff") {
+    await upsertPendingTask(est.id, conversation.id, contactPhone, {
+      type: "awaiting_human",
+      waitingFor: "responder mensagem nova do cliente",
+    });
+    return;
+  }
 
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
   // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
