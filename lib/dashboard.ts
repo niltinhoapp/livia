@@ -22,7 +22,7 @@ import {
 } from "@/lib/scheduling";
 import { opportunitiesFromPendingTasks, priceInquiryOpportunities, cancelledNoRebookingOpportunities } from "@/lib/ai/opportunities";
 import { classifyConversation } from "@/lib/ai/inbox";
-import { computeFunnel, hasScheduleIntentEvidence, type FunnelResult } from "@/lib/ai/funnel";
+import { computeDailyFunnel, type FunnelResult } from "@/lib/ai/funnel";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import type { Conversation, CustomerProfile, InboxCategory, IntentType, Opportunity, PendingTask } from "@/types";
 
@@ -182,30 +182,26 @@ export async function getDashboardMetrics(
   const scopedCreated = createdToday.filter((a) => a.createdAt < todayEnd);
   const scopedCancelled = cancelledToday.filter((a) => (a.cancelledAt ?? 0) < todayEnd);
 
-  // Conversão = agendamento REALMENTE criado pelo bot no período. Não filtra
-  // por status de propósito: o compromisso pode continuar "pending"
-  // (aguardando confirmação) na agenda e a conversão comercial já aconteceu
-  // no momento em que create_appointment devolveu sucesso e o Appointment foi
-  // persistido. Agendamentos com source "manual" (digitados pelo dono no
-  // painel) não entram — o funil aqui é o das conversas.
+  // Agendamentos criados pelo BOT no período. Não filtra por status de
+  // propósito: o compromisso pode continuar "pending" (aguardando
+  // confirmação) na agenda e a conversão comercial já aconteceu no momento em
+  // que create_appointment devolveu sucesso e o Appointment foi persistido.
+  // Agendamentos "manual" (digitados pelo dono no painel) ficam de fora — o
+  // funil aqui é o das conversas. Agendamentos de outros dias também não
+  // entram: o filtro é por `createdAt` dentro do período.
   const agendamentosDoBot = scopedCreated.filter((a) => a.source === "bot");
-  const phonesComAgendamentoBot = new Set(agendamentosDoBot.map((a) => normalizePhone(a.contactPhone)));
 
-  const convosComIntencaoAgendar = scopedConvos.filter((c) =>
-    hasScheduleIntentEvidence({
+  // O funil correlaciona cada agendamento à conversa que o originou (pelo
+  // telefone) e conta CONVERSAS em todas as etapas — ver computeDailyFunnel.
+  const funnel = computeDailyFunnel({
+    conversations: scopedConvos.map((c) => ({
+      contactPhoneKey: normalizePhone(c.contactPhone),
       lastIntent: c.lastIntent,
       lastScheduleIntentAt: c.lastScheduleIntentAt,
-      contactPhoneKey: normalizePhone(c.contactPhone),
-      from: todayStart,
-      to: todayEnd,
-      phonesWithBotAppointment: phonesComAgendamentoBot,
-    }),
-  );
-
-  const funnel = computeFunnel({
-    atendimentos: scopedConvos.length,
-    intencaoAgendar: convosComIntencaoAgendar.length,
-    agendamentosConcluidos: agendamentosDoBot.length,
+    })),
+    botAppointmentPhoneKeys: agendamentosDoBot.map((a) => normalizePhone(a.contactPhone)),
+    from: todayStart,
+    to: todayEnd,
   });
 
   const intentCounts = new Map<IntentType, number>();

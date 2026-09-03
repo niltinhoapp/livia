@@ -216,6 +216,12 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
             Taxa de conversão hoje: <span className="font-semibold text-ink-900">{Math.round(funnel.taxaConversao * 100)}%</span>
           </p>
         )}
+        {/* O funil conta CONVERSAS em todas as etapas; este é o número
+            operacional de agendamentos criados, que pode ser maior quando o
+            mesmo cliente agenda mais de uma vez no dia. */}
+        <p className="mt-1 text-xs text-ink-400">
+          Agendamentos criados hoje: <span className="font-semibold text-ink-700">{metrics.agendamentosCriadosHoje}</span>
+        </p>
       </Card>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
