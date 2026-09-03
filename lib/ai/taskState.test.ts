@@ -29,11 +29,11 @@ describe("deriveTaskState", () => {
     expect(task).toBeNull();
   });
 
-  it("avança para offer_options quando check_availability foi chamado", () => {
+  it("avança para offer_options quando find_available_appointments foi chamado", () => {
     const task = deriveTaskState({
       existingTask: null,
       intent: intent("schedule_appointment"),
-      toolCalls: [{ name: "check_availability", args: { date: "2026-09-10" } }],
+      toolCalls: [{ name: "find_available_appointments", args: { date: "2026-09-10" } }],
       booked: false,
     });
     expect(task?.state).toBe("offer_options");

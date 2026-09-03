@@ -3,15 +3,11 @@
 // para consultar horários livres e criar agendamentos sozinha, durante a
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import OpenAI from "openai";
-import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask } from "@/types";
-import {
-  getScheduleConfig,
-  listAppointments,
-  computeSlots,
-  createAppointment,
-  localToEpoch,
-} from "@/lib/scheduling";
-import type { ToolCallRecord } from "@/lib/ai/taskState";
+import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
+import { getScheduleConfig } from "@/lib/scheduling";
+import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
+import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
+import { evaluateTrust } from "@/lib/ai/trustPolicy";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -144,6 +140,7 @@ function buildSystemPrompt(
   nowHuman: string,
   customerProfile: CustomerProfile | null,
   task: ConversationTask | null,
+  intent: Intent,
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
@@ -167,18 +164,20 @@ function buildSystemPrompt(
   rules.push(...knowledgeGuidanceToText(kb));
   if (bot.bookingEnabled) {
     rules.push(
-      "Você PODE agendar. Regras do agendamento:",
+      "Você PODE agendar, remarcar e cancelar. Regras:",
       "- Descubra o serviço desejado e o dia de preferência.",
-      "- SEMPRE use a ferramenta check_availability para ver horários livres reais antes de oferecer horários. Nunca chute horários.",
+      "- SEMPRE use a ferramenta find_available_appointments para ver horários livres reais antes de oferecer horários. Nunca chute horários.",
       "- Ofereça algumas opções de horário ao cliente.",
-      "- Só depois que o cliente escolher e confirmar, use create_appointment com o startAt exato do horário escolhido (o valor vem de check_availability).",
-      "- Após criar, confirme os detalhes (serviço, dia e hora) em uma frase curta.",
+      "- Só depois que o cliente escolher e confirmar, use create_appointment com o startAt exato do horário escolhido (o valor vem de find_available_appointments).",
+      "- Para remarcar um horário já existente, use reschedule_appointment (também com um startAt vindo de find_available_appointments).",
+      "- Para cancelar, use cancel_appointment.",
+      "- Após criar/remarcar/cancelar, confirme os detalhes (serviço, dia e hora) em uma frase curta.",
     );
   } else {
     rules.push("Você ainda não fecha agendamentos; para marcar, oriente a pessoa a falar com a equipe.");
   }
   rules.push(
-    `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e inclua o marcador ${HANDOFF_TOKEN} ao final (ele não aparece para o cliente).`,
+    `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
   );
   const sections = [rules.join("\n"), "", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb)];
 
@@ -192,44 +191,19 @@ function buildSystemPrompt(
     sections.push("", "=== TAREFA EM ANDAMENTO ===", taskText);
   }
 
+  // Passo 7 — checagem de confiança: quando a intenção detectada pede um
+  // dado factual (preço/horário/endereço) e a base não tem esse dado, a
+  // regra geral já no topo ("nunca invente") fica reforçada com a lacuna
+  // ESPECÍFICA desta mensagem — mais eficaz do que confiar só na instrução
+  // genérica. Determinístico (lib/ai/trustPolicy.ts): zero chamadas de IA
+  // extras.
+  const trust = evaluateTrust(intent, kb);
+  if (!trust.hasSource && trust.directive) {
+    sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
+  }
+
   return sections.join("\n");
 }
-
-// ---- Ferramentas expostas à IA (só quando bookingEnabled) ----
-const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "check_availability",
-      description: "Retorna os horários livres reais de um dia. Use antes de oferecer qualquer horário.",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
-          durationMin: { type: "number", description: "Duração em minutos (opcional; usa o padrão do estabelecimento)" },
-        },
-        required: ["date"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_appointment",
-      description: "Cria o agendamento após o cliente escolher e confirmar um horário.",
-      parameters: {
-        type: "object",
-        properties: {
-          serviceName: { type: "string" },
-          startAt: { type: "number", description: "epoch em ms de um horário retornado por check_availability" },
-          durationMin: { type: "number" },
-          contactName: { type: "string", description: "nome do cliente, se souber" },
-        },
-        required: ["serviceName", "startAt"],
-      },
-    },
-  },
-];
 
 export interface BrainInput {
   est: Establishment;
@@ -242,12 +216,24 @@ export interface BrainInput {
   // diretamente, mantendo esta função sem I/O de persistência.
   customerProfile: CustomerProfile | null;
   task: ConversationTask | null;
+  // Passo 3, já calculado pelo webhook (determinístico) — reaproveitado aqui
+  // pro Passo 7 (checagem de confiança), sem recalcular nem gastar IA.
+  intent: Intent;
 }
 
 export interface BrainResult {
   reply: string;
+  // true quando o texto tinha o marcador legado [[HANDOFF]] OU a ferramenta
+  // request_human_handoff foi chamada — nunca inferido de outra forma. Quem
+  // decide gravar a mudança de status é app/api/webhooks/whatsapp/route.ts.
   handoff: boolean;
+  // Cada um só fica true quando a FERRAMENTA correspondente devolveu
+  // sucesso — nunca por o texto da IA "parecer" ter concluído algo (Passo 6:
+  // "nunca permita que texto produzido pelo modelo seja considerado prova de
+  // que uma operação aconteceu").
   booked: boolean;
+  rescheduled: boolean;
+  cancelled: boolean;
   // Ferramentas efetivamente chamadas nesta rodada, em ordem — usado por
   // lib/ai/taskState.ts para derivar o próximo estado da tarefa (Fase 4) sem
   // duplicar a lógica de quando cada ferramenta roda.
@@ -255,17 +241,21 @@ export interface BrainResult {
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName, customerProfile, task } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset (para contexto de data e para as ferramentas). Sem booking, evita
-  // o custo de ler a config.
+  // o custo de ler a config — as ferramentas que precisam dela e não a
+  // recebem carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
   const config = booking ? await getScheduleConfig(est.id) : null;
   const offset = config?.utcOffsetMinutes ?? -180;
   const now = nowLocal(offset);
 
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile };
+  const tools = toolsFor(toolCtx);
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(est, kb, now.human, customerProfile, task) },
+    { role: "system", content: buildSystemPrompt(est, kb, now.human, customerProfile, task, intent) },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
       content: m.text,
@@ -273,6 +263,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   ];
 
   let booked = false;
+  let rescheduled = false;
+  let cancelled = false;
+  let handoffRequested = false;
   const toolCalls: ToolCallRecord[] = [];
 
   // Loop de ferramentas (máx. algumas iterações pra não travar).
@@ -282,30 +275,29 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       messages,
       temperature: 0.4,
       max_tokens: 500,
-      ...(booking ? { tools: TOOLS } : {}),
+      ...(tools.length > 0 ? { tools } : {}),
     });
     const msg = completion.choices[0]?.message;
     if (!msg) break;
 
-    if (booking && msg.tool_calls?.length) {
+    if (msg.tool_calls?.length) {
       messages.push(msg as OpenAI.Chat.ChatCompletionMessageParam);
       for (const tc of msg.tool_calls) {
-        let result: unknown;
+        const name = tc.function.name as ToolName;
+        let args: Record<string, unknown> = {};
         try {
-          const args = JSON.parse(tc.function.arguments || "{}");
-          if (tc.function.name === "check_availability") {
-            toolCalls.push({ name: "check_availability", args });
-            result = await runCheckAvailability(est, config!, args);
-          } else if (tc.function.name === "create_appointment") {
-            toolCalls.push({ name: "create_appointment", args });
-            const r = await runCreateAppointment(est, config!, args, contactPhone, contactName, offset);
-            if (r.ok) booked = true;
-            result = r;
-          } else {
-            result = { error: "ferramenta desconhecida" };
-          }
-        } catch (err) {
-          result = { error: String(err) };
+          args = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          // args malformado — segue com {} e deixa a ferramenta validar.
+        }
+        toolCalls.push({ name, args });
+
+        const result = await runTool(name, args, toolCtx);
+        if (result.ok) {
+          if (name === "create_appointment") booked = true;
+          if (name === "reschedule_appointment") rescheduled = true;
+          if (name === "cancel_appointment") cancelled = true;
+          if (name === "request_human_handoff") handoffRequested = true;
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
       }
@@ -313,70 +305,18 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     let reply = msg.content?.trim() ?? "";
-    const handoff = reply.includes(HANDOFF_TOKEN);
-    if (handoff) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
+    const handoff = handoffRequested || reply.includes(HANDOFF_TOKEN);
+    if (reply.includes(HANDOFF_TOKEN)) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked, toolCalls };
+    return { reply, handoff, booked, rescheduled, cancelled, toolCalls };
   }
 
   return {
     reply: "Deixa eu confirmar isso com a equipe e já te retorno, tudo bem?",
-    handoff: false,
+    handoff: handoffRequested,
     booked,
+    rescheduled,
+    cancelled,
     toolCalls,
   };
-}
-
-// ---- Executores das ferramentas ----
-async function runCheckAvailability(
-  est: Establishment,
-  config: NonNullable<Awaited<ReturnType<typeof getScheduleConfig>>>,
-  args: { date?: string; durationMin?: number },
-): Promise<unknown> {
-  if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
-    return { error: "date inválida (use YYYY-MM-DD)" };
-  }
-  const duration = args.durationMin ?? config.defaultDurationMin;
-  const dayStart = localToEpoch(args.date, 0, config.utcOffsetMinutes);
-  const existing = await listAppointments(est.id, dayStart, dayStart + 24 * 3600000);
-  const slots = computeSlots(config, args.date, duration, existing).slice(0, 12);
-  if (slots.length === 0) return { date: args.date, slots: [], note: "Sem horários livres neste dia." };
-  return { date: args.date, slots }; // cada slot tem { time, startAt }
-}
-
-async function runCreateAppointment(
-  est: Establishment,
-  config: NonNullable<Awaited<ReturnType<typeof getScheduleConfig>>>,
-  args: { serviceName?: string; startAt?: number; durationMin?: number; contactName?: string },
-  contactPhone: string,
-  contactName: string | null,
-  offset: number,
-): Promise<{ ok: boolean; error?: string; when?: string }> {
-  if (!args.serviceName || typeof args.startAt !== "number") {
-    return { ok: false, error: "serviceName e startAt são obrigatórios" };
-  }
-  const duration = args.durationMin ?? config.defaultDurationMin;
-
-  // Revalida conflito (o cliente pode ter demorado a confirmar).
-  const existing = await listAppointments(est.id, args.startAt - 24 * 3600000, args.startAt + 24 * 3600000);
-  const clash = existing.some(
-    (a) =>
-      a.status !== "cancelled" &&
-      a.status !== "no_show" &&
-      args.startAt! < a.startAt + a.durationMin * 60000 &&
-      a.startAt < args.startAt! + duration * 60000,
-  );
-  if (clash) return { ok: false, error: "esse horário acabou de ser ocupado; ofereça outro" };
-
-  await createAppointment(est.id, {
-    contactPhone,
-    contactName: args.contactName ?? contactName,
-    serviceName: args.serviceName,
-    startAt: args.startAt,
-    durationMin: duration,
-    source: "bot",
-  });
-  const d = new Date(args.startAt + offset * 60000);
-  const when = `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")} às ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-  return { ok: true, when };
 }

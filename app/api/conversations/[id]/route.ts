@@ -9,7 +9,7 @@
 // vindo exclusivamente de resolveEstablishmentId(req) — nunca do payload.
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
-import { getConversation, listMessages, setConversationStatus } from "@/lib/repo";
+import { getConversation, listMessages, setConversationStatus, resolvePendingTask } from "@/lib/repo";
 
 // Mesmo motivo de app/api/conversations/route.ts: força no-store explícito
 // pra garantir que status/histórico nunca sejam servidos de um cache.
@@ -36,6 +36,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const body = (await req.json().catch(() => null)) as { action?: string } | null;
   if (body?.action === "assume") {
     await setConversationStatus(id, params.id, "human");
+    // Passo 9: um humano assumindo resolve a pendência "aguardando
+    // atendimento humano" (se havia uma) — é exatamente o que estava
+    // pendente.
+    await resolvePendingTask(id, params.id);
     return NextResponse.json({ ok: true, status: "human" });
   }
   if (body?.action === "return") {

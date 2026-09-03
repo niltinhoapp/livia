@@ -26,12 +26,15 @@ import {
   setConversationSummary,
   getCustomerProfile,
   upsertCustomerProfile,
+  upsertPendingTask,
+  resolvePendingTask,
   alreadyProcessed,
 } from "@/lib/repo";
 import { sendText, markAsRead } from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { deriveTaskState } from "@/lib/ai/taskState";
+import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { findNextAppointment, setStatus } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
@@ -164,6 +167,10 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
         await setStatus(est.id, next.id, "cancelled");
         await replyAndLog(wa, est.id, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
       }
+      // Confirmar/cancelar o lembrete resolve qualquer pendência que essa
+      // conversa tivesse (Passo 9) — tipicamente "cliente confirmar o
+      // horário", que é exatamente o que acabou de acontecer.
+      await resolvePendingTask(est.id, conversation.id);
       return;
     }
   }
@@ -181,7 +188,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   const customerProfile = await getCustomerProfile(est.id, contactPhone);
   const existingTask: ConversationTask | null = conversation.task ?? null;
 
-  const { reply, handoff, booked, toolCalls } = await think({
+  const { reply, handoff, booked, rescheduled, cancelled, toolCalls } = await think({
     est,
     kb,
     history: historyForAI,
@@ -189,10 +196,17 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     contactName,
     customerProfile,
     task: existingTask,
+    intent: detectedIntent,
   });
 
   const sent = await sendText(wa, est.id, contactPhone, reply);
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
+
+  // Passo 6: só uma operação com retorno positivo da FERRAMENTA conta como
+  // concluída — nunca o texto da resposta. `booked`/`rescheduled`/`cancelled`
+  // só chegam true a partir do resultado real de create/reschedule/cancel
+  // (ver lib/ai/tools.ts + lib/ai/brain.ts).
+  const operationCompleted = booked || rescheduled || cancelled;
 
   // Fase 4: deriva e persiste o próximo estado da tarefa a partir do que a
   // IA realmente fez nesta rodada — nunca do que ela disse que faria.
@@ -200,7 +214,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     existingTask,
     intent: detectedIntent,
     toolCalls,
-    booked,
+    booked: operationCompleted,
   });
   await setConversationIntent(est.id, conversation.id, detectedIntent.type);
   await setConversationTask(est.id, conversation.id, nextTask);
@@ -210,8 +224,8 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // REALMENTE criado agora (nunca um palpite da IA sobre o que o cliente
   // quer).
   const bookedServiceName = booked
-    ? toolCalls.find((t) => t.name === "create_appointment" && typeof t.args.serviceName === "string")?.args
-        .serviceName as string | undefined
+    ? (toolCalls.find((t) => t.name === "create_appointment" && typeof t.args.serviceName === "string")?.args
+        .serviceName as string | undefined)
     : undefined;
   await upsertCustomerProfile(est.id, contactPhone, {
     name: contactName ?? undefined,
@@ -227,9 +241,26 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
     // TODO: notificar o dono/atendente (push, e-mail ou painel).
   }
 
-  // Fase 2: resumo só nos momentos relevantes (handoff ou agendamento
-  // concluído) — nunca a cada mensagem, pelo custo de mais uma chamada de IA.
-  if (handoff || booked) {
+  // Passo 9: registra/atualiza/conclui a pendência desta conversa,
+  // integrada ao Intent (Passo 3) e ao ConversationTask (Passo 4) já
+  // calculados acima — nunca uma pendência nova por mensagem, o documento é
+  // reaproveitado (id = conversationId, ver lib/repo.ts).
+  const pendingDraft = derivePendingTask({
+    intent: detectedIntent,
+    handoffActive: handoff,
+    task: nextTask,
+    operationCompleted,
+  });
+  if (pendingDraft) {
+    await upsertPendingTask(est.id, conversation.id, contactPhone, pendingDraft);
+  } else {
+    await resolvePendingTask(est.id, conversation.id);
+  }
+
+  // Fase 2: resumo só nos momentos relevantes (handoff ou uma operação de
+  // agendamento concluída) — nunca a cada mensagem, pelo custo de mais uma
+  // chamada de IA.
+  if (handoff || operationCompleted) {
     const summary = await summarizeConversation(contactName, historyForAI, {
       kind: handoff ? "handoff" : "booked",
     });

@@ -298,6 +298,63 @@ export interface ConversationTask {
   updatedAt: number;
 }
 
+// ---- Ensinar a Lívia (Passo 8) ----
+// Correção feita pelo dono via painel. Sempre aplicada a
+// KnowledgeBase.faqs (categoria "faq") ou anexada a KnowledgeBase.notes
+// (demais categorias) — nunca escreve em Establishment, whatsapp,
+// Appointment ou qualquer dado de integração: estruturalmente, o código que
+// aplica uma correção só importa funções de conhecimento (ver
+// lib/repo.ts: applyKnowledgeCorrection). O documento aqui é o registro
+// histórico/auditável de que a correção aconteceu.
+export type CorrectionCategory =
+  | "faq"
+  | "establishment_info"
+  | "business_rule"
+  | "communication_preference"
+  | "operational_knowledge";
+
+export interface KnowledgeCorrection {
+  id: string;
+  establishmentId: string;
+  category: CorrectionCategory;
+  // Só relevante pra "faq" — a pergunta que a resposta errada não respondeu
+  // bem. Nas outras categorias, fica null.
+  question: string | null;
+  correctText: string;
+  // Conversa que originou a correção, quando iniciada de lá — não é
+  // referência viva (a conversa pode ser limpa depois; isto é só contexto).
+  conversationId: string | null;
+  createdAt: number;
+}
+
+// ---- Fila de pendências (Passo 9) ----
+// Uma conversa tem, no máximo, UMA pendência ativa por vez nesta V1 — por
+// isso o id do documento é o PRÓPRIO conversationId: reavaliar a mesma
+// conversa em mensagens seguintes atualiza o mesmo documento (nunca cria um
+// novo), o que é a deduplicação exigida pelo plano sem precisar de query.
+export type PendingTaskType =
+  | "awaiting_customer_confirmation"
+  | "awaiting_information"
+  | "awaiting_human"
+  | "appointment_started_incomplete"
+  | "exception_needs_establishment";
+
+export type PendingTaskStatus = "open" | "resolved";
+
+export interface PendingTask {
+  id: string; // = conversationId
+  establishmentId: string;
+  conversationId: string;
+  contactPhone: string;
+  type: PendingTaskType;
+  waitingFor: string; // descrição curta e legível (ex.: "cliente confirmar o horário")
+  status: PendingTaskStatus;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+  dueAt: number | null;
+}
+
 export type MessageRole = "customer" | "bot" | "agent";
 
 export interface Message {

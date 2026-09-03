@@ -209,6 +209,30 @@ export async function findNextAppointment(
   return found ?? null;
 }
 
+// Existe algum agendamento ATIVO que conflita com [startAt, startAt+duration)?
+// Consulta uma janela generosa (48h) em torno do horário candidato — os
+// únicos agendamentos que podem colidir estão nela, dado que durações são
+// sempre de poucas horas. Usado tanto pelo tool de agendamento/remarcação da
+// IA (lib/ai/tools.ts) quanto pelas rotas do painel — centralizado aqui pra
+// não reimplementar a mesma checagem em cada lugar que cria/remarca.
+// `excludeId` evita que um agendamento colida "consigo mesmo" ao remarcar.
+export async function hasScheduleConflict(
+  establishmentId: string,
+  startAt: number,
+  durationMin: number,
+  excludeId?: string,
+): Promise<boolean> {
+  const existing = await listAppointments(establishmentId, startAt - 24 * 3600000, startAt + 48 * 3600000);
+  return existing.some(
+    (a) =>
+      a.id !== excludeId &&
+      a.status !== "cancelled" &&
+      a.status !== "no_show" &&
+      startAt < a.startAt + a.durationMin * 60000 &&
+      a.startAt < startAt + durationMin * 60000,
+  );
+}
+
 export function setStatus(
   establishmentId: string,
   id: string,

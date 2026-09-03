@@ -8,8 +8,22 @@ import type { ConversationTask, Intent, TaskState } from "@/types";
 
 const TASK_INTENTS = new Set(["schedule_appointment", "reschedule_appointment", "cancel_appointment"]);
 
+// Nomes de todas as ferramentas da camada padronizada (lib/ai/tools.ts) —
+// esta função só reage às relacionadas a agendamento; as demais passam por
+// aqui sem efeito no estado da tarefa.
+export type ToolName =
+  | "get_business_hours"
+  | "search_knowledge_base"
+  | "get_customer_profile"
+  | "update_customer_profile"
+  | "find_available_appointments"
+  | "create_appointment"
+  | "reschedule_appointment"
+  | "cancel_appointment"
+  | "request_human_handoff";
+
 export interface ToolCallRecord {
-  name: "check_availability" | "create_appointment";
+  name: ToolName;
   args: Record<string, unknown>;
 }
 
@@ -69,9 +83,9 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
 // texto), o estado permanece — é exatamente o que evita a IA "esquecer" e
 // recomeçar.
 function nextStateFromTools(toolCalls: ToolCallRecord[], current: TaskState): TaskState {
-  const calledCreate = toolCalls.some((t) => t.name === "create_appointment");
-  const calledCheck = toolCalls.some((t) => t.name === "check_availability");
-  if (calledCreate) return "confirm"; // tentou criar; só chega a null (concluído) via `booked`
+  const calledCreate = toolCalls.some((t) => t.name === "create_appointment" || t.name === "reschedule_appointment");
+  const calledCheck = toolCalls.some((t) => t.name === "find_available_appointments");
+  if (calledCreate) return "confirm"; // tentou criar/remarcar; só chega a null (concluído) via `booked`
   if (calledCheck) return "offer_options";
   return current;
 }

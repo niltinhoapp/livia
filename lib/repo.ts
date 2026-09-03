@@ -17,6 +17,10 @@ import type {
   CustomerProfile,
   ConversationTask,
   IntentType,
+  PendingTask,
+  PendingTaskType,
+  KnowledgeCorrection,
+  CorrectionCategory,
 } from "@/types";
 
 export function defaultBotConfig(): BotConfig {
@@ -519,6 +523,164 @@ export async function saveKnowledgeBase(
   };
   await sub(establishmentId, "meta").doc("knowledge").set(kb);
   return kb;
+}
+
+// ---- Ensinar a Lívia (Passo 8) ----
+// A correção SEMPRE passa por aqui: só duas escritas acontecem — um
+// registro de auditoria em establishments/{id}/corrections (append-only,
+// nunca editado depois) e uma mudança na própria KnowledgeBase (via
+// getKnowledgeBase/saveKnowledgeBase, já existentes). Nenhuma outra coleção
+// é tocada — não há como uma correção alcançar Establishment.whatsapp,
+// Appointment ou qualquer dado de integração, porque esta função nunca
+// importa as funções que escrevem lá.
+export async function applyKnowledgeCorrection(
+  establishmentId: string,
+  input: {
+    category: CorrectionCategory;
+    question: string | null;
+    correctText: string;
+    conversationId: string | null;
+  },
+): Promise<KnowledgeCorrection> {
+  const now = Date.now();
+  const ref = sub(establishmentId, "corrections").doc();
+  const correction: KnowledgeCorrection = {
+    id: ref.id,
+    establishmentId,
+    category: input.category,
+    question: input.category === "faq" ? input.question : null,
+    correctText: input.correctText,
+    conversationId: input.conversationId,
+    createdAt: now,
+  };
+  await ref.set(correction);
+
+  const kb = (await getKnowledgeBase(establishmentId)) ?? {
+    establishmentId,
+    about: "",
+    address: null,
+    hours: null,
+    services: [],
+    faqs: [],
+    notes: null,
+    paymentMethods: null,
+    importantInfo: null,
+    toneGuidelines: null,
+    prohibitions: null,
+    handoffTriggers: null,
+    updatedAt: now,
+  };
+
+  if (correction.category === "faq" && correction.question) {
+    // Substitui uma FAQ existente com a MESMA pergunta (comparação
+    // case-insensitive) em vez de duplicar — é o caso comum de "a Livia
+    // respondeu errado a uma pergunta que já estava cadastrada".
+    const normalizedQ = correction.question.trim().toLowerCase();
+    const idx = kb.faqs.findIndex((f) => f.question.trim().toLowerCase() === normalizedQ);
+    const entry = { question: correction.question, answer: correction.correctText };
+    const faqs = idx >= 0 ? kb.faqs.map((f, i) => (i === idx ? entry : f)) : [...kb.faqs, entry];
+    await saveKnowledgeBase(establishmentId, { ...kb, faqs });
+  } else {
+    // Demais categorias: anexa como observação datada e rotulada em
+    // `notes` — campo de texto livre que já entra no prompt
+    // (lib/ai/brain.ts: knowledgeToText). Nunca sobrescreve o que já
+    // existia lá, só acrescenta.
+    const label = CORRECTION_CATEGORY_LABEL[correction.category];
+    const dateStr = new Date(now).toLocaleDateString("pt-BR");
+    const line = `[${label} — ${dateStr}] ${correction.correctText}`;
+    const notes = kb.notes ? `${kb.notes}\n${line}` : line;
+    await saveKnowledgeBase(establishmentId, { ...kb, notes });
+  }
+
+  return correction;
+}
+
+const CORRECTION_CATEGORY_LABEL: Record<CorrectionCategory, string> = {
+  faq: "FAQ",
+  establishment_info: "Informação do estabelecimento",
+  business_rule: "Regra do negócio",
+  communication_preference: "Preferência de comunicação",
+  operational_knowledge: "Conhecimento operacional",
+};
+
+export async function listKnowledgeCorrections(
+  establishmentId: string,
+  limitCount = 20,
+): Promise<KnowledgeCorrection[]> {
+  const snap = await sub(establishmentId, "corrections")
+    .orderBy("createdAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as KnowledgeCorrection);
+}
+
+// ---- Fila de pendências (Passo 9) ----
+// Doc id = conversationId — no máximo uma pendência ativa por conversa
+// nesta V1, então reavaliar a mesma conversa em mensagens seguintes
+// ATUALIZA o mesmo documento em vez de criar outro (é a deduplicação
+// exigida pelo plano, sem precisar de query nem de lógica extra).
+export async function upsertPendingTask(
+  establishmentId: string,
+  conversationId: string,
+  contactPhone: string,
+  draft: { type: PendingTaskType; waitingFor: string; dueAt?: number },
+): Promise<void> {
+  const ref = sub(establishmentId, "pendingTasks").doc(conversationId);
+  const now = Date.now();
+  const snap = await ref.get();
+
+  if (snap.exists) {
+    await ref.update({
+      type: draft.type,
+      waitingFor: draft.waitingFor,
+      status: "open",
+      updatedAt: now,
+      resolvedAt: null,
+      dueAt: draft.dueAt ?? null,
+    });
+    return;
+  }
+
+  const task: PendingTask = {
+    id: conversationId,
+    establishmentId,
+    conversationId,
+    contactPhone,
+    type: draft.type,
+    waitingFor: draft.waitingFor,
+    status: "open",
+    createdAt: now,
+    updatedAt: now,
+    resolvedAt: null,
+    dueAt: draft.dueAt ?? null,
+  };
+  await ref.set(task);
+}
+
+// Best-effort: só escreve se havia mesmo uma pendência aberta pra essa
+// conversa — evita uma escrita no caminho comum (a maioria das mensagens
+// não tem nenhuma pendência aberta pra resolver).
+export async function resolvePendingTask(establishmentId: string, conversationId: string): Promise<void> {
+  const ref = sub(establishmentId, "pendingTasks").doc(conversationId);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const existing = snap.data() as PendingTask;
+  if (existing.status === "resolved") return;
+  await ref.update({ status: "resolved", resolvedAt: Date.now(), updatedAt: Date.now() });
+}
+
+// Lista de pendências abertas pra uso futuro (ex.: caixa de entrada
+// inteligente, Passo 11) — não tem UI própria ainda nesta entrega.
+export async function listPendingTasks(
+  establishmentId: string,
+  limitCount = 50,
+): Promise<PendingTask[]> {
+  const snap = await sub(establishmentId, "pendingTasks")
+    .where("status", "==", "open")
+    .orderBy("updatedAt", "desc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((d) => d.data() as PendingTask);
 }
 
 // ---- Memória do cliente (Fase 1) ----

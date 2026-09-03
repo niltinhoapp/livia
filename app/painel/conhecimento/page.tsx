@@ -355,7 +355,58 @@ export default function KnowledgePanel() {
         {state === "saved" && <span className="text-sm font-semibold text-success-fg">Salvo!</span>}
         {state === "error" && <span className="text-sm font-semibold text-danger-fg">Erro ao salvar.</span>}
       </div>
+
+      <RecentCorrections />
     </div>
+  );
+}
+
+// Passo 8 — histórico de correções feitas via "Corrigir" nas conversas ou
+// direto por aqui no futuro. Só leitura: confirma pro dono que "corrigi ali
+// → já está valendo" (as FAQ/observações que aparecem acima já refletem a
+// correção, porque applyKnowledgeCorrection escreve nos mesmos campos).
+function RecentCorrections() {
+  const [corrections, setCorrections] = useState<
+    { id: string; category: string; question: string | null; correctText: string; createdAt: number }[] | null
+  >(null);
+
+  useEffect(() => {
+    fetch("/api/knowledge/corrections")
+      .then((r) => r.json())
+      .then((j) => setCorrections(j.corrections ?? []))
+      .catch(() => setCorrections([]));
+  }, []);
+
+  if (!corrections || corrections.length === 0) return null;
+
+  const CATEGORY_LABEL: Record<string, string> = {
+    faq: "FAQ",
+    establishment_info: "Informação do estabelecimento",
+    business_rule: "Regra do negócio",
+    communication_preference: "Como falar",
+    operational_knowledge: "Conhecimento operacional",
+  };
+
+  return (
+    <Card className="mt-6">
+      <p className="mb-3 text-sm font-semibold text-ink-900">Correções recentes</p>
+      <div className="space-y-3">
+        {corrections.slice(0, 8).map((c) => (
+          <div key={c.id} className="border-b border-line pb-3 last:border-b-0 last:pb-0">
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-primary-light px-2 py-0.5 text-[11px] font-semibold text-primary">
+                {CATEGORY_LABEL[c.category] ?? c.category}
+              </span>
+              <span className="text-[11px] text-ink-400">
+                {new Date(c.createdAt).toLocaleDateString("pt-BR")}
+              </span>
+            </div>
+            {c.question && <p className="mt-1 text-xs font-semibold text-ink-700">{c.question}</p>}
+            <p className="mt-0.5 text-xs text-ink-500">{c.correctText}</p>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

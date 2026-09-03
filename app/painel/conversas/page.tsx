@@ -6,13 +6,14 @@
 // Em mobile, lista e conversa não cabem lado a lado: mostra uma coisa de
 // cada vez (lista, ou a conversa com um botão "Voltar").
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2, GraduationCap } from "lucide-react";
 import type { Conversation, Message } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { TeachDialog } from "@/components/knowledge/TeachDialog";
 
 // "Limpar conversas" só existe para o tenant demo (Odonto) — usado pra
 // deixar o painel vazio antes de gravações de demonstração. A trava real é
@@ -182,6 +183,11 @@ function ConversationDetail({
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(conversation.status);
+  // Passo 8 — "Ensinar a Livia" a partir de uma conversa: qual mensagem do
+  // bot está sendo corrigida agora (null = diálogo fechado).
+  const [teachDefaultQuestion, setTeachDefaultQuestion] = useState<string | null>(null);
+  const [teachOpen, setTeachOpen] = useState(false);
+  const [teachSaved, setTeachSaved] = useState(false);
 
   const loadMessages = useCallback(() => {
     fetch(`/api/conversations/${conversation.id}`)
@@ -249,30 +255,78 @@ function ConversationDetail({
           <p className="text-center text-sm text-ink-400">Nenhuma mensagem ainda.</p>
         ) : (
           <div className="space-y-3">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
+            {messages.map((m, i) => (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                // Pergunta do cliente logo antes desta resposta — pré-
+                // preenche o formulário de correção; ausente se a resposta
+                // não veio logo depois de uma mensagem do cliente.
+                precedingCustomerText={
+                  m.role === "bot" && messages[i - 1]?.role === "customer" ? messages[i - 1]!.text : undefined
+                }
+                onCorrect={(question) => {
+                  setTeachDefaultQuestion(question ?? "");
+                  setTeachOpen(true);
+                }}
+              />
             ))}
           </div>
         )}
       </div>
+
+      <TeachDialog
+        open={teachOpen}
+        defaultQuestion={teachDefaultQuestion ?? undefined}
+        conversationId={conversation.id}
+        onClose={() => setTeachOpen(false)}
+        onSaved={() => {
+          setTeachOpen(false);
+          setTeachSaved(true);
+          setTimeout(() => setTeachSaved(false), 3000);
+        }}
+      />
+      {teachSaved && (
+        <p className="border-t border-line bg-success-bg px-4 py-2 text-center text-xs font-semibold text-success-fg">
+          Correção salva — a Livia já usa essa informação nas próximas conversas.
+        </p>
+      )}
     </>
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({
+  message,
+  precedingCustomerText,
+  onCorrect,
+}: {
+  message: Message;
+  precedingCustomerText?: string;
+  onCorrect: (question: string | undefined) => void;
+}) {
   const fromCustomer = message.role === "customer";
   return (
     <div className={`flex ${fromCustomer ? "justify-start" : "justify-end"}`}>
-      <div
-        className={`max-w-[80%] rounded-card px-3 py-2 text-sm ${
-          fromCustomer ? "bg-line/40 text-ink-900" : message.role === "agent" ? "bg-info text-white" : "bg-primary text-white"
-        }`}
-      >
-        <p className="whitespace-pre-wrap">{message.text}</p>
-        <p className={`mt-1 text-[10px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
-          {new Date(message.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-          {!fromCustomer && (message.role === "agent" ? " · atendente" : " · Livia")}
-        </p>
+      <div className="max-w-[80%]">
+        <div
+          className={`rounded-card px-3 py-2 text-sm ${
+            fromCustomer ? "bg-line/40 text-ink-900" : message.role === "agent" ? "bg-info text-white" : "bg-primary text-white"
+          }`}
+        >
+          <p className="whitespace-pre-wrap">{message.text}</p>
+          <p className={`mt-1 text-[10px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
+            {new Date(message.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+            {!fromCustomer && (message.role === "agent" ? " · atendente" : " · Livia")}
+          </p>
+        </div>
+        {message.role === "bot" && (
+          <button
+            onClick={() => onCorrect(precedingCustomerText)}
+            className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-ink-400 hover:text-primary"
+          >
+            <GraduationCap className="h-3 w-3" /> Corrigir
+          </button>
+        )}
       </div>
     </div>
   );
