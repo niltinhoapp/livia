@@ -265,6 +265,18 @@ export function claimsUnavailability(reply: string): boolean {
   return UNAVAILABLE_CLAIM.test(reply);
 }
 
+// Terceira forma de fabricação, além de enrolar e inventar desfecho: dizer
+// que NÃO CONSEGUE fazer algo que a ferramenta faz. Em Production a Livia
+// respondeu "não consigo cancelar agendamentos" e transferiu — com
+// cancel_appointment registrada e habilitada, minutos depois de ela mesma
+// ter criado um agendamento.
+const INCAPACITY_CLAIM =
+  /\b(n[ãa]o (consigo|posso|tenho como|sou capaz de|estou habilitada? (a|para))|n[ãa]o (é|e) poss[íi]vel (eu )?)\s*\w*\s*(cancel|remarc|reagend|agend|desmarc)/i;
+
+export function claimsIncapacity(reply: string): boolean {
+  return INCAPACITY_CLAIM.test(reply);
+}
+
 // O desfecho REAL da tentativa de reserva entra no prompt como fato
 // consumado. O modelo redige a mensagem; não decide o resultado.
 function bookingOutcomeSection(outcome: BookingOutcome | null): string {
@@ -555,6 +567,25 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // A consulta à agenda falhou de verdade — aí sim é caso de humano,
       // dito claramente, sem prometer voltar depois.
       reply = "Não consegui checar a agenda agora. Vou chamar uma pessoa da equipe pra te confirmar isso, tudo bem?";
+      handoff = true;
+    }
+
+    // ---- Trava de incapacidade inventada ----
+    //
+    // Se a ferramenta existe e está habilitada, dizer "não consigo" é falso.
+    // Uma passada corretiva listando o que ela PODE fazer; se insistir,
+    // transfere (aí sim há um humano de verdade no caminho).
+    if (claimsIncapacity(reply) && tools.length > 0) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        const disponiveis = tools.map((t) => t.function.name).join(", ");
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content: `A resposta acima disse que você não consegue fazer algo que você CONSEGUE. Estas ferramentas estão disponíveis agora: ${disponiveis}. Use a ferramenta adequada e responda com o resultado real, em vez de dizer que não consegue ou transferir.`,
+        });
+        continue;
+      }
       handoff = true;
     }
 

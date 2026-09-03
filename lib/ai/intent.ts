@@ -42,16 +42,21 @@ const RULES: Rule[] = [
     type: "cancel_appointment",
     confidence: 0.85,
     keywords: [
-      "cancelar minha consulta",
-      "cancelar meu horario",
-      "cancelar meu horário",
-      "cancelar o agendamento",
-      "cancelar minha reserva",
+      // Formas verbais reais: o cliente escreve "cancela esse", não
+      // "cancelar minha consulta". Só o infinitivo estava aqui, e por isso
+      // "cancela esse" caía em general_question e ninguém acionava o
+      // backend — mesma falha que "Agenda pra amanhã" tinha no agendar.
+      "cancelar",
+      "cancela",
+      "cancele",
+      "cancelamento",
       "desmarcar",
-      "quero cancelar",
+      "desmarca",
+      "desmarque",
       "nao vou poder ir",
       "não vou poder ir",
       "nao vou conseguir ir",
+      "não vou conseguir ir",
     ],
   },
   {
