@@ -4,7 +4,8 @@
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import OpenAI from "openai";
 import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
-import { getScheduleConfig } from "@/lib/scheduling";
+import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
+import { parseTimeSelection } from "@/lib/ai/timeSelection";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
@@ -253,6 +254,121 @@ export function looksLikeStalling(reply: string): boolean {
   return STALLING_PATTERNS.test(reply);
 }
 
+// Afirmações de DESFECHO operacional que só o backend pode fazer. Se o texto
+// contém uma destas e nenhuma ferramenta de agenda rodou no turno, o modelo
+// está inventando — foi assim que "13:00 já foi ocupado" chegou ao cliente
+// com a agenda vazia naquele horário.
+const UNAVAILABLE_CLAIM =
+  /\b(ocupad[oa]|indispon[íi]vel|n[ãa]o (est[áa]|esta) dispon[íi]vel|j[áa] foi (pego|reservad[oa]|preenchid[oa])|n[ãa]o (h[áa]|tem) (mais )?(vaga|hor[áa]rio))\b/i;
+
+export function claimsUnavailability(reply: string): boolean {
+  return UNAVAILABLE_CLAIM.test(reply);
+}
+
+// O desfecho REAL da tentativa de reserva entra no prompt como fato
+// consumado. O modelo redige a mensagem; não decide o resultado.
+function bookingOutcomeSection(outcome: BookingOutcome | null): string {
+  if (!outcome) return "";
+  const cabecalho = "\n\n=== RESULTADO REAL DA RESERVA (executado agora pelo sistema) ===\n";
+
+  if (outcome.kind === "created") {
+    return (
+      cabecalho +
+      `AGENDAMENTO CRIADO com sucesso: ${outcome.serviceName} em ${outcome.when}. ` +
+      "Confirme isso ao cliente de forma curta e simpática. NUNCA diga que o horário estava ocupado ou que não foi possível."
+    );
+  }
+
+  if (outcome.kind === "free_needs_service") {
+    return (
+      cabecalho +
+      `O horário ${outcome.time} ESTÁ DISPONÍVEL, mas ainda falta saber o serviço. ` +
+      "Pergunte qual serviço a pessoa quer. NUNCA diga que o horário está ocupado."
+    );
+  }
+
+  const alternativas = outcome.alternatives.map((a) => a.time).join(", ");
+  return (
+    cabecalho +
+    `O horário escolhido NÃO pôde ser reservado (motivo: ${outcome.reason}). ` +
+    (alternativas
+      ? `Horários realmente livres nesse dia: ${alternativas}. Ofereça SOMENTE estes.`
+      : "Não há horários livres nesse dia; ofereça outro dia.") +
+    " Nunca invente outros horários."
+  );
+}
+
+// Estados de tarefa em que o cliente pode estar escolhendo um horário.
+const AWAITING_TIME_CHOICE = new Set<ConversationTask["state"]>(["offer_options", "confirm", "check_availability"]);
+
+export type BookingOutcome =
+  | { kind: "created"; when: string; serviceName: string }
+  | { kind: "conflict"; reason: string; alternatives: { time: string }[] }
+  | { kind: "free_needs_service"; time: string };
+
+// Resolve deterministicamente uma escolha de horário do cliente: converte o
+// horário para instante concreto usando a data JÁ coletada na tarefa e o fuso
+// do estabelecimento, e executa a reserva pelo backend. Devolve `null` quando
+// não é o caso (sem tarefa, sem data coletada, ou a mensagem não é escolha de
+// horário) — aí o fluxo segue normal.
+async function resolveTimeSelection(
+  input: BrainInput,
+  toolCtx: ToolContext,
+  config: Awaited<ReturnType<typeof getScheduleConfig>> | null,
+  toolCalls: ToolCallRecord[],
+): Promise<BookingOutcome | null> {
+  const { task, history } = input;
+  if (!task || !config) return null;
+  if (task.type !== "schedule_appointment" && task.type !== "reschedule_appointment") return null;
+  if (!AWAITING_TIME_CHOICE.has(task.state)) return null;
+
+  const ultima = [...history].reverse().find((m) => m.role === "customer");
+  if (!ultima) return null;
+
+  const escolhido = parseTimeSelection(ultima.text);
+  const date = typeof task.collectedData.date === "string" ? task.collectedData.date : undefined;
+  if (!escolhido || !date) return null;
+
+  const startAt = localToEpoch(date, escolhido.hour * 60 + escolhido.minute, config.utcOffsetMinutes);
+  const serviceName =
+    typeof task.collectedData.serviceName === "string" ? task.collectedData.serviceName : undefined;
+
+  // Sem serviço definido não dá para criar — mas a disponibilidade ainda é
+  // decidida pelo backend, nunca pelo modelo.
+  if (!serviceName) {
+    const motivo = await assertBookable(toolCtx.est.id, config, startAt, config.defaultDurationMin);
+    if (motivo) {
+      return { kind: "conflict", reason: motivo, alternatives: await realAlternatives(toolCtx, date, toolCalls) };
+    }
+    return { kind: "free_needs_service", time: `${String(escolhido.hour).padStart(2, "0")}:${String(escolhido.minute).padStart(2, "0")}` };
+  }
+
+  const result = await runTool("create_appointment", { serviceName, startAt }, toolCtx);
+  toolCalls.push({ name: "create_appointment", args: { serviceName, startAt } });
+
+  if (result.ok) {
+    const data = result.data as { when?: string } | undefined;
+    return { kind: "created", when: data?.when ?? "", serviceName };
+  }
+  return {
+    kind: "conflict",
+    reason: result.reasonCode ?? result.error ?? "indisponível",
+    alternatives: await realAlternatives(toolCtx, date, toolCalls),
+  };
+}
+
+// Alternativas REAIS para o mesmo dia — nunca inventadas pelo modelo.
+async function realAlternatives(
+  toolCtx: ToolContext,
+  date: string,
+  toolCalls: ToolCallRecord[],
+): Promise<{ time: string }[]> {
+  const result = await runTool("find_available_appointments", { date }, toolCtx);
+  toolCalls.push({ name: "find_available_appointments", args: { date } });
+  const data = result.data as { slots?: { time: string }[] } | undefined;
+  return (data?.slots ?? []).slice(0, 5).map((s) => ({ time: s.time }));
+}
+
 // Resposta determinística montada a partir dos dados REAIS da agenda. Usada
 // quando o modelo enrola mesmo tendo os dados no prompt — assim "aguarde" é
 // estruturalmente impossível neste fluxo, e não uma regra que o modelo pode
@@ -354,10 +470,27 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     toolCalls.push({ name: "get_customer_appointments", args: {} });
   }
 
+  // ---- Escolha de horário: o BACKEND decide, o modelo só comunica ----
+  //
+  // Quando existe uma tarefa de agendamento aguardando escolha e o cliente
+  // responde só um horário ("13", "14;30"), essa mensagem não casa com
+  // nenhuma regra de intenção — e antes disto o modelo ficava livre para
+  // declarar sozinho "13:00 já foi ocupado", sem nunca consultar a agenda.
+  // Foi exatamente o que aconteceu em Production: os conflitos anunciados não
+  // existiam.
+  //
+  // Agora o backend resolve o horário, valida e TENTA RESERVAR antes de
+  // gerar qualquer texto. "Confirmado", "ocupado" e "indisponível" passam a
+  // ser sempre resultado real de execução.
+  const bookingOutcome = booking ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
+  if (bookingOutcome?.kind === "created") booked = true;
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup),
+      content:
+        buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup) +
+        bookingOutcomeSection(bookingOutcome),
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
@@ -423,6 +556,36 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // dito claramente, sem prometer voltar depois.
       reply = "Não consegui checar a agenda agora. Vou chamar uma pessoa da equipe pra te confirmar isso, tudo bem?";
       handoff = true;
+    }
+
+    // ---- Trava de desfecho inventado ----
+    //
+    // "Ocupado"/"indisponível" só pode existir se alguma ferramenta de agenda
+    // tiver rodado neste turno. Sem isso, o modelo está afirmando um estado
+    // operacional que ninguém verificou — o bug original. Substituímos pela
+    // verdade quando temos, ou forçamos a consulta quando não temos.
+    if (claimsUnavailability(reply)) {
+      const consultouAgenda = toolCalls.some(
+        (t) => t.name === "create_appointment" || t.name === "find_available_appointments",
+      );
+      if (bookingOutcome?.kind === "created") {
+        // Contradiz o backend: a reserva FOI criada.
+        reply = `Prontinho! Seu horário de ${bookingOutcome.serviceName} está reservado para ${bookingOutcome.when}.`;
+        handoff = false;
+      } else if (!consultouAgenda) {
+        if (!stallCorrected) {
+          stallCorrected = true;
+          messages.push({ role: "assistant", content: reply });
+          messages.push({
+            role: "system",
+            content:
+              "A resposta acima afirmou que um horário está ocupado/indisponível, mas NENHUMA consulta à agenda foi feita. Você não pode declarar isso por conta própria. Use find_available_appointments (ou create_appointment, se a pessoa já escolheu) e responda com o resultado real.",
+          });
+          continue;
+        }
+        reply = "Vou chamar uma pessoa da equipe pra confirmar esse horário com você.";
+        handoff = true;
+      }
     }
 
     // ---- Regra geral: promessa de continuação inexistente ----
