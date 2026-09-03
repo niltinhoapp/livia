@@ -20,3 +20,36 @@ export function computeFunnel(input: FunnelCounts): FunnelResult {
   const taxaConversao = input.intencaoAgendar > 0 ? input.agendamentosConcluidos / input.intencaoAgendar : null;
   return { ...input, naoConcluidos, taxaConversao };
 }
+
+// A conversa demonstrou intenção de agendar no período? Três evidências
+// independentes, qualquer uma basta — nenhuma delas é palpite:
+//
+//   1. `lastScheduleIntentAt` dentro do período — carimbo durável gravado
+//      quando a intenção foi detectada, imune à mensagem seguinte;
+//   2. a ÚLTIMA mensagem ainda é de agendamento (conversa em andamento que
+//      ainda não passou pela etapa de coleta de serviço/horário);
+//   3. existe agendamento criado pelo BOT para este contato no período — um
+//      agendamento criado é, por si só, prova de que houve intenção. Esta
+//      terceira evidência é o que torna o funil correto mesmo para conversas
+//      gravadas ANTES de `lastScheduleIntentAt` existir, e garante que a
+//      etapa "intenção" nunca fique menor que a de "concluídos".
+export interface ScheduleIntentEvidenceInput {
+  lastIntent?: string;
+  lastScheduleIntentAt?: number;
+  contactPhoneKey: string; // telefone já normalizado por quem chama
+  from: number;
+  to: number;
+  phonesWithBotAppointment: Set<string>;
+}
+
+export function hasScheduleIntentEvidence(input: ScheduleIntentEvidenceInput): boolean {
+  const { lastIntent, lastScheduleIntentAt, contactPhoneKey, from, to, phonesWithBotAppointment } = input;
+
+  if (typeof lastScheduleIntentAt === "number" && lastScheduleIntentAt >= from && lastScheduleIntentAt < to) {
+    return true;
+  }
+  if (lastIntent === "schedule_appointment" || lastIntent === "reschedule_appointment") {
+    return true;
+  }
+  return phonesWithBotAppointment.has(contactPhoneKey);
+}

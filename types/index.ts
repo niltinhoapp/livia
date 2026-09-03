@@ -173,8 +173,17 @@ export interface Conversation {
   status: "bot" | "handoff" | "human" | "closed";
   lastMessageAt: number;
   createdAt: number;
-  // Última intenção detectada na mensagem mais recente do cliente.
+  // Última intenção detectada na mensagem mais recente do cliente. É
+  // SOBRESCRITA a cada mensagem nova — não serve como evidência de que a
+  // conversa teve um objetivo, só do que foi dito por último.
   lastIntent?: IntentType;
+  // Quando uma intenção de AGENDAR/REMARCAR apareceu nesta conversa pela
+  // última vez. Existe porque `lastIntent` sozinho perde essa informação: um
+  // agendamento real leva várias mensagens ("Agenda pra amanhã às 9" →
+  // "Avaliação"), e a última quase nunca carrega a palavra-chave — o funil
+  // (Passo 12/13) via a conversa como se nunca tivesse havido intenção de
+  // agendar. Este carimbo nunca é apagado por uma mensagem posterior.
+  lastScheduleIntentAt?: number;
   // Etapa da tarefa em andamento (ex.: agendamento) — ausente quando não há
   // tarefa ativa.
   task?: ConversationTask;

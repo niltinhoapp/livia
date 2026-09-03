@@ -22,7 +22,7 @@ import {
 } from "@/lib/scheduling";
 import { opportunitiesFromPendingTasks, priceInquiryOpportunities, cancelledNoRebookingOpportunities } from "@/lib/ai/opportunities";
 import { classifyConversation } from "@/lib/ai/inbox";
-import { computeFunnel, type FunnelResult } from "@/lib/ai/funnel";
+import { computeFunnel, hasScheduleIntentEvidence, type FunnelResult } from "@/lib/ai/funnel";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import type { Conversation, CustomerProfile, InboxCategory, IntentType, Opportunity, PendingTask } from "@/types";
 
@@ -182,15 +182,30 @@ export async function getDashboardMetrics(
   const scopedCreated = createdToday.filter((a) => a.createdAt < todayEnd);
   const scopedCancelled = cancelledToday.filter((a) => (a.cancelledAt ?? 0) < todayEnd);
 
-  const SCHEDULE_INTENTS = new Set<IntentType>(["schedule_appointment", "reschedule_appointment"]);
-  const convosComIntencaoAgendar = scopedConvos.filter((c) => c.lastIntent && SCHEDULE_INTENTS.has(c.lastIntent));
-  const phonesComIntencao = new Set(convosComIntencaoAgendar.map((c) => normalizePhone(c.contactPhone)));
-  const agendamentosConcluidosHoje = scopedCreated.filter((a) => phonesComIntencao.has(normalizePhone(a.contactPhone))).length;
+  // Conversão = agendamento REALMENTE criado pelo bot no período. Não filtra
+  // por status de propósito: o compromisso pode continuar "pending"
+  // (aguardando confirmação) na agenda e a conversão comercial já aconteceu
+  // no momento em que create_appointment devolveu sucesso e o Appointment foi
+  // persistido. Agendamentos com source "manual" (digitados pelo dono no
+  // painel) não entram — o funil aqui é o das conversas.
+  const agendamentosDoBot = scopedCreated.filter((a) => a.source === "bot");
+  const phonesComAgendamentoBot = new Set(agendamentosDoBot.map((a) => normalizePhone(a.contactPhone)));
+
+  const convosComIntencaoAgendar = scopedConvos.filter((c) =>
+    hasScheduleIntentEvidence({
+      lastIntent: c.lastIntent,
+      lastScheduleIntentAt: c.lastScheduleIntentAt,
+      contactPhoneKey: normalizePhone(c.contactPhone),
+      from: todayStart,
+      to: todayEnd,
+      phonesWithBotAppointment: phonesComAgendamentoBot,
+    }),
+  );
 
   const funnel = computeFunnel({
     atendimentos: scopedConvos.length,
     intencaoAgendar: convosComIntencaoAgendar.length,
-    agendamentosConcluidos: agendamentosConcluidosHoje,
+    agendamentosConcluidos: agendamentosDoBot.length,
   });
 
   const intentCounts = new Map<IntentType, number>();

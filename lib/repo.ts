@@ -862,9 +862,16 @@ export async function setConversationIntent(
   conversationId: string,
   intent: IntentType,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ lastIntent: intent });
+  const patch: Record<string, unknown> = { lastIntent: intent };
+  // Carimba a evidência DURÁVEL de intenção de agendamento. `lastIntent`
+  // sozinho é sobrescrito pela mensagem seguinte (ex.: o cliente responde só
+  // "Avaliação" quando a Livia pergunta o serviço) — e sem este carimbo o
+  // funil perdia a conversa inteira. Nunca é limpo por uma intenção
+  // posterior diferente.
+  if (intent === "schedule_appointment" || intent === "reschedule_appointment") {
+    patch.lastScheduleIntentAt = Date.now();
+  }
+  await sub(establishmentId, "conversations").doc(conversationId).update(patch);
 }
 
 // Estado da tarefa em andamento (Fase 4) — `task: null` limpa o campo

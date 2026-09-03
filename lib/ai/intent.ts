@@ -72,19 +72,26 @@ const RULES: Rule[] = [
     type: "schedule_appointment",
     confidence: 0.75,
     keywords: [
+      // Formas verbais/nominais de "agendar" — o cliente real escreve
+      // "Agenda pra amanhã", "agenda aí", "quero um agendamento", e não só
+      // o infinitivo. Só "agendar" deixava passar exatamente esses casos.
       "agendar",
-      "marcar um horario",
-      "marcar um horário",
-      "marcar uma consulta",
-      "marcar consulta",
-      "marcar hora",
-      "quero marcar",
+      "agenda",
+      "agende",
+      "agendamento",
+      // "marcar" sozinho é seguro aqui porque cancelamento ("desmarcar") e
+      // remarcação ("remarcar") são avaliados ANTES desta regra e vencem.
+      "marcar",
+      "marca um",
+      "marca uma",
       "tem horario",
       "tem horário",
       "tem vaga",
       "disponibilidade",
       "quero um horario",
       "quero um horário",
+      "queria um horario",
+      "queria um horário",
     ],
   },
   {
