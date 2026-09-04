@@ -105,29 +105,32 @@ describe("detecção de incapacidade inventada", () => {
   });
 });
 
+// Contrato ATUAL do fluxo de cancelamento (revisado em 04/09/2026, depois do
+// bug real em Production): com intent de cancelamento o backend já resolveu o
+// alvo antes de existir qualquer texto, então a resposta é montada a partir do
+// CancelOutcome — não há passada corretiva a negociar com o modelo, e não se
+// transfere por incapacidade inventada. Transferência aqui só em erro real.
+// Ver lib/ai/cancelDeterministic.test.ts para os cenários completos.
 describe("a Livia não pode alegar que não sabe cancelar", () => {
-  it("a alegação é corrigida e ela é obrigada a usar a ferramenta", async () => {
-    respostas = [
-      "Entendi, mas não consigo cancelar agendamentos. Vou transferir você para um atendente.",
-      "Certo! Encontrei seu horário de segunda às 09:00. Confirma o cancelamento?",
-    ];
+  it("a alegação falsa é descartada e a resposta vem do backend", async () => {
+    respostas = ["Entendi, mas não consigo cancelar agendamentos. Vou transferir você para um atendente."];
 
     const result = await responder("cancela esse");
 
-    expect(create).toHaveBeenCalledTimes(2);
-    const correcao = (create.mock.calls[1]![0] as unknown as { messages: { role: string; content: string }[] }).messages.at(-1)!;
-    expect(correcao.role).toBe("system");
-    expect(correcao.content).toMatch(/não consegue fazer algo que você CONSEGUE/i);
-    expect(correcao.content).toContain("cancel_appointment");
+    // Uma única chamada: o desfecho já era conhecido, não há o que corrigir.
+    expect(create).toHaveBeenCalledTimes(1);
     expect(result.reply).not.toMatch(/não consigo cancelar/i);
+    // O mock devolve zero agendamentos: o certo é dizer isso, não transferir.
+    expect(result.reply).toMatch(/não encontrei nenhum agendamento ativo/i);
   });
 
-  it("insistindo na alegação falsa, transfere de verdade em vez de fingir", async () => {
+  it("insistindo na alegação falsa, o cliente ainda assim não lê a mentira", async () => {
     respostas = ["Não consigo cancelar.", "Realmente não consigo cancelar agendamentos."];
 
     const result = await responder("cancela esse");
 
-    expect(result.handoff).toBe(true);
+    expect(result.reply).not.toMatch(/não consigo cancelar/i);
+    expect(result.handoff).toBe(false);
   });
 
   it("resposta correta de primeira passa intacta", async () => {

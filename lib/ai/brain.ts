@@ -416,6 +416,39 @@ function cancelOutcomeSection(outcome: CancelOutcome | null): string {
   }
 }
 
+// Resposta determinística do fluxo de cancelamento, montada a partir do
+// CancelOutcome que o backend já apurou.
+//
+// cancelOutcomeSection() põe o mesmo fato no prompt, mas prompt é instrução:
+// o modelo pode ignorar — e ignorou, em Production (04/09/2026), com
+// bookingEnabled=true, intent=cancel_appointment e o alvo já resolvido aqui.
+// Ele respondeu "não consigo cancelar agendamentos" mesmo assim. Isto existe
+// para que, nesse fluxo, a resposta NÃO dependa da obediência do modelo —
+// mesma estratégia já usada em composeAppointmentReply.
+//
+// "failed" fica de fora de propósito: é o único desfecho em que transferir
+// para uma pessoa é a resposta certa, e ele é tratado à parte.
+export function composeCancelReply(outcome: CancelOutcome): string | null {
+  switch (outcome.kind) {
+    case "none":
+      return "Procurei aqui e não encontrei nenhum agendamento ativo no seu nome. Quer que eu veja os horários disponíveis pra você?";
+    case "needs_confirmation":
+      return `Encontrei este horário no seu nome: ${outcome.label}. Confirma que quer cancelar?`;
+    case "ambiguous":
+      return (
+        "Você tem mais de um horário marcado:\n" +
+        outcome.options.map((o) => `• ${o.label}`).join("\n") +
+        "\nQual deles você quer cancelar?"
+      );
+    case "cancelled":
+      return `Pronto, cancelei ${outcome.label}. Se quiser remarcar, é só me chamar.`;
+    case "aborted":
+      return "Tudo bem, não cancelei nada — seu horário segue marcado.";
+    case "failed":
+      return null;
+  }
+}
+
 // Estados de tarefa em que o cliente pode estar escolhendo um horário.
 const AWAITING_TIME_CHOICE = new Set<ConversationTask["state"]>(["offer_options", "confirm", "check_availability"]);
 
@@ -690,6 +723,34 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       handoff = true;
     }
 
+    // ---- Trava determinística do fluxo de CANCELAMENTO ----
+    //
+    // O backend já resolveu o alvo (resolveCancellation) antes de qualquer
+    // texto existir. Se o modelo mesmo assim alegou incapacidade, enrolou ou
+    // não respondeu nada, a resposta passa a ser montada do CancelOutcome —
+    // o modelo perde o direito de decidir se a Livia sabe cancelar.
+    //
+    // Foi exatamente a brecha do bug de Production (04/09/2026): o alvo
+    // estava resolvido, o prompt dizia o que fazer, e ainda assim o cliente
+    // recebeu "não consigo cancelar agendamentos".
+    if (cancelOutcome) {
+      if (cancelOutcome.kind === "failed") {
+        // Único desfecho em que transferir é a resposta certa — dito sem
+        // prometer uma verificação que não vai acontecer.
+        if (!reply || claimsIncapacity(reply) || looksLikeStalling(reply)) {
+          reply = "Não consegui concluir o cancelamento agora. Vou chamar uma pessoa da equipe pra resolver isso com você.";
+          handoff = true;
+        }
+      } else if (!reply || claimsIncapacity(reply) || looksLikeStalling(reply)) {
+        const composed = composeCancelReply(cancelOutcome);
+        if (composed) {
+          reply = composed;
+          // O backend resolveu o cancelamento: não há motivo para transferir.
+          handoff = false;
+        }
+      }
+    }
+
     // ---- Trava de incapacidade inventada ----
     //
     // Se a ferramenta existe e está habilitada, dizer "não consigo" é falso.
@@ -706,7 +767,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         });
         continue;
       }
+      // Insistiu na alegação falsa. Transferir é certo; deixar o texto falso
+      // chegar ao cliente NÃO é — era o que acontecia, e foi o que ele leu em
+      // Production. Os guards vizinhos já sobrescreviam a resposta nesse
+      // ponto (ver desfecho inventado e enrolação); este não sobrescrevia.
       handoff = true;
+      reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
     }
 
     // ---- Trava de desfecho inventado ----
@@ -765,6 +831,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // Segunda tentativa também enrolou: transfere de verdade.
       reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
       handoff = true;
+    }
+
+    // ---- Saneamento final: handoff não pode carregar espera falsa ----
+    //
+    // A trava de enrolação acima é condicionada a `!handoff`, então quando a
+    // transferência era decidida ANTES dela (incapacidade insistente, pedido
+    // explícito de humano, HANDOFF_TOKEN do modelo) um "um momento, por
+    // favor" passava batido junto — foi o que o cliente leu em Production.
+    // Transferir já significa que ninguém vai voltar sozinho nesta conversa.
+    if (handoff && looksLikeStalling(reply)) {
+      reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
