@@ -42,69 +42,137 @@ import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
+// Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
+// mensagem, só identificadores técnicos (message id da Meta, establishment
+// id, conversation id, contagens, booleanos). Existe porque "POST 200" não
+// prova que a mensagem foi processada: o caso real que motivou isto foi o
+// webhook retornando 200 em ~8ms, sem nenhuma chamada externa — a assinatura
+// estava falhando e ninguém sabia exatamente por quê (secret ausente? header
+// ausente? assinatura não bate?), porque o retorno era idêntico nos três casos.
+function logStage(stage: string, data?: Record<string, unknown>) {
+  console.log(`[livia webhook] ${stage}`, data ? JSON.stringify(data) : "");
+}
+
 export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
   const mode = p.get("hub.mode");
   const token = p.get("hub.verify_token");
   const challenge = p.get("hub.challenge");
+  const configured = Boolean(process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN);
   if (mode === "subscribe" && token === process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+    logStage("verify ok");
     return new NextResponse(challenge ?? "", { status: 200 });
   }
+  // "tokenConfigured" diz, sem vazar o valor, se WHATSAPP_WEBHOOK_VERIFY_TOKEN
+  // sequer existe neste deployment — a primeira coisa a checar quando a
+  // verificação falha.
+  logStage("verify failed", { mode, tokenConfigured: configured });
   return NextResponse.json({ error: "verificação inválida" }, { status: 403 });
 }
 
+// Motivo exato de uma assinatura não bater — sem isso, "secret não
+// configurado", "header ausente" e "assinatura errada" são indistinguíveis
+// nos logs (as três retornam o mesmo 200 silencioso, por design, pra Meta não
+// desativar o webhook). Nenhum dos três casos loga o valor do secret/header.
+type SignatureCheck = { ok: true } | { ok: false; reason: "no_secret" | "no_header" | "mismatch" };
+
 // Valida X-Hub-Signature-256 (sha256=<hmac do corpo cru com META_APP_SECRET>).
-function verifySignature(rawBody: string, header: string | null): boolean {
+function verifySignature(rawBody: string, header: string | null): SignatureCheck {
   // .trim() aqui é defensivo: valores colados manualmente numa env var (ex.
   // via prompt interativo do `vercel env add`) podem carregar um espaço ou
   // quebra de linha extra no final, o que quebraria o HMAC silenciosamente
   // sem nenhum erro visível — só a assinatura nunca batendo.
   const secret = process.env.META_APP_SECRET?.trim();
-  if (!secret || !header?.startsWith("sha256=")) return false;
+  if (!secret) return { ok: false, reason: "no_secret" };
+  if (!header?.startsWith("sha256=")) return { ok: false, reason: "no_header" };
   const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
   const provided = header.slice("sha256=".length);
   const a = Buffer.from(expected);
   const b = Buffer.from(provided);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const matches = a.length === b.length && timingSafeEqual(a, b);
+  return matches ? { ok: true } : { ok: false, reason: "mismatch" };
 }
 
 export async function POST(req: NextRequest) {
   const raw = await req.text();
+  logStage("received", { bytes: raw.length });
 
   // Assinatura ausente/inválida/não confere -> ignora (responde 200 mesmo
-  // assim para a Meta não desativar o webhook por erros repetidos).
-  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"))) {
+  // assim para a Meta não desativar o webhook por erros repetidos). O motivo
+  // vai pro log — é a diferença entre "nunca vou descobrir por que parou de
+  // responder" e "META_APP_SECRET sumiu do deployment, é só isso".
+  const signature = verifySignature(raw, req.headers.get("x-hub-signature-256"));
+  if (!signature.ok) {
+    logStage("signature rejected", { reason: signature.reason });
     return NextResponse.json({ received: true });
   }
 
   let body: WebhookBody;
   try {
     body = JSON.parse(raw) as WebhookBody;
-  } catch {
+  } catch (err) {
+    logStage("payload parse failed", { error: String(err) });
     return NextResponse.json({ received: true });
   }
 
   try {
     await handleWebhook(body);
   } catch (err) {
-    console.error("[livia webhook] erro:", err);
+    // Não silencioso: qualquer exceção não tratada por um passo específico
+    // (ver os try/catch nomeados dentro de handleWebhook) cai aqui e fica
+    // visível nos logs — nunca é engolida.
+    console.error("[livia webhook] erro não tratado:", err);
   }
   // Sempre 200 pra Meta não desativar/reenviar o webhook.
   return NextResponse.json({ received: true });
 }
 
 async function handleWebhook(body: WebhookBody): Promise<void> {
-  const change = body.entry?.[0]?.changes?.[0];
-  const value = change?.value;
-  const msg = value?.messages?.[0];
-  // Ignora eventos que não são mensagem de entrada (ex.: status de entrega).
-  if (!msg || !value?.metadata?.phone_number_id) return;
+  // A Meta pode enviar mais de um entry/change/message no mesmo POST (ex.:
+  // duas mensagens do cliente em rápida sucessão chegam batched). O código
+  // só olhava entry[0].changes[0].messages[0] — qualquer mensagem além dessa
+  // era descartada em silêncio, sem log e sem erro. Processa todas, em ordem.
+  const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const value = change.value;
+      for (const msg of value?.messages ?? []) {
+        messages.push({ value: value!, msg });
+      }
+    }
+  }
+
+  if (messages.length === 0) {
+    // Evento real, mas não é mensagem de entrada — status de entrega/leitura,
+    // ou qualquer outro tipo de change. Comportamento correto é ignorar; o
+    // log é só para distinguir isto de "a mensagem sumiu antes de chegar aqui".
+    logStage("no incoming message in payload", { entries: body.entry?.length ?? 0 });
+    return;
+  }
+
+  logStage("messages in payload", { count: messages.length });
+  for (const { value, msg } of messages) {
+    await processMessage(value, msg);
+  }
+}
+
+async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise<void> {
+  if (!value.metadata?.phone_number_id) {
+    logStage("message without phone_number_id, ignored", { msgId: msg.id });
+    return;
+  }
 
   // Só tratamos texto por enquanto (áudio/imagem/localização virão depois).
-  if (msg.type !== "text" || !msg.text?.body) return;
+  if (msg.type !== "text" || !msg.text?.body) {
+    logStage("non-text message ignored", { msgId: msg.id, type: msg.type });
+    return;
+  }
 
   // Dedupe de reentrega.
-  if (msg.id && (await alreadyProcessed(msg.id))) return;
+  if (msg.id && (await alreadyProcessed(msg.id))) {
+    logStage("duplicate message, ignored", { msgId: msg.id });
+    return;
+  }
 
   // TEMPORÁRIO (gravação do App Review, só Preview): se o phone_number_id
   // recebido é o número de teste da Meta, resolve direto pro estabelecimento
@@ -120,14 +188,25 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   let est: Establishment | null;
   if (isTestPhoneNumber && testEstablishmentId) {
     est = await getEstablishment(testEstablishmentId);
-    if (!est) return;
+    if (!est) {
+      logStage("test establishment not found", { msgId: msg.id });
+      return;
+    }
   } else {
     est = await findEstablishmentByPhoneNumberId(value.metadata.phone_number_id);
     // Causa TÉCNICA, não comercial: sem canal conectado não há como enviar
     // nada de volta. Continua sendo um return silencioso de propósito — não
     // existe caminho de resposta para avisar o cliente.
-    if (!est || !est.whatsapp || est.whatsapp.status !== "connected") return;
+    if (!est || !est.whatsapp || est.whatsapp.status !== "connected") {
+      logStage("establishment not found or channel not connected", {
+        msgId: msg.id,
+        found: Boolean(est),
+        whatsappStatus: est?.whatsapp?.status ?? null,
+      });
+      return;
+    }
   }
+  logStage("establishment resolved", { msgId: msg.id, estId: est.id });
 
   // No caminho de teste, est.whatsapp pode não existir (ou estar
   // "connecting") — resolveSendCredentials() ignora esse valor por completo
@@ -189,6 +268,12 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // "Devolver para Livia" no painel. Nenhum retorno automático — a Livia não
   // pode voltar a responder enquanto um atendente estiver no controle.
   if (conversation.status === "human" || conversation.status === "handoff") {
+    logStage("conversation not handled by Livia (human/handoff), message only logged", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+      status: conversation.status,
+    });
     await upsertPendingTask(est.id, conversation.id, contactPhone, {
       type: "awaiting_human",
       waitingFor: "responder mensagem nova do cliente",
@@ -247,18 +332,53 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
   const existingTask: ConversationTask | null = conversation.task ?? null;
 
-  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId } = await think({
-    est,
-    kb,
-    history: historyForAI,
-    contactPhone,
-    contactName,
-    customerProfile,
-    task: existingTask,
-    intent: detectedIntent,
+  logStage("invoking AI", { msgId: msg.id, estId: est.id, conversationId: conversation.id, intent: detectedIntent.type });
+  let brainResult: Awaited<ReturnType<typeof think>>;
+  try {
+    brainResult = await think({
+      est,
+      kb,
+      history: historyForAI,
+      contactPhone,
+      contactName,
+      customerProfile,
+      task: existingTask,
+      intent: detectedIntent,
+    });
+  } catch (err) {
+    // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).
+    // Sem isto, o erro subia genérico até o catch do POST e o log não dizia
+    // em qual etapa exatamente a mensagem morreu.
+    logStage("AI call failed", { msgId: msg.id, estId: est.id, conversationId: conversation.id, error: String(err) });
+    throw err;
+  }
+  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId } = brainResult;
+  logStage("AI responded", {
+    msgId: msg.id,
+    estId: est.id,
+    conversationId: conversation.id,
+    replyLength: reply.length,
+    handoff,
   });
 
-  const sent = await sendText(wa, est.id, contactPhone, reply);
+  let sent: { waMessageId?: string };
+  try {
+    sent = await sendText(wa, est.id, contactPhone, reply);
+  } catch (err) {
+    // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
+    // possível aqui, e a que este log existe especificamente para não deixar
+    // silenciosa. sendText já lança em qualquer status HTTP não-2xx da Graph
+    // API (ver lib/whatsapp/client.ts); antes disto o erro só aparecia como
+    // "[livia webhook] erro:" genérico, indistinguível de uma falha da IA.
+    logStage("WhatsApp send failed", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+      error: String(err),
+    });
+    throw err;
+  }
+  logStage("WhatsApp send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
 
   // Passo 6: só uma operação com retorno positivo da FERRAMENTA conta como
@@ -365,19 +485,21 @@ async function replyAndLog(
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
+interface WebhookMessage {
+  id?: string;
+  from: string;
+  type: string;
+  text?: { body: string };
+}
+interface WebhookValue {
+  metadata?: { phone_number_id?: string };
+  contacts?: { profile?: { name?: string } }[];
+  messages?: WebhookMessage[];
+}
 interface WebhookBody {
   entry?: {
     changes?: {
-      value?: {
-        metadata?: { phone_number_id?: string };
-        contacts?: { profile?: { name?: string } }[];
-        messages?: {
-          id?: string;
-          from: string;
-          type: string;
-          text?: { body: string };
-        }[];
-      };
+      value?: WebhookValue;
     }[];
   }[];
 }
