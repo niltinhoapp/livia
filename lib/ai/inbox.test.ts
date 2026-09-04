@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyConversation } from "./inbox";
+import { classifyConversation, applyOpportunityOverride } from "./inbox";
 
 describe("classifyConversation", () => {
   it("handoff ativo vence sobre qualquer outra coisa", () => {
@@ -42,5 +42,26 @@ describe("classifyConversation", () => {
 
   it("status human sem pendência classifica como resolved (a UI trata 'Em atendimento' à parte, pelo status bruto)", () => {
     expect(classifyConversation({ status: "human", hasOpportunity: false })).toBe("resolved");
+  });
+});
+
+// Fix #2 da auditoria de 03/09: classifyConversationsForInbox (o caminho
+// quente do poll de 15s) não calcula mais oportunidades — quem tem esse dado
+// é o frontend, buscado separadamente. Este merge client-side reaplica a
+// MESMA prioridade que classifyConversation já usa (oportunidade só vence
+// "resolved").
+describe("applyOpportunityOverride", () => {
+  it("resolved + oportunidade -> opportunity", () => {
+    expect(applyOpportunityOverride("resolved", true)).toBe("opportunity");
+  });
+
+  it("resolved sem oportunidade continua resolved", () => {
+    expect(applyOpportunityOverride("resolved", false)).toBe("resolved");
+  });
+
+  it("nunca sobrepõe uma categoria mais urgente já vinda do backend", () => {
+    for (const categoria of ["needs_human", "complaint", "customer_waiting", "appointment_incomplete"] as const) {
+      expect(applyOpportunityOverride(categoria, true)).toBe(categoria);
+    }
   });
 });

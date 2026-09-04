@@ -45,11 +45,19 @@ export async function getOpportunities(
 ): Promise<Opportunity[]> {
   const since30d = Date.now() - THIRTY_DAYS_MS;
 
+  // 900 = mesma densidade das janelas de 30 dias já usadas ao lado (300
+  // conversas / 200 cancelamentos) escalada pra 90 dias (3x). Este consumidor
+  // só usa o resultado pra montar um Set de "telefones com algo marcado" —
+  // não precisa do agendamento exato, só saber que existe; truncar mantém os
+  // mais próximos (listAppointments ordena por startAt asc), que são os
+  // únicos que decidem essa checagem no curto/médio prazo.
+  const UPCOMING_APPOINTMENTS_LIMIT = 900;
+
   const [pendingTasks, recentConversations, cancelledRecently, upcoming] = await Promise.all([
     preloadedPendingTasks ? Promise.resolve(preloadedPendingTasks) : listPendingTasks(establishmentId),
     listConversationsSince(establishmentId, since30d, 300),
     listAppointmentsCancelledSince(establishmentId, since30d, 200),
-    listAppointments(establishmentId, Date.now(), Date.now() + NINETY_DAYS_MS),
+    listAppointments(establishmentId, Date.now(), Date.now() + NINETY_DAYS_MS, UPCOMING_APPOINTMENTS_LIMIT),
   ]);
 
   const nameByConversationId = new Map<string, string | null>(recentConversations.map((c) => [c.id, c.contactName]));
@@ -67,9 +75,21 @@ export async function getOpportunities(
 
 // ---- Passo 11 — Caixa de entrada ----
 //
-// Reaproveita listConversations (já existe) + listPendingTasks +
-// getOpportunities — 3 buscas no total pra anotar a lista inteira, nunca uma
-// consulta por conversa.
+// GET /api/conversations chama isto a cada poll de 15s de /painel/conversas
+// (LIST_REFRESH_MS) — é o caminho mais quente do produto. Por isso, desde a
+// auditoria de 03/09 (50 mil reads/dia), esta função NÃO calcula mais
+// oportunidades: fazia isso a cada poll, repetindo as 4 queries pesadas de
+// getOpportunities (30 dias de conversas, 30 dias de cancelamentos, 90 dias
+// de agendamentos futuros) 4 vezes por minuto, mesmo quando nada mudou.
+//
+// Só listPendingTasks roda aqui — 1 query, já necessária pras categorias
+// needs_human/complaint/customer_waiting/appointment_incomplete. A categoria
+// "opportunity" (que depende de getOpportunities) é responsabilidade do
+// FRONTEND: busca GET /api/opportunities uma vez, num intervalo bem mais
+// longo, e faz o merge client-side com classifyConversation's hasOpportunity
+// — ver app/painel/conversas/page.tsx e lib/ai/inbox.ts:
+// applyOpportunityOverride. A prioridade das categorias continua a mesma
+// (opportunity só vence "resolved"), só o CÁLCULO saiu do caminho quente.
 export interface InboxConversation extends Conversation {
   inboxCategory: InboxCategory;
 }
@@ -79,16 +99,14 @@ export async function classifyConversationsForInbox(
   conversations: Conversation[],
 ): Promise<InboxConversation[]> {
   const pendingTasks = await listPendingTasks(establishmentId);
-  const opportunities = await getOpportunities(establishmentId, pendingTasks);
   const pendingByConversation = new Map(pendingTasks.map((pt) => [pt.conversationId, pt.type]));
-  const opportunityConversationIds = new Set(opportunities.map((o) => o.conversationId));
 
   return conversations.map((c) => ({
     ...c,
     inboxCategory: classifyConversation({
       status: c.status,
       pendingTaskType: pendingByConversation.get(c.id),
-      hasOpportunity: opportunityConversationIds.has(c.id),
+      hasOpportunity: false,
     }),
   }));
 }

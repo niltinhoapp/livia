@@ -7,15 +7,15 @@
 // cada vez (lista, ou a conversa com um botão "Voltar").
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Bot, UserCheck, AlertCircle, RefreshCw, Trash2, GraduationCap, Clock, CalendarClock, Sparkles, MessageCircleWarning, CheckCircle2 } from "lucide-react";
-import type { Conversation, InboxCategory, Message } from "@/types";
+import { Bot, UserCheck, AlertCircle, RefreshCw, Trash2, Clock, CalendarClock, Sparkles, MessageCircleWarning, CheckCircle2 } from "lucide-react";
+import type { Conversation, InboxCategory } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { TeachDialog } from "@/components/knowledge/TeachDialog";
-import { INBOX_CATEGORY_LABEL } from "@/lib/ai/inbox";
+import { INBOX_CATEGORY_LABEL, applyOpportunityOverride } from "@/lib/ai/inbox";
+import { ConversationDetail, STATUS_LABEL } from "./ConversationDetail";
 
 // Passo 11 — cada conversa vem anotada pelo backend (GET /api/conversations,
 // que já reaproveita PendingTask + Opportunity) com sua categoria. Nunca
@@ -73,18 +73,22 @@ function matchesFilter(c: InboxConversation, filter: InboxFilter): boolean {
 // aqui só evita mostrar um botão que sempre falharia pra outro estabelecimento.
 const CLEAR_CONVERSATIONS_ESTABLISHMENT_ID = "demo";
 
-const STATUS_LABEL: Record<Conversation["status"], { label: string; tone: StatusTone; icon: typeof Bot }> = {
-  bot: { label: "Livia atendendo", tone: "success", icon: Bot },
-  handoff: { label: "Precisa de atendimento", tone: "warning", icon: AlertCircle },
-  human: { label: "Atendimento humano", tone: "info", icon: UserCheck },
-  closed: { label: "Encerrada", tone: "neutral", icon: Bot },
-};
-
 const LIST_REFRESH_MS = 15000;
+// Oportunidades (Passo 12) saíram do poll de 15s de propósito — ver
+// lib/dashboard.ts: classifyConversationsForInbox. GET /api/opportunities
+// continua fazendo as mesmas 4 queries de sempre, só que agora só nesta
+// cadência bem mais longa, e não mais embutido em toda chamada de
+// /api/conversations. 2 minutos é fresco o bastante pro badge (oportunidade
+// não é uma condição que aparece e desaparece em segundos) e já é uma queda
+// de ~8x nas queries de oportunidade por hora, mesmo sozinho.
+const OPPORTUNITIES_REFRESH_MS = 120000;
 
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<InboxConversation[] | null>(null);
   const [error, setError] = useState(false);
+  // conversationId -> tem oportunidade aberta. Buscado à parte, numa cadência
+  // bem menor que o poll da lista — ver OPPORTUNITIES_REFRESH_MS.
+  const [opportunityIds, setOpportunityIds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [canClear, setCanClear] = useState(false);
@@ -113,6 +117,21 @@ export default function ConversationsPage() {
     const interval = setInterval(loadList, LIST_REFRESH_MS);
     return () => clearInterval(interval);
   }, [loadList]);
+
+  useEffect(() => {
+    const loadOpportunities = () => {
+      fetch("/api/opportunities")
+        .then((r) => r.json())
+        .then((j) => {
+          const ids: { conversationId: string }[] = j.opportunities ?? [];
+          setOpportunityIds(new Set(ids.map((o) => o.conversationId)));
+        })
+        .catch(() => {}); // badge de oportunidade é informativo — falha aqui não pode quebrar a lista
+    };
+    loadOpportunities();
+    const interval = setInterval(loadOpportunities, OPPORTUNITIES_REFRESH_MS);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (appliedDeepLink || !conversations) return;
@@ -149,8 +168,16 @@ export default function ConversationsPage() {
   if (error) return <ErrorState onRetry={loadList} />;
   if (!conversations) return <LoadingState />;
 
-  const selected = conversations.find((c) => c.id === selectedId) ?? null;
-  const filtered = conversations.filter((c) => matchesFilter(c, filter));
+  // Merge client-side da oportunidade (fetch à parte, cadência mais longa) —
+  // a categoria que vem de /api/conversations nunca é "opportunity" mais
+  // (ver lib/dashboard.ts), então isso é a única fonte dela agora. Mesma
+  // prioridade de sempre: só assume onde o backend já disse "resolved".
+  const withOpportunities = conversations.map((c) => ({
+    ...c,
+    inboxCategory: applyOpportunityOverride(c.inboxCategory, opportunityIds.has(c.id)),
+  }));
+  const selected = withOpportunities.find((c) => c.id === selectedId) ?? null;
+  const filtered = withOpportunities.filter((c) => matchesFilter(c, filter));
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -191,7 +218,7 @@ export default function ConversationsPage() {
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {FILTERS.map((f) => {
-          const count = f.id === "all" ? conversations.length : conversations.filter((c) => matchesFilter(c, f.id)).length;
+          const count = f.id === "all" ? withOpportunities.length : withOpportunities.filter((c) => matchesFilter(c, f.id)).length;
           return (
             <button
               key={f.id}
@@ -272,163 +299,3 @@ export default function ConversationsPage() {
   );
 }
 
-function ConversationDetail({
-  conversation,
-  onBack,
-  onStatusChanged,
-}: {
-  conversation: Conversation;
-  onBack: () => void;
-  onStatusChanged: () => void;
-}) {
-  const [messages, setMessages] = useState<Message[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState(conversation.status);
-  // Passo 8 — "Ensinar a Livia" a partir de uma conversa: qual mensagem do
-  // bot está sendo corrigida agora (null = diálogo fechado).
-  const [teachDefaultQuestion, setTeachDefaultQuestion] = useState<string | null>(null);
-  const [teachOpen, setTeachOpen] = useState(false);
-  const [teachSaved, setTeachSaved] = useState(false);
-
-  const loadMessages = useCallback(() => {
-    fetch(`/api/conversations/${conversation.id}`)
-      .then((r) => r.json())
-      .then((j) => {
-        setMessages(j.messages ?? []);
-        if (j.conversation?.status) setStatus(j.conversation.status);
-      })
-      .catch(() => setMessages([]));
-  }, [conversation.id]);
-
-  useEffect(() => {
-    loadMessages();
-    const interval = setInterval(loadMessages, LIST_REFRESH_MS);
-    return () => clearInterval(interval);
-  }, [loadMessages]);
-
-  async function act(action: "assume" | "return") {
-    setBusy(true);
-    const res = await fetch(`/api/conversations/${conversation.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (res.ok) {
-      const j = await res.json();
-      setStatus(j.status);
-      onStatusChanged();
-    }
-    setBusy(false);
-  }
-
-  const s = STATUS_LABEL[status];
-
-  return (
-    <>
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <button onClick={onBack} className="rounded-control p-1.5 text-ink-500 hover:bg-line/30 sm:hidden">
-            <ArrowLeft className="h-4 w-4" />
-          </button>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-ink-900">{conversation.contactName ?? conversation.contactPhone}</p>
-            <p className="text-xs text-ink-400">{conversation.contactPhone}</p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
-          {status === "human" ? (
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => act("return")}>
-              Devolver para Livia
-            </Button>
-          ) : (
-            <Button size="sm" disabled={busy} onClick={() => act("assume")}>
-              Assumir conversa
-            </Button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4">
-        {messages === null ? (
-          <LoadingState />
-        ) : messages.length === 0 ? (
-          <p className="text-center text-sm text-ink-400">Nenhuma mensagem ainda.</p>
-        ) : (
-          <div className="space-y-3">
-            {messages.map((m, i) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                // Pergunta do cliente logo antes desta resposta — pré-
-                // preenche o formulário de correção; ausente se a resposta
-                // não veio logo depois de uma mensagem do cliente.
-                precedingCustomerText={
-                  m.role === "bot" && messages[i - 1]?.role === "customer" ? messages[i - 1]!.text : undefined
-                }
-                onCorrect={(question) => {
-                  setTeachDefaultQuestion(question ?? "");
-                  setTeachOpen(true);
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <TeachDialog
-        open={teachOpen}
-        defaultQuestion={teachDefaultQuestion ?? undefined}
-        conversationId={conversation.id}
-        onClose={() => setTeachOpen(false)}
-        onSaved={() => {
-          setTeachOpen(false);
-          setTeachSaved(true);
-          setTimeout(() => setTeachSaved(false), 3000);
-        }}
-      />
-      {teachSaved && (
-        <p className="border-t border-line bg-success-bg px-4 py-2 text-center text-xs font-semibold text-success-fg">
-          Correção salva — a Livia já usa essa informação nas próximas conversas.
-        </p>
-      )}
-    </>
-  );
-}
-
-function MessageBubble({
-  message,
-  precedingCustomerText,
-  onCorrect,
-}: {
-  message: Message;
-  precedingCustomerText?: string;
-  onCorrect: (question: string | undefined) => void;
-}) {
-  const fromCustomer = message.role === "customer";
-  return (
-    <div className={`flex ${fromCustomer ? "justify-start" : "justify-end"}`}>
-      <div className="max-w-[80%]">
-        <div
-          className={`rounded-card px-3 py-2 text-sm ${
-            fromCustomer ? "bg-line/40 text-ink-900" : message.role === "agent" ? "bg-info text-white" : "bg-primary text-white"
-          }`}
-        >
-          <p className="whitespace-pre-wrap">{message.text}</p>
-          <p className={`mt-1 text-[10px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
-            {new Date(message.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-            {!fromCustomer && (message.role === "agent" ? " · atendente" : " · Livia")}
-          </p>
-        </div>
-        {message.role === "bot" && (
-          <button
-            onClick={() => onCorrect(precedingCustomerText)}
-            className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-ink-400 hover:text-primary"
-          >
-            <GraduationCap className="h-3 w-3" /> Corrigir
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}

@@ -29,6 +29,19 @@ export function classifyConversation(input: ClassifyConversationInput): InboxCat
   return "resolved";
 }
 
+// GET /api/conversations (o poll de 15s) já não calcula mais oportunidades
+// — ver lib/dashboard.ts: classifyConversationsForInbox. Quem tem esse dado
+// é o frontend, buscando GET /api/opportunities separadamente e num
+// intervalo bem mais longo (ver app/painel/conversas/page.tsx). Esta função
+// aplica o mesmo critério de prioridade de classifyConversation (oportunidade
+// só vence "resolved" — nunca sobrepõe needs_human/complaint/
+// customer_waiting/appointment_incomplete, que já vieram corretos do
+// backend) para juntar os dois client-side, sem duplicar a regra.
+export function applyOpportunityOverride(category: InboxCategory, hasOpportunity: boolean): InboxCategory {
+  if (category === "resolved" && hasOpportunity) return "opportunity";
+  return category;
+}
+
 export const INBOX_CATEGORY_LABEL: Record<InboxCategory, string> = {
   needs_human: "Precisa de humano",
   customer_waiting: "Cliente aguardando",

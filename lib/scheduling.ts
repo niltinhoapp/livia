@@ -209,15 +209,26 @@ export async function createAppointment(
 }
 
 // Agendamentos num intervalo [from, to) (por startAt).
+// `limitCount` é defensivo, não funcional: os chamadores existentes
+// (conflito de horário, criação/remarcação) sempre passam uma janela
+// estreita de poucos dias, onde nenhum tenant real chega perto do teto — o
+// default de 1000 preserva o comportamento de sempre para eles. Existe
+// porque um chamador (getOpportunities, janela de 90 dias) não tinha limite
+// NENHUM: era a única query sem teto do sistema até a auditoria de 03/09.
+// Ordena por `startAt` ascendente, então um corte por limite sempre mantém
+// os agendamentos mais PRÓXIMOS — os únicos relevantes pra decidir se um
+// contato já tem algo marcado, que é o único uso da janela larga hoje.
 export async function listAppointments(
   establishmentId: string,
   from: number,
   to: number,
+  limitCount = 1000,
 ): Promise<Appointment[]> {
   const snap = await sub(establishmentId, "appointments")
     .where("startAt", ">=", from)
     .where("startAt", "<", to)
     .orderBy("startAt", "asc")
+    .limit(limitCount)
     .get();
   return snap.docs.map((d) => d.data() as Appointment);
 }
