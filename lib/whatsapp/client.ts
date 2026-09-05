@@ -144,8 +144,41 @@ export async function sendTemplate(
   return { waMessageId: data.messages?.[0]?.id };
 }
 
+// Extrai só os campos de diagnóstico do erro da Graph API. Nunca devolve o
+// corpo cru: o corpo é da Meta e não carrega token, mas despejar texto livre
+// em log é exatamente como dado inesperado acaba vazando. `message` vem
+// truncada — a mensagem da Meta pode citar o wamid (que o webhook já loga
+// como msgId) e nada além disso é necessário para diagnosticar.
+function graphErrorDetail(rawBody: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(rawBody) as {
+      error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
+    };
+    const e = parsed.error;
+    if (!e) return { parsed: false };
+    return {
+      code: e.code ?? null,
+      subcode: e.error_subcode ?? null,
+      type: e.type ?? null,
+      message: typeof e.message === "string" ? e.message.slice(0, 200) : null,
+      fbtraceId: e.fbtrace_id ?? null,
+    };
+  } catch {
+    // Resposta não-JSON (raro; normalmente HTML de gateway). Só o tamanho.
+    return { parsed: false, bodyLength: rawBody.length };
+  }
+}
+
 // Marca a mensagem recebida como lida (opcional, melhora a UX — o cliente vê
 // o "visto" azul enquanto a IA formula a resposta).
+//
+// Best-effort de propósito: nada aqui pode impedir o think() nem o sendText()
+// — marcar como lida é cosmético, responder o cliente não é. O que mudou
+// (05/09/2026) é que a falha deixou de ser INVISÍVEL: em Production esta
+// chamada vinha devolvendo HTTP 400 e ninguém sabia, porque o código nunca
+// checava res.ok nem lia o corpo — o Response era descartado sem ser aberto,
+// e o .catch() só pegaria falha de rede (um 400 resolve a promise, não a
+// rejeita). Agora o motivo é registrado; o comportamento segue idêntico.
 export async function markAsRead(
   wa: EstablishmentWhatsapp,
   establishmentId: string,
@@ -156,21 +189,32 @@ export async function markAsRead(
   try {
     ({ phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId));
   } catch {
-    return; // best effort — mesma postura do .catch abaixo, não interrompe o fluxo
+    return; // best effort — não interrompe o fluxo
   }
 
-  await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      status: "read",
-      message_id: waMessageId,
-    }),
-  }).catch(() => {
-    /* best effort — não interrompe o fluxo se falhar */
-  });
+  try {
+    const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: waMessageId,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn(
+        "[livia whatsapp] markAsRead falhou",
+        JSON.stringify({ status: res.status, ...graphErrorDetail(body) }),
+      );
+    }
+  } catch (err) {
+    // Falha de rede/timeout — segue best-effort, mas agora visível.
+    console.warn("[livia whatsapp] markAsRead falhou (rede)", JSON.stringify({ error: String(err).slice(0, 200) }));
+  }
 }
