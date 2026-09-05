@@ -133,12 +133,27 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // só olhava entry[0].changes[0].messages[0] — qualquer mensagem além dessa
   // era descartada em silêncio, sem log e sem erro. Processa todas, em ordem.
   const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
+  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): mesmo POST pode trazer statuses (o
+  // caminho comum para uma mensagem enviada com sucesso HTTP mas que falha na
+  // entrega — a Meta avisa depois, assíncrono, por aqui). Antes disto era
+  // descartado em silêncio, contado só como número em describePayloadStructure.
+  const statuses: WebhookStatus[] = [];
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const value = change.value;
       for (const msg of value?.messages ?? []) {
         messages.push({ value: value!, msg });
       }
+      for (const status of value?.statuses ?? []) {
+        statuses.push(status);
+      }
+    }
+  }
+
+  if (statuses.length > 0) {
+    logStage("statuses in payload", { count: statuses.length });
+    for (const status of statuses) {
+      processStatus(status);
     }
   }
 
@@ -161,6 +176,27 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   for (const { value, msg } of messages) {
     await processMessage(value, msg);
   }
+}
+
+// DIAGNÓSTICO TEMPORÁRIO (05/09/2026): log dedicado pra correlacionar o
+// waMessageId (devolvido por sendText, ver "[livia whatsapp] sendText debug")
+// com o desfecho real — sent/delivered/read/failed — e, se failed, o motivo
+// exato da Graph API. Nunca loga texto de mensagem nem telefone completo;
+// `recipientId` é o wa_id do cliente tal como a Meta o formata, não PII nova
+// além do que o número de telefone já é. Remover depois que a causa raiz da
+// não-entrega for confirmada.
+function processStatus(status: WebhookStatus): void {
+  logStage("delivery status", {
+    waMessageId: status.id ?? null,
+    status: status.status ?? null,
+    recipientId: status.recipient_id ?? null,
+    timestamp: status.timestamp ?? null,
+    errors: (status.errors ?? []).map((e) => ({
+      code: e.code ?? null,
+      title: e.title ?? null,
+      message: e.message ?? null,
+    })),
+  });
 }
 
 // Diagnóstico TEMPORÁRIO (04/09/2026): "entries: 1" sozinho não diz se o
@@ -541,10 +577,24 @@ interface WebhookMessage {
   type: string;
   text?: { body: string };
 }
+// DIAGNÓSTICO TEMPORÁRIO (05/09/2026): a Meta manda um evento de status
+// (sent/delivered/read/failed) pra cada mensagem enviada pela Livia, de forma
+// assíncrona — chega num POST separado, não na resposta HTTP do envio. Até
+// agora esse evento era só contado (describePayloadStructure), nunca lido.
+// Ver processStatus() abaixo. Remover a modelagem de erro detalhada se, depois
+// da causa raiz confirmada, ela não for mais necessária.
+interface WebhookStatus {
+  id?: string;
+  status?: string;
+  timestamp?: string;
+  recipient_id?: string;
+  errors?: { code?: number; title?: string; message?: string }[];
+}
 interface WebhookValue {
   metadata?: { phone_number_id?: string };
   contacts?: { profile?: { name?: string } }[];
   messages?: WebhookMessage[];
+  statuses?: WebhookStatus[];
 }
 interface WebhookBody {
   entry?: {

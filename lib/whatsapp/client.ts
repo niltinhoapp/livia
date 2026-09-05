@@ -75,6 +75,7 @@ export async function sendText(
   text: string,
 ): Promise<{ waMessageId?: string }> {
   const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
+  const to = normalizePhone(toPhone);
   const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
@@ -84,15 +85,28 @@ export async function sendText(
     body: JSON.stringify({
       messaging_product: "whatsapp",
       recipient_type: "individual",
-      to: normalizePhone(toPhone),
+      to,
       type: "text",
       text: { preview_url: false, body: text },
     }),
   });
 
+  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): a Meta aceita o POST (2xx,
+  // messages[0].id presente) mas a mensagem não chega ao celular. Sem ver o
+  // status/corpo/id reais, é impossível saber se a Graph API já sinalizou
+  // algo (corpo "vazio" com 2xx) ou se o problema é assíncrono, resolvido só
+  // por um evento de status posterior (ver processStatus em route.ts). Nunca
+  // loga o access token; loga `to`/`phoneNumberId` porque são os únicos dados
+  // que provam se o envio foi pro destinatário/canal certo. Remover depois
+  // que a causa raiz da não-entrega for confirmada.
+  const rawBody = await res.clone().text();
+  console.log(
+    "[livia whatsapp] sendText debug",
+    JSON.stringify({ status: res.status, to, phoneNumberId, body: rawBody.slice(0, 500) }),
+  );
+
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`WhatsApp sendText ${res.status}: ${body}`);
+    throw new Error(`WhatsApp sendText ${res.status}: ${rawBody}`);
   }
   const data = (await res.json().catch(() => ({}))) as {
     messages?: { id: string }[];
