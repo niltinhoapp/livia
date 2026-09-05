@@ -144,9 +144,16 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
 
   if (messages.length === 0) {
     // Evento real, mas não é mensagem de entrada — status de entrega/leitura,
-    // ou qualquer outro tipo de change. Comportamento correto é ignorar; o
-    // log é só para distinguir isto de "a mensagem sumiu antes de chegar aqui".
-    logStage("no incoming message in payload", { entries: body.entry?.length ?? 0 });
+    // ou qualquer outro tipo de change. Comportamento correto é ignorar; mas
+    // sem ver a ESTRUTURA real do que chegou não dá pra confirmar isso — só
+    // "entries: 1" não diz se foi status, verificação, ou um formato de
+    // mensagem que o parsing não reconhece. Log estrutural, nunca de
+    // conteúdo: nenhum texto de mensagem, telefone completo, token ou
+    // assinatura aparece aqui — só contagens, nomes de campo e tipos.
+    logStage("no incoming message in payload", {
+      entries: body.entry?.length ?? 0,
+      detail: describePayloadStructure(body),
+    });
     return;
   }
 
@@ -154,6 +161,49 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   for (const { value, msg } of messages) {
     await processMessage(value, msg);
   }
+}
+
+// Diagnóstico TEMPORÁRIO (04/09/2026): "entries: 1" sozinho não diz se o
+// change era mensagem, status, verificação ou algo em formato inesperado —
+// e foi exatamente essa dúvida que motivou isto. Descreve a FORMA do payload
+// real da Meta (nomes de campo, presença/contagem de arrays, tipos), nunca o
+// conteúdo. Sem texto de mensagem, sem telefone completo, sem token, sem
+// assinatura. Remover depois que a causa raiz for confirmada nos logs.
+function describePayloadStructure(body: WebhookBody): unknown {
+  const raw = body as unknown as {
+    object?: string;
+    entry?: {
+      id?: string;
+      changes?: {
+        field?: string;
+        value?: Record<string, unknown> & { messages?: unknown[]; statuses?: unknown[] };
+      }[];
+    }[];
+  };
+  return {
+    object: raw.object ?? null,
+    entries: (raw.entry ?? []).map((entry) => ({
+      changes: (entry.changes ?? []).map((change) => {
+        const value = change.value;
+        return {
+          field: change.field ?? null,
+          hasValue: value !== undefined,
+          valueKeys: value ? Object.keys(value) : [],
+          messagesCount: Array.isArray(value?.messages) ? value!.messages!.length : null,
+          messageTypes: Array.isArray(value?.messages)
+            ? (value!.messages as { type?: string }[]).map((m) => m.type ?? "unknown")
+            : [],
+          statusesCount: Array.isArray(value?.statuses) ? value!.statuses!.length : null,
+          // Só os últimos 4 dígitos — o suficiente para confirmar "é o mesmo
+          // número de sempre" sem logar um identificador completo.
+          phoneNumberIdMasked:
+            typeof value?.metadata === "object" && value?.metadata && "phone_number_id" in value.metadata
+              ? String((value.metadata as { phone_number_id?: string }).phone_number_id ?? "").slice(-4)
+              : null,
+        };
+      }),
+    })),
+  };
 }
 
 async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise<void> {
