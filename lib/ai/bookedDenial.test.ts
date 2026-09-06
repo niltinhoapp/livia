@@ -49,7 +49,7 @@ vi.mock("@/lib/ai/tools", () => ({
   runTool: (...a: unknown[]) => runTool(...(a as [string, Record<string, unknown>])),
 }));
 
-const { think, deniesBooking } = await import("./brain");
+const { think, deniesBooking, confirmsBooking } = await import("./brain");
 
 const est = {
   id: "demo",
@@ -103,6 +103,27 @@ describe("deniesBooking reconhece as recusas que o backend sabe emitir", () => {
   it("não confunde uma confirmação legítima com recusa", () => {
     expect(deniesBooking("Prontinho! Seu horário de Canal está reservado para 07/09 às 15:30.")).toBe(false);
   });
+
+  // As três recusas reais de Production — cada uma redigida de um jeito.
+  it.each([
+    "Desculpe, mas o horário das 09:30 está fora do nosso expediente.",
+    "O horário das 09:00 não está disponível, pois estamos fechados nesse horário.",
+    "Rejane, o horário das 15:30 está muito próximo.",
+  ])("não conta como confirmação: %s", (texto) => {
+    expect(confirmsBooking(texto)).toBe(false);
+  });
+
+  it.each([
+    "Prontinho! Seu horário de Avaliação está reservado para 07/09 às 09:30.",
+    "Agendado, Niltinho! Te espero dia 07/09 às 09:30.",
+    "Sua avaliação está marcada para amanhã às 09:30. 😊",
+  ])("conta como confirmação: %s", (texto) => {
+    expect(confirmsBooking(texto)).toBe(true);
+  });
+
+  it("texto vago, sem afirmar a reserva, não conta como confirmação", () => {
+    expect(confirmsBooking("Qual desses horários você prefere? 😊")).toBe(false);
+  });
 });
 
 describe("reserva criada + texto negando", () => {
@@ -125,6 +146,26 @@ describe("reserva criada + texto negando", () => {
 
     expect(result.booked).toBe(true);
     expect(result.reply).not.toMatch(/fora do expediente/i);
+    expect(result.reply).toMatch(/15:30/);
+  });
+
+  it('corrige "fora do NOSSO expediente" — o adjetivo no meio escapava do padrão', async () => {
+    respostas = ["Desculpe, mas o horário das 15:30 está fora do nosso expediente. Que tal 10:00?"];
+
+    const result = await clienteEscolhe("As 15:30");
+
+    expect(result.booked).toBe(true);
+    expect(result.reply).not.toMatch(/fora do nosso expediente/i);
+    expect(result.reply).toMatch(/15:30/);
+  });
+
+  it("substitui também um texto que apenas ignora a reserva, sem negá-la", async () => {
+    respostas = ["Qual desses horários você prefere? 😊"];
+
+    const result = await clienteEscolhe("As 15:30");
+
+    expect(result.booked).toBe(true);
+    expect(result.reply).toMatch(/reservad/i);
     expect(result.reply).toMatch(/15:30/);
   });
 

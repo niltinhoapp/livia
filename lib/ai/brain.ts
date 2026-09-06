@@ -276,15 +276,35 @@ export function claimsUnavailability(reply: string): boolean {
 //
 // Cobre o vocabulário das recusas REAIS do backend (NOT_BOOKABLE_MESSAGE em
 // lib/ai/tools.ts — é ele que o modelo repete quando inventa a falha) e as
-// negativas genéricas de agendamento.
+// negativas genéricas de agendamento. O "\w+\s+" opcional depois de "fora do"
+// existe porque a recusa apareceu como "fora do NOSSO expediente": um único
+// adjetivo no meio da frase já escapava do padrão.
 const BOOKING_DENIAL =
-  /\b(muito pr[óo]xim[oa]|fora do (expediente|hor[áa]rio de (funcionamento|atendimento))|intervalo de almo[çc]o|n[ãa]o (abre|abrimos|atendemos?) (nesse|neste|nesta|nessa) dia|anteced[êe]ncia m[íi]nima|n[ãa]o (consegui|conseguimos|foi poss[íi]vel|deu para|deu pra|posso|podemos)\s+(\w+\s+)?(agend|remarc|reserv|marc)\w*)\b/i;
+  /\b(muito pr[óo]xim[oa]|fora d[oe] (\w+\s+)?(expediente|hor[áa]rio de (funcionamento|atendimento))|intervalo de almo[çc]o|n[ãa]o (abre|abrimos|atendemos?) (nesse|neste|nesta|nessa) dia|anteced[êe]ncia m[íi]nima|n[ãa]o (consegui|conseguimos|foi poss[íi]vel|deu para|deu pra|posso|podemos)\s+(\w+\s+)?(agend|remarc|reserv|marc)\w*)\b/i;
 
 // Verdadeiro quando o texto nega/desmente uma reserva. Falso positivo aqui é
 // barato (a resposta vira a confirmação canônica, que continua correta);
 // falso negativo é o que mandou uma mentira para a cliente.
 export function deniesBooking(reply: string): boolean {
   return BOOKING_DENIAL.test(reply) || UNAVAILABLE_CLAIM.test(reply);
+}
+
+// Confirmação explícita de que o horário ficou marcado.
+//
+// Enumerar as formas de NEGAR é enxugar gelo: a cada recusa nova o modelo
+// escolhe outras palavras ("muito próximo", "fora do nosso expediente",
+// "estamos fechados nesse horário") e a mentira chega ao cliente de novo.
+// Quando o backend acabou de criar a reserva, a regra é invertida: em vez de
+// procurar a negação, exigimos a AFIRMAÇÃO — se ela não estiver lá, o texto
+// não descreve o que aconteceu e é substituído pela verdade (ver a trava em
+// think()). O custo de errar para o lado seguro é uma frase canônica um
+// pouco menos personalizada; o custo do outro lado é o cliente não aparecer
+// para um horário que está reservado no nome dele.
+const BOOKING_AFFIRMED =
+  /\b(reservad[oa]|agendad[oa]|marcad[oa]|confirmad[oa]|prontinho|agendei|reservei|marquei|confirmei|est[áa] (marcado|agendado|reservado|confirmado))\b/i;
+
+export function confirmsBooking(reply: string): boolean {
+  return BOOKING_AFFIRMED.test(reply) && !deniesBooking(reply);
 }
 
 // Terceira forma de fabricação, além de enrolar e inventar desfecho: dizer
@@ -819,16 +839,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
     }
 
-    // ---- Trava: a reserva EXISTE e o texto diz que não ----
+    // ---- Trava: a reserva EXISTE e o texto não confirma ----
     //
     // Ancorada no fato (`booked` só é true quando um create_appointment
-    // retornou ok), nunca na redação da recusa. A trava seguinte cobria só
-    // "ocupado/indisponível"; em Production o agendamento das 15:30 foi
-    // criado (está na agenda) e a resposta dizia "está muito próximo… que tal
-    // 16:00?" — passava batido, e a cliente ficou achando que não tinha
-    // horário. É a falha mais cara do fluxo: o horário fica reservado, sem
-    // ninguém para ocupá-lo, e a cliente não aparece.
-    if (booked && bookedInfo && deniesBooking(reply)) {
+    // retornou ok) e exigindo a AFIRMAÇÃO, nunca caçando a redação da recusa
+    // — foram três recusas em Production, cada uma com palavras diferentes
+    // ("muito próximo", "estamos fechados nesse horário", "fora do nosso
+    // expediente"), todas para horários que estavam sendo criados de fato.
+    // O rastro ficou na própria conversa: a cada "recusa", o horário sumia da
+    // listagem seguinte — porque tinha acabado de ser ocupado pela reserva
+    // que a Livia dizia não ter feito.
+    if (booked && bookedInfo && !confirmsBooking(reply)) {
       reply = `Prontinho! Seu horário de ${bookedInfo.serviceName} está reservado para ${bookedInfo.when}.`;
       handoff = false;
     }
