@@ -266,6 +266,27 @@ export function claimsUnavailability(reply: string): boolean {
   return UNAVAILABLE_CLAIM.test(reply);
 }
 
+// Negar uma reserva que o backend ACABOU de criar. É mais amplo que
+// UNAVAILABLE_CLAIM de propósito: aquele só conhece "ocupado/indisponível",
+// e em Production a Livia criou o agendamento das 15:30 (ele está na agenda)
+// e mesmo assim respondeu "o horário das 15:30 está muito próximo… que tal
+// 16:00?". Nenhuma palavra de UNAVAILABLE_CLAIM aparece nessa frase, então a
+// trava de desfecho inventado não rodava e a cliente foi embora achando que
+// não tinha horário marcado.
+//
+// Cobre o vocabulário das recusas REAIS do backend (NOT_BOOKABLE_MESSAGE em
+// lib/ai/tools.ts — é ele que o modelo repete quando inventa a falha) e as
+// negativas genéricas de agendamento.
+const BOOKING_DENIAL =
+  /\b(muito pr[óo]xim[oa]|fora do (expediente|hor[áa]rio de (funcionamento|atendimento))|intervalo de almo[çc]o|n[ãa]o (abre|abrimos|atendemos?) (nesse|neste|nesta|nessa) dia|anteced[êe]ncia m[íi]nima|n[ãa]o (consegui|conseguimos|foi poss[íi]vel|deu para|deu pra|posso|podemos)\s+(\w+\s+)?(agend|remarc|reserv|marc)\w*)\b/i;
+
+// Verdadeiro quando o texto nega/desmente uma reserva. Falso positivo aqui é
+// barato (a resposta vira a confirmação canônica, que continua correta);
+// falso negativo é o que mandou uma mentira para a cliente.
+export function deniesBooking(reply: string): boolean {
+  return BOOKING_DENIAL.test(reply) || UNAVAILABLE_CLAIM.test(reply);
+}
+
 // Terceira forma de fabricação, além de enrolar e inventar desfecho: dizer
 // que NÃO CONSEGUE fazer algo que a ferramenta faz. Em Production a Livia
 // respondeu "não consigo cancelar agendamentos" e transferiu — com
@@ -618,6 +639,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const tools = toolsFor(toolCtx);
 
   let booked = false;
+  // Dados da reserva REALMENTE criada neste turno (venha ela do caminho
+  // determinístico ou de uma chamada de ferramenta do modelo) — é com eles
+  // que a resposta é reescrita se o texto negar a reserva.
+  let bookedInfo: { when: string; serviceName: string } | null = null;
   let rescheduled = false;
   let cancelled = false;
   let handoffRequested = false;
@@ -651,7 +676,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // gerar qualquer texto. "Confirmado", "ocupado" e "indisponível" passam a
   // ser sempre resultado real de execução.
   const bookingOutcome = booking ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
-  if (bookingOutcome?.kind === "created") booked = true;
+  if (bookingOutcome?.kind === "created") {
+    booked = true;
+    bookedInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
+  }
 
   // Cancelamento: alvo resolvido e confirmação exigida pelo backend.
   const cancelOutcome = booking ? await resolveCancellation(input, toolCtx, toolCalls) : null;
@@ -701,7 +729,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
         const result = await runTool(name, args, toolCtx);
         if (result.ok) {
-          if (name === "create_appointment") booked = true;
+          if (name === "create_appointment") {
+            booked = true;
+            const data = result.data as { when?: string; serviceName?: string } | undefined;
+            if (data?.when && data.serviceName) bookedInfo = { when: data.when, serviceName: data.serviceName };
+          }
           if (name === "reschedule_appointment") rescheduled = true;
           if (name === "cancel_appointment") cancelled = true;
           if (name === "request_human_handoff") handoffRequested = true;
@@ -785,6 +817,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // ponto (ver desfecho inventado e enrolação); este não sobrescrevia.
       handoff = true;
       reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
+    }
+
+    // ---- Trava: a reserva EXISTE e o texto diz que não ----
+    //
+    // Ancorada no fato (`booked` só é true quando um create_appointment
+    // retornou ok), nunca na redação da recusa. A trava seguinte cobria só
+    // "ocupado/indisponível"; em Production o agendamento das 15:30 foi
+    // criado (está na agenda) e a resposta dizia "está muito próximo… que tal
+    // 16:00?" — passava batido, e a cliente ficou achando que não tinha
+    // horário. É a falha mais cara do fluxo: o horário fica reservado, sem
+    // ninguém para ocupá-lo, e a cliente não aparece.
+    if (booked && bookedInfo && deniesBooking(reply)) {
+      reply = `Prontinho! Seu horário de ${bookedInfo.serviceName} está reservado para ${bookedInfo.when}.`;
+      handoff = false;
     }
 
     // ---- Trava de desfecho inventado ----
