@@ -169,6 +169,30 @@ describe("reserva criada + texto negando", () => {
     expect(result.reply).toMatch(/15:30/);
   });
 
+  it("recusa inventada SEM consulta à agenda força a consulta, em vez de chegar ao cliente", async () => {
+    // Sem tarefa pendente, nada é resolvido pelo backend: a recusa só pode
+    // ter vindo da cabeça do modelo. Em Production ele repetiu o expediente
+    // de HOJE (domingo, fechado) para um horário de segunda-feira.
+    respostas = ["O horário das 09:00 está fora do nosso expediente.", "Consultei a agenda: 09:00 está livre!"];
+
+    const result = await think({
+      est,
+      kb: null,
+      history: [{ id: "1", role: "customer", text: "9", at: AGORA }],
+      contactPhone: "5514996901898",
+      contactName: "Rejane",
+      customerProfile: null,
+      task: null,
+      intent,
+    });
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const correcao = (create.mock.calls[1]![0] as unknown as { messages: { role: string; content: string }[] }).messages.at(-1)!;
+    expect(correcao.role).toBe("system");
+    expect(correcao.content).toMatch(/NENHUMA consulta à agenda foi feita/i);
+    expect(result.reply).not.toMatch(/fora do nosso expediente/i);
+  });
+
   it("uma confirmação correta do modelo é preservada como está", async () => {
     respostas = ["Prontinho, Rejane! Canal marcado para 07/09 às 15:30. Até lá! 😊"];
 

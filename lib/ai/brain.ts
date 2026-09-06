@@ -856,11 +856,16 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
     // ---- Trava de desfecho inventado ----
     //
-    // "Ocupado"/"indisponível" só pode existir se alguma ferramenta de agenda
-    // tiver rodado neste turno. Sem isso, o modelo está afirmando um estado
-    // operacional que ninguém verificou — o bug original. Substituímos pela
-    // verdade quando temos, ou forçamos a consulta quando não temos.
-    if (claimsUnavailability(reply)) {
+    // Qualquer RECUSA de horário — não só "ocupado/indisponível" — só pode
+    // existir se alguma ferramenta de agenda tiver rodado neste turno. Sem
+    // isso, o modelo está afirmando um estado operacional que ninguém
+    // verificou. Passou a usar deniesBooking() porque a recusa inventada em
+    // Production veio como "estamos fechados nesse horário" e "fora do nosso
+    // expediente", com a clínica aberta no dia pedido: o modelo estava
+    // repetindo o expediente de HOJE (domingo, fechado) para um horário de
+    // segunda. Substituímos pela verdade quando temos, ou forçamos a consulta
+    // quando não temos.
+    if (deniesBooking(reply)) {
       const consultouAgenda = toolCalls.some(
         (t) => t.name === "create_appointment" || t.name === "find_available_appointments",
       );
