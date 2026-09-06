@@ -5,7 +5,7 @@
 import OpenAI from "openai";
 import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
-import { parseTimeSelection } from "@/lib/ai/timeSelection";
+import { parseTimeSelection, extractProposedTime } from "@/lib/ai/timeSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
@@ -476,7 +476,19 @@ async function resolveTimeSelection(
   const ultima = [...history].reverse().find((m) => m.role === "customer");
   if (!ultima) return null;
 
-  const escolhido = parseTimeSelection(ultima.text);
+  // Confirmação sem repetir o horário ("ss", "ok", "sim" ao "Vou agendar
+  // para você às 09:00. Confirma?"): sem isto, a mensagem caía na IA, que
+  // tinha que "lembrar" e recalcular o horário proposto a partir do texto —
+  // e esse recálculo é o que produzia um startAt fora do horário real
+  // listado (a causa do "09:00 está fora do expediente" para um horário que
+  // a própria Livia acabara de oferecer). Só olha a mensagem do BOT, nunca a
+  // do cliente, então não interfere em nenhuma escolha explícita de horário.
+  let escolhido = parseTimeSelection(ultima.text);
+  if (!escolhido && readConfirmation(ultima.text) === "yes") {
+    const ultimoBot = [...history].reverse().find((m) => m.role === "bot");
+    escolhido = ultimoBot ? extractProposedTime(ultimoBot.text) : null;
+  }
+
   const date = typeof task.collectedData.date === "string" ? task.collectedData.date : undefined;
   if (!escolhido || !date) return null;
 

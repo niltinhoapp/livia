@@ -18,6 +18,18 @@ export interface SelectedTime {
 const FILLERS =
   /^(pode ser|prefiro|quero( o de| o)?|vou (de|no|ficar com)|fica(mos)? (com|no)|o de|marca|marcar|agenda(r)?|as|às|ah|entao|então|acho que|talvez)\s+/i;
 
+// Núcleo do parsing: "13", "13:00", "13h", "13h30", "14;30", "14.30", "13 30"
+// — sem exigir que o horário seja o texto INTEIRO (ver parseTimeSelection).
+const TIME_CORE = /^(\d{1,2})\s*(?:[:h;.,\s]\s*(\d{2}))?\s*(?:h|hs|horas?)?\b/;
+
+function toSelectedTime(hourStr: string, minuteStr: string | undefined): SelectedTime | null {
+  const hour = Number(hourStr);
+  const minute = minuteStr === undefined ? 0 : Number(minuteStr);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
 export function parseTimeSelection(text: string): SelectedTime | null {
   let t = text.trim().toLowerCase();
   if (!t) return null;
@@ -33,14 +45,33 @@ export function parseTimeSelection(text: string): SelectedTime | null {
     t = sem;
   }
 
-  // "13", "13:00", "13h", "13h30", "14;30", "14.30", "13 30"
-  const m = t.match(/^(\d{1,2})\s*(?:[:h;.,\s]\s*(\d{2}))?\s*(?:h|hs|horas?)?$/);
+  // Permite texto solto depois do horário ("marca as 9 pra mim", "9 por
+  // favor") — antes disso qualquer coisa além do horário puro fazia esta
+  // função devolver null e o pedido caía na IA, que recalculava o horário
+  // por conta própria (fonte da divergência com a listagem real).
+  const m = t.match(TIME_CORE);
   if (!m) return null;
+  return toSelectedTime(m[1], m[2]);
+}
 
-  const hour = Number(m[1]);
-  const minute = m[2] === undefined ? 0 : Number(m[2]);
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+// Acha um horário mencionado pela PRÓPRIA Livia numa mensagem anterior (ex.:
+// "Vou agendar para você às 09:00. Confirma?"). Usada só quando o cliente
+// responde com uma confirmação sem repetir o horário ("ss", "ok", "sim") —
+// sem isto, o pedido caía na IA para "lembrar" e recalcular o horário
+// proposto, e o recálculo divergia do horário real listado (ver
+// resolveTimeSelection em lib/ai/brain.ts).
+// \b não reconhece "à" acentuado como caractere de palavra (não é \w em JS) —
+// por isso o texto é normalizado (NFD + remove diacríticos) ANTES do match,
+// igual a normalizar() em lib/ai/confirmation.ts: "às" vira "as", e \b passa
+// a funcionar normalmente antes dele.
+const PROPOSED_TIME_RE = /\bas\s+(\d{1,2})\s*(?:[:h;.,]\s*(\d{2}))?\s*(?:h|hs|horas?)?\b/;
 
-  return { hour, minute };
+export function extractProposedTime(text: string): SelectedTime | null {
+  const normalizado = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  const m = normalizado.match(PROPOSED_TIME_RE);
+  if (!m) return null;
+  return toSelectedTime(m[1], m[2]);
 }

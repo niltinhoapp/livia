@@ -34,6 +34,7 @@ const HEDGE = ["acho que", "talvez", "quem sabe", "pode ser que", "nao sei", "se
 // autorizar um cancelamento ("isso mesmo" entra).
 const POSITIVE = [
   "sim",
+  "ss", // digitação comum no WhatsApp para "sim" (ex.: dedo duplicando a tecla)
   "isso mesmo",
   "exatamente",
   "confirmo",
