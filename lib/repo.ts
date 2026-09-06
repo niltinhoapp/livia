@@ -746,6 +746,13 @@ export async function upsertCustomerProfile(
   }
 
   if (snap.exists) {
+    // Telefone é o identificador único do cliente: uma vez que o nome já
+    // está cadastrado, uma variação vinda de uma mensagem/conversa nova
+    // (ex.: "niltinho" numa sessão, "Nilton" noutra) nunca pode substituí-lo.
+    // Só grava `name` aqui quando o cadastro existente ainda não tem nome —
+    // completar um dado ausente é diferente de sobrescrever um já existente.
+    const existingName = (snap.data() as CustomerProfile).name;
+    if (existingName) delete fields.name;
     await ref.update(fields);
     return;
   }
