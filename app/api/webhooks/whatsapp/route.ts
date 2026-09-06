@@ -248,6 +248,25 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     return;
   }
 
+  // DIAGNÓSTICO TEMPORÁRIO (06/09/2026): caso aberto com o suporte da Meta
+  // (erro 131047, "Re-engagement Message") — eles pedem para comparar o
+  // metadata.phone_number_id do inbound com o phone_number_id que enviou a
+  // resposta (ver "sendText debug" em lib/whatsapp/client.ts), porque a
+  // Customer Service Window é por par (destinatário, número) — não por WABA.
+  // Sem isto, esse phone_number_id nunca aparecia nos logs (só a versão
+  // mascarada em describePayloadStructure, últimos 4 dígitos, insuficiente
+  // pra comparação exata que a Meta pediu). `msg.timestamp` é o horário que a
+  // PRÓPRIA Meta atribui ao recebimento (segundos, UTC); `receivedAtIso` é
+  // quando ESTE servidor processou, em milissegundo — os dois lados que a
+  // Meta pediu "to the millisecond, with timezone". Remover após o caso ser
+  // resolvido.
+  logStage("meta case 131047 — inbound identity", {
+    msgId: msg.id,
+    phoneNumberId: value.metadata.phone_number_id,
+    waTimestampUnixSeconds: msg.timestamp ?? null,
+    receivedAtIso: new Date().toISOString(),
+  });
+
   // Só tratamos texto por enquanto (áudio/imagem/localização virão depois).
   if (msg.type !== "text" || !msg.text?.body) {
     logStage("non-text message ignored", { msgId: msg.id, type: msg.type });
@@ -576,6 +595,7 @@ interface WebhookMessage {
   from: string;
   type: string;
   text?: { body: string };
+  timestamp?: string;
 }
 // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): a Meta manda um evento de status
 // (sent/delivered/read/failed) pra cada mensagem enviada pela Livia, de forma
