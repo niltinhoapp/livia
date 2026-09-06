@@ -182,6 +182,25 @@ export async function getWabaPhoneNumbers(wabaId: string, token: string): Promis
   return data.map((p) => p.id).filter((id): id is string => Boolean(id));
 }
 
+// DIAGNÓSTICO TEMPORÁRIO (06/09/2026): lista os apps de fato inscritos para
+// receber webhook da WABA — a única forma de confirmar se subscribeAppToWaba
+// (chamado no passo 4 do connect) realmente "pegou", em vez de assumir que
+// pegou só porque a chamada não lançou erro na hora. Caso aberto com a Meta
+// (131047): suspeita de que a inscrição nunca aconteceu ou foi perdida (ex.:
+// coexistência com o app oficial do WhatsApp Business reconfigurando a WABA).
+// Remover depois que a causa raiz for confirmada.
+export async function getSubscribedApps(wabaId: string, token: string): Promise<string[]> {
+  const body = await graphJson(
+    await fetch(`${GRAPH_BASE_URL}/${wabaId}/subscribed_apps`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    "getSubscribedApps",
+    [token],
+  );
+  const data = (body.data as Array<{ whatsapp_business_api_data?: { id?: string } }> | undefined) ?? [];
+  return data.map((a) => a.whatsapp_business_api_data?.id).filter((id): id is string => Boolean(id));
+}
+
 // Inscreve o app da Livia na WABA do estabelecimento — obrigatório para
 // recebermos os webhooks (mensagens, status de entrega) da conta dele.
 export async function subscribeAppToWaba(wabaId: string, token: string): Promise<void> {
