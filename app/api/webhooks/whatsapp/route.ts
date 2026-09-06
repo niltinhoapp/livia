@@ -464,6 +464,21 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     conversationId: conversation.id,
     replyLength: reply.length,
     handoff,
+    // DIAGNÓSTICO TEMPORÁRIO (06/09/2026): a agenda recusa horários que a
+    // própria listagem acabou de oferecer ("muito próximo", "fora do
+    // expediente"). A divergência só pode vir do INSTANTE usado em cada
+    // lado, e até aqui nenhum log mostrava qual `date`/`startAt` cada
+    // ferramenta recebeu — sem isso, qualquer explicação é palpite. Só os
+    // campos estruturais do agendamento (nunca texto da conversa, telefone
+    // ou token); `startAtIso` é o mesmo instante em UTC, para dizer de
+    // imediato se caiu no dia certo. Remover depois da causa confirmada.
+    tools: toolCalls.map((t) => ({
+      name: t.name,
+      date: typeof t.args.date === "string" ? t.args.date : undefined,
+      serviceName: typeof t.args.serviceName === "string" ? t.args.serviceName : undefined,
+      startAt: typeof t.args.startAt === "number" ? t.args.startAt : undefined,
+      startAtIso: typeof t.args.startAt === "number" ? new Date(t.args.startAt).toISOString() : undefined,
+    })),
   });
 
   let sent: { waMessageId?: string };
