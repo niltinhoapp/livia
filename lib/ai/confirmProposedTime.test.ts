@@ -126,6 +126,68 @@ describe("cliente confirma sem repetir o horário oferecido pela Livia", () => {
     }
   });
 
+  // Transcrição real de 06/09/2026, 20:11: a Livia propôs "O horário das
+  // 13:00 está disponível. Você confirma?" e o cliente respondeu só "S".
+  // Nenhum dos dois era reconhecido — "S" caía em "unclear" e a proposta
+  // usava "das", não "às" —, então o horário voltava a ser decidido pelo
+  // modelo, que mirou 13:00 de HOJE (já passado) e recebeu "muito próximo"
+  // do backend, corretamente.
+  it('propõe com "das 13:00" e o cliente responde só "S"', async () => {
+    respostas = ["Agendado!"];
+    const h: Message[] = [
+      {
+        id: "1",
+        role: "bot",
+        text: "O horário das 13:00 está disponível. Você confirma esse horário para a avaliação? 😊",
+        at: AGORA - 1000,
+      },
+      { id: "2", role: "customer", text: "S", at: AGORA },
+    ];
+
+    const result = await think({
+      est,
+      kb: null,
+      history: h,
+      contactPhone: "5514996447132",
+      contactName: "Nilton",
+      customerProfile: null,
+      task: tarefaAguardandoConfirmacao(),
+      intent,
+    });
+
+    expect(result.booked).toBe(true);
+    const [, args] = runTool.mock.calls.find((c) => c[0] === "create_appointment")!;
+    // 07/09 13:00 local (-03) = 16:00 UTC — o dia coletado na tarefa, nunca
+    // o dia de hoje que o modelo vinha calculando por conta própria.
+    expect(args.startAt).toBe(new Date("2026-09-07T16:00:00.000Z").getTime());
+  });
+
+  it("não adivinha quando a mensagem anterior era uma LISTA de horários", async () => {
+    respostas = ["Qual horário você prefere?"];
+    const h: Message[] = [
+      {
+        id: "1",
+        role: "bot",
+        text: "Os horários disponíveis são:\n- 09:00\n- 09:30\n- 10:00\n\nQual você prefere? 😊",
+        at: AGORA - 1000,
+      },
+      { id: "2", role: "customer", text: "ss", at: AGORA },
+    ];
+
+    await think({
+      est,
+      kb: null,
+      history: h,
+      contactPhone: "5514996447132",
+      contactName: "Nilton",
+      customerProfile: null,
+      task: tarefaAguardandoConfirmacao(),
+      intent,
+    });
+
+    expect(runTool).not.toHaveBeenCalledWith("create_appointment", expect.anything(), expect.anything());
+  });
+
   it("uma negação não reserva nada", async () => {
     respostas = ["Sem problemas!"];
     const h: Message[] = [history[0]!, { id: "2", role: "customer", text: "não, mudei de ideia", at: AGORA }];

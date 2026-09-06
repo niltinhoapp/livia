@@ -64,14 +64,31 @@ export function parseTimeSelection(text: string): SelectedTime | null {
 // por isso o texto é normalizado (NFD + remove diacríticos) ANTES do match,
 // igual a normalizar() em lib/ai/confirmation.ts: "às" vira "as", e \b passa
 // a funcionar normalmente antes dele.
-const PROPOSED_TIME_RE = /\bas\s+(\d{1,2})\s*(?:[:h;.,]\s*(\d{2}))?\s*(?:h|hs|horas?)?\b/;
+//
+// Casa as três formas em que a Livia menciona um horário: "13:00"/"13h30",
+// "13h" e "às 13". A primeira versão disto exigia o "às" e por isso não via
+// "o horário DAS 13:00 está disponível" — a frase exata que ela usou em
+// Production para propor o horário.
+const TIME_IN_TEXT = /(\d{1,2})[:h](\d{2})|(\d{1,2})\s*h\b|\bas\s+(\d{1,2})\b/g;
 
+// O horário PROPOSTO só existe se a mensagem mencionar UM horário. Numa
+// mensagem com vários ("- 09:00 - 09:30 - 10:00…") não há proposta nenhuma:
+// é uma lista de opções, e adivinhar qual delas o "sim" confirma reservaria
+// um horário que ninguém escolheu. Nesse caso devolve null e o fluxo segue
+// normal — falso negativo é barato, reserva errada não.
 export function extractProposedTime(text: string): SelectedTime | null {
   const normalizado = text
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "");
-  const m = normalizado.match(PROPOSED_TIME_RE);
-  if (!m) return null;
-  return toSelectedTime(m[1], m[2]);
+
+  const encontrados = new Set<string>();
+  let escolhido: SelectedTime | null = null;
+  for (const m of normalizado.matchAll(TIME_IN_TEXT)) {
+    const time = toSelectedTime(m[1] ?? m[3] ?? m[4]!, m[2]);
+    if (!time) continue;
+    encontrados.add(`${time.hour}:${time.minute}`);
+    escolhido = time;
+  }
+  return encontrados.size === 1 ? escolhido : null;
 }

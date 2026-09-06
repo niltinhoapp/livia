@@ -34,7 +34,12 @@ const HEDGE = ["acho que", "talvez", "quem sabe", "pode ser que", "nao sei", "se
 // autorizar um cancelamento ("isso mesmo" entra).
 const POSITIVE = [
   "sim",
-  "ss", // digitação comum no WhatsApp para "sim" (ex.: dedo duplicando a tecla)
+  // Abreviações reais de "sim" no WhatsApp — as duas apareceram em
+  // Production confirmando horário ("Ss", "S") e caíam em "unclear", o que
+  // tirava a confirmação do caminho determinístico e devolvia a decisão do
+  // horário ao modelo (que errava o dia).
+  "ss",
+  "s",
   "isso mesmo",
   "exatamente",
   "confirmo",
