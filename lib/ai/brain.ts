@@ -74,6 +74,10 @@ function knowledgeGuidanceToText(kb: KnowledgeBase | null): string[] {
 
 const WEEKDAYS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
+function isoDate(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 function nowLocal(offsetMin: number): { dateStr: string; human: string } {
   const d = new Date(Date.now() + offsetMin * 60000);
   const y = d.getUTCFullYear();
@@ -82,17 +86,31 @@ function nowLocal(offsetMin: number): { dateStr: string; human: string } {
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const mi = String(d.getUTCMinutes()).padStart(2, "0");
   const dateStr = `${y}-${mo}-${da}`;
+  const meiaNoite = Date.UTC(y, d.getUTCMonth(), d.getUTCDate());
   // "Amanhã" também vem resolvido: sem isso o modelo precisava calcular a
   // data sozinho e errava (respondeu 04/09 como "amanhã" para uma pergunta
   // sobre um agendamento de 03/09).
-  const t = new Date(Date.UTC(y, d.getUTCMonth(), d.getUTCDate()) + 24 * 3600000);
-  const tomorrowStr = `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+  const tomorrowStr = isoDate(new Date(meiaNoite + 24 * 3600000));
+
+  // ...e o nome do dia da semana, pelo MESMO motivo. Este ficou de fora da
+  // correção anterior e custou caro em Production: a cliente pediu "terça-
+  // feira" e a Livia agendou na segunda (07/09), depois ofereceu "remarcar
+  // para terça" listando os horários de segunda de novo. Sete dias à frente,
+  // cada nome aparecendo exatamente uma vez: se hoje é domingo, "segunda" é
+  // amanhã; se hoje é segunda, "segunda" é a semana que vem.
+  const proximos: string[] = [];
+  for (let i = 1; i <= 7; i++) {
+    const dia = new Date(meiaNoite + i * 24 * 3600000);
+    proximos.push(`${WEEKDAYS[dia.getUTCDay()]} = ${isoDate(dia)}`);
+  }
+
   return {
     dateStr,
     human:
       `Hoje é ${WEEKDAYS[d.getUTCDay()]}, ${da}/${mo}/${y}, ${hh}:${mi} (horário local). ` +
       `Em formato de data: hoje = ${dateStr}, amanhã = ${tomorrowStr}. ` +
-      `Nunca calcule "hoje"/"amanhã" de outra forma — use exatamente estas datas.`,
+      `Próxima ocorrência de cada dia da semana: ${proximos.join(", ")}. ` +
+      `Nunca calcule "hoje"/"amanhã" nem a data de um dia da semana de outra forma — use exatamente estas datas.`,
   };
 }
 
