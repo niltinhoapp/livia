@@ -111,3 +111,53 @@ describe("deriveTaskState", () => {
     expect(task?.state).toBe("confirm");
   });
 });
+
+// ---- Auditoria 06/09/2026: a tarefa não pode depender de palavra-chave ----
+//
+// Mensagens reais no meio de um agendamento não contêm nenhuma palavra do
+// dicionário de intenções: "dia 8", "as 9", "mas qr pro dia 7", "macar" (com
+// typo). Sem tarefa, o caminho determinístico de horário não roda e a
+// validação de dia fica cega — foi a causa comum das falhas daquela noite.
+describe("agendamento comprovado por ferramenta cria tarefa, mesmo sem palavra-chave", () => {
+  const semIntencao: Intent = { type: "general_question", confidence: 0.2, entities: {} };
+
+  it('"dia 8" sem palavra-chave, mas com a agenda consultada, vira tarefa', () => {
+    const task = deriveTaskState({
+      existingTask: null,
+      intent: semIntencao,
+      toolCalls: [{ name: "find_available_appointments", args: { date: "2026-09-08" } }],
+      booked: false,
+      statedDate: "2026-09-08",
+    });
+
+    expect(task).not.toBeNull();
+    expect(task!.type).toBe("schedule_appointment");
+    expect(task!.collectedData.date).toBe("2026-09-08");
+    // É este estado que habilita a escolha determinística de horário.
+    expect(task!.state).toBe("offer_options");
+  });
+
+  it("a data dita pelo cliente vence a que o modelo passou à ferramenta", () => {
+    const task = deriveTaskState({
+      existingTask: null,
+      intent: semIntencao,
+      // O modelo consultou o dia errado; o cliente disse "terça" (08/09).
+      toolCalls: [{ name: "find_available_appointments", args: { date: "2026-09-07" } }],
+      booked: false,
+      statedDate: "2026-09-08",
+    });
+
+    expect(task!.collectedData.date).toBe("2026-09-08");
+  });
+
+  it("conversa sem nenhuma atividade de agenda continua sem tarefa", () => {
+    const task = deriveTaskState({
+      existingTask: null,
+      intent: semIntencao,
+      toolCalls: [{ name: "search_knowledge_base", args: {} }],
+      booked: false,
+    });
+
+    expect(task).toBeNull();
+  });
+});

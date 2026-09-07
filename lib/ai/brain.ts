@@ -868,6 +868,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           if (name === "find_available_appointments") {
             const data = result.data as { date?: string; slots?: { time: string }[] } | undefined;
             if (data?.slots?.length) ultimaDisponibilidade = { date: data.date, slots: data.slots };
+            // Listar os horários de um dia coloca aquele dia em discussão
+            // JÁ NESTE TURNO — sem esperar a tarefa ser persistida. É o que
+            // permite recusar, logo em seguida, um create_appointment com
+            // instante de outro dia (assertSameDay em lib/ai/tools.ts).
+            if (data?.date) toolCtx.discussedDate = data.date;
           }
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });

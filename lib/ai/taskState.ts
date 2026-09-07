@@ -80,8 +80,39 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     };
   }
 
-  // Sem tarefa ativa e sem intenção que inicie uma — nada a rastrear
-  // (perguntas factuais, conversa geral).
+  // Sem tarefa ativa e sem palavra-chave — mas com AGENDAMENTO ACONTECENDO.
+  //
+  // Este era o elo que faltava (auditoria 06/09/2026). A tarefa só nascia se
+  // a mensagem casasse com uma palavra-chave, e as mensagens reais no meio de
+  // um agendamento não casam: "dia 8", "as 9", "mas qr pro dia 7", "macar"
+  // (com o typo). Pior: um agendamento concluído zera a tarefa (`booked`
+  // acima), então a mensagem seguinte começa sem nada.
+  //
+  // Sem tarefa, o caminho determinístico de escolha de horário não roda e a
+  // validação de dia (assertSameDay em lib/ai/tools.ts) fica cega — a data
+  // volta a ser problema do modelo, que foi a causa comum de todas as falhas
+  // daquela noite.
+  //
+  // O sinal confiável não é o vocabulário do cliente: é a FERRAMENTA ter
+  // rodado. Se o backend acabou de listar horários de um dia, agendamento é
+  // o que está acontecendo, tenha o cliente escrito a palavra ou não.
+  const agendamentoEmCurso = toolCalls.some(
+    (t) =>
+      t.name === "find_available_appointments" ||
+      t.name === "create_appointment" ||
+      t.name === "reschedule_appointment",
+  );
+  if (agendamentoEmCurso) {
+    return {
+      type: "schedule_appointment",
+      state: nextStateFromTools(toolCalls, "collect_date"),
+      collectedData: collectFromTools(toolCalls, {}, statedDate),
+      missingData: [],
+      updatedAt: now,
+    };
+  }
+
+  // Nada a rastrear (perguntas factuais, conversa geral).
   return null;
 }
 
