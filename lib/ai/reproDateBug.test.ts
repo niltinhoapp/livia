@@ -106,13 +106,33 @@ describe("a listagem e a criação concordam sobre 07/09 (agenda real)", () => {
     expect(new Date(criados[0]!.startAt).toISOString()).toBe("2026-09-07T19:00:00.000Z");
   });
 
-  it('"as 9 e 30" reserva 07/09 09:30, sem "fora do expediente"', async () => {
+  it('"as 9 e 30" reserva 07/09 09:30 — o MINUTO importa', async () => {
     respostas = ["Agendado!"];
 
     const result = await clienteDiz("as 9 e 30", tarefa());
 
     expect(result.booked).toBe(true);
     expect(result.reply).not.toMatch(/fora do|expediente|muito pr[óo]ximo/i);
+
+    // A primeira versão deste teste só checava `booked` — e "as 9 e 30" era
+    // lido como 09:00, que também é reservável, então o erro passou. Em
+    // Production isso virou: a Livia dizia 14:30 e o backend reservava 14:00.
+    const dia = Date.UTC(2026, 8, 7) + 3 * 3600000;
+    const criados = await listAppointments("demo", dia, dia + 24 * 3600000);
+    expect(criados).toHaveLength(1);
+    // 07/09 09:30 local (-03) = 12:30 UTC.
+    expect(new Date(criados[0]!.startAt).toISOString()).toBe("2026-09-07T12:30:00.000Z");
+  });
+
+  it('"as13", sem espaço, é 13:00', async () => {
+    respostas = ["Agendado!"];
+
+    const result = await clienteDiz("as13", tarefa());
+
+    expect(result.booked).toBe(true);
+    const dia = Date.UTC(2026, 8, 7) + 3 * 3600000;
+    const criados = await listAppointments("demo", dia, dia + 24 * 3600000);
+    expect(new Date(criados[0]!.startAt).toISOString()).toBe("2026-09-07T16:00:00.000Z");
   });
 });
 

@@ -18,9 +18,16 @@ export interface SelectedTime {
 const FILLERS =
   /^(pode ser|prefiro|quero( o de| o)?|vou (de|no|ficar com)|fica(mos)? (com|no)|o de|marca|marcar|agenda(r)?|as|às|ah|entao|então|acho que|talvez)\s+/i;
 
-// Núcleo do parsing: "13", "13:00", "13h", "13h30", "14;30", "14.30", "13 30"
-// — sem exigir que o horário seja o texto INTEIRO (ver parseTimeSelection).
-const TIME_CORE = /^(\d{1,2})\s*(?:[:h;.,\s]\s*(\d{2}))?\s*(?:h|hs|horas?)?\b/;
+// Núcleo do parsing: "13", "13:00", "13h", "13h30", "14;30", "14.30",
+// "13 30" e "13 e 30" — sem exigir que o horário seja o texto INTEIRO (ver
+// parseTimeSelection).
+//
+// O "e" separando hora e minuto entrou depois de custar caro: "as 9 e 30"
+// era lido como 09:00 (o grupo dos minutos não casava e virava opcional
+// vazio), então a Livia dizia 09:30 e o backend reservava 09:00. O teste que
+// existia só checava se a reserva acontecia — e 09:00 também era reservável,
+// então o erro passou batido.
+const TIME_CORE = /^(\d{1,2})(?:(?:\s*[:h;.,]\s*|\s+e\s+|\s+)(\d{2}))?\s*(?:h|hs|horas?)?\b/;
 
 function toSelectedTime(hourStr: string, minuteStr: string | undefined): SelectedTime | null {
   const hour = Number(hourStr);
@@ -39,6 +46,10 @@ export function parseTimeSelection(text: string): SelectedTime | null {
 
   // Remove pontuação final e prefixos, possivelmente encadeados ("então as 13").
   t = t.replace(/[.!?]+$/, "").trim();
+  // "as13", "às13" — sem espaço, como o cliente digitou em Production. O
+  // lookahead exige dígito logo depois, então nenhuma palavra que comece com
+  // "as" é mutilada.
+  t = t.replace(/^([aà]s)(?=\d)/i, "");
   for (let i = 0; i < 3; i++) {
     const sem = t.replace(FILLERS, "").trim();
     if (sem === t) break;
