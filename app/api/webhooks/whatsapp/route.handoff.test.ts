@@ -225,3 +225,73 @@ describe("CRÍTICO 4 — handoff não pode virar beco sem saída", () => {
     expect(textosEnviados()).toEqual([SERVICE_PAUSED_REPLY]);
   });
 });
+
+// ---- Caminho de volta pelo WhatsApp (auditoria 06/09/2026, Caso 4) ----
+//
+// Em Production a Livia ofereceu atendente, o cliente respondeu "n" e a
+// conversa ficou muda. Ele escreveu, depois: "vc ja chamou atendimento
+// humano msm eu dizendo q nao". A única saída era o painel — que o cliente
+// não tem.
+describe("o cliente pode desistir do atendente e a Livia volta", () => {
+  const OFERTA = "Posso transferir você para um atendente humano que poderá ajudar melhor. Você gostaria disso?";
+
+  it('"não" logo após a oferta retoma a conversa e a Livia responde', async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("handoff", [botMessage(OFERTA, 1)]));
+
+    await entregar("n");
+
+    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", PHONE, "bot");
+    expect(resolvePendingTask).toHaveBeenCalledWith("est_odonto", PHONE);
+    expect(think).toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalled();
+  });
+
+  it.each([
+    "não quero atendente",
+    "pode continuar você",
+    "não precisa chamar ninguém",
+    "deixa você resolver",
+  ])('recusa explícita retoma mesmo sem oferta anterior: "%s"', async (texto) => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("handoff"));
+
+    await entregar(texto, `wamid.${texto}`);
+
+    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", PHONE, "bot");
+    expect(think).toHaveBeenCalled();
+  });
+
+  it("um atendente NO CONTROLE nunca é atropelado, mesmo com recusa explícita", async () => {
+    // A distinção que torna a retomada segura: "human" = tem gente digitando.
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("human", [botMessage(OFERTA, 1)]));
+
+    await entregar("não quero atendente, pode continuar você");
+
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it('um "não" que NÃO responde a uma oferta não retoma nada', async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("handoff", [botMessage("Qual horário você prefere?", 1)]));
+
+    await entregar("n");
+
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+    expect(upsertPendingTask).toHaveBeenCalled();
+  });
+
+  it("quem AINDA quer o humano continua esperando por ele", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("handoff", [botMessage(OFERTA, 1)]));
+
+    await entregar("sim, pode chamar");
+
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+  });
+});

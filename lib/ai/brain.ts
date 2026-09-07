@@ -8,6 +8,7 @@ import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/schedulin
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
+import { readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
@@ -742,6 +743,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
   const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
+  const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
 
   let booked = false;
   // Dados da reserva REALMENTE criada neste turno (venha ela do caminho
@@ -868,7 +870,13 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     let reply = msg.content?.trim() ?? "";
-    let handoff = handoffRequested || reply.includes(HANDOFF_TOKEN);
+    // Transferir alguém que ACABOU de dizer que não quer é o erro mais
+    // irritante possível — o cliente escreve "não" e some do atendimento.
+    // A recusa é lida por código (lib/ai/humanRequest.ts) e vale contra
+    // qualquer origem de handoff neste turno, inclusive a ferramenta e o
+    // marcador de texto do modelo. Só a recusa EXPLÍCITA conta: um "none"
+    // não impede nada.
+    let handoff = (handoffRequested || reply.includes(HANDOFF_TOKEN)) && !clienteRecusouHumano;
     if (reply.includes(HANDOFF_TOKEN)) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
 
     // Trava determinística do fluxo de consulta de agenda: se a consulta deu

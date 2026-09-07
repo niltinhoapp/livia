@@ -40,6 +40,7 @@ import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/service
 import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
+import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
@@ -350,9 +351,42 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
   // Agora cada mensagem nova durante handoff/human reabre a MESMA pendência
   // (doc id = conversationId, ver lib/repo.ts: upsertPendingTask — não cria
   // fila paralela nem duplica documento), então a conversa volta a aparecer
-  // como "Precisa de humano". A saída continua sendo explícita e manual:
-  // "Devolver para Livia" no painel. Nenhum retorno automático — a Livia não
-  // pode voltar a responder enquanto um atendente estiver no controle.
+  // como "Precisa de humano".
+  //
+  // ---- Caminho de volta pelo WhatsApp (06/09/2026) ----
+  //
+  // Faltava o cliente poder DESISTIR. A Livia oferecia atendente, gravava o
+  // handoff no mesmo turno, e a partir daí ficava muda: o cliente que
+  // respondia "não" nunca mais era atendido, e a única saída era o botão
+  // "Devolver para Livia" no painel — que ele não tem. Foi exatamente o que
+  // aconteceu em Production, e o cliente escreveu "vc ja chamou atendimento
+  // humano msm eu dizendo q nao".
+  //
+  // A distinção que torna isso seguro já existia nos estados:
+  //   "handoff" = a Livia parou, mas NINGUÉM assumiu -> voltar é seguro;
+  //   "human"   = um atendente assumiu -> NUNCA voltar, tem gente digitando.
+  //
+  // Só uma recusa determinística retoma (ver lib/ai/humanRequest.ts), e um
+  // "não" seco só conta quando a mensagem anterior da Livia era mesmo uma
+  // oferta de atendente. Na dúvida, nada muda.
+  if (conversation.status === "handoff") {
+    const ultimaDaLivia = [...history].reverse().find((m) => m.role === "bot");
+    const recusa =
+      readHumanIntent(customerText) === "declines" ||
+      (readConfirmation(customerText) === "no" && Boolean(ultimaDaLivia && offeredHuman(ultimaDaLivia.text)));
+
+    if (recusa) {
+      logStage("customer declined human handoff, Livia resuming", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+      await setConversationStatus(est.id, conversation.id, "bot");
+      await resolvePendingTask(est.id, conversation.id);
+      conversation.status = "bot";
+    }
+  }
+
   if (conversation.status === "human" || conversation.status === "handoff") {
     logStage("conversation not handled by Livia (human/handoff), message only logged", {
       msgId: msg.id,

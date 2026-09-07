@@ -15,6 +15,10 @@ export type ConfirmationAnswer = "yes" | "no" | "unclear";
 // ("não, isso não", "não quero cancelar").
 const NEGATIVE = [
   "nao",
+  // Simétrico de "s"/"ss" na lista positiva: o cliente que recusou o
+  // atendente em Production digitou exatamente "n". Negar por engano é o
+  // lado seguro — só perde a confirmação e a Livia pergunta de novo.
+  "n",
   "nunca",
   "negativo",
   "deixa pra la",
