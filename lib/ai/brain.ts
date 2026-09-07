@@ -395,6 +395,61 @@ function appointmentLabel(a: { serviceName?: string; day?: string; date?: string
   return `${a.serviceName ?? "atendimento"} ${quando} às ${a.time}`;
 }
 
+// Tenta achar, dentro da lista de agendamentos ativos, o único que bate com
+// o que o cliente acabou de escrever ("o das 10 hrs", "a Limpeza", "o de
+// amanhã") — sem depender do modelo ter um ID em mãos.
+//
+// Existe porque, depois de "qual deles?", o prompt só recebia os RÓTULOS dos
+// candidatos (nunca os ids — ver cancelOutcomeSection), então a resposta do
+// cliente tinha que passar pelo loop geral do modelo, que só tem os ids
+// reais se ele voltar a chamar get_customer_appointments NESTE turno. Em
+// Production, "o das 10 hrs" falhou na primeira tentativa ("não consegui
+// localizar") e só funcionou na segunda, quando o modelo relistou a agenda
+// por conta própria — mesmo arquétipo do bug de data/horário de ontem:
+// informação que devia ser fato do sistema ficava por conta do modelo
+// reconstruir.
+//
+// Interseção de critérios: cada pista aplicada (horário, depois serviço,
+// depois dia) só ESTREITA a lista — nunca lê um critério ausente como
+// "vale qualquer um". Só resolve quando sobra EXATAMENTE um candidato;
+// zero ou mais de um cai no comportamento de sempre (pergunta de novo).
+function matchCancelTarget(
+  text: string,
+  ativos: { id: string; serviceName?: string; day?: string; date?: string; time?: string }[],
+  today: string,
+): { id: string; serviceName?: string; day?: string; date?: string; time?: string } | null {
+  let candidatos = ativos;
+
+  const horario = extractSingleTime(text);
+  if (horario) {
+    const hhmm = `${String(horario.hour).padStart(2, "0")}:${String(horario.minute).padStart(2, "0")}`;
+    candidatos = candidatos.filter((a) => a.time === hhmm);
+  }
+
+  const dataDita = parseDateSelection(text, today);
+  if (dataDita) {
+    candidatos = candidatos.filter((a) => a.date === dataDita);
+  }
+
+  const normalizado = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  const porServico = candidatos.filter(
+    (a) => a.serviceName && normalizado.includes(a.serviceName.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")),
+  );
+  // Só usa o filtro de serviço se ele não zerar a lista — "cancela esse"
+  // não cita serviço nenhum, e isso não pode descartar tudo.
+  if (porServico.length > 0) candidatos = porServico;
+
+  // Nada de pista alguma bateu (nem horário, nem data, nem serviço): não dá
+  // para dizer que "resolveu" nada — devolve null mesmo com 1 item sobrando,
+  // porque esse 1 é só "todos os ativos", não uma escolha do cliente.
+  if (!horario && !dataDita && porServico.length === 0) return null;
+
+  return candidatos.length === 1 ? candidatos[0]! : null;
+}
+
 // Resolve "cancela esse" com segurança:
 //   - já havia um alvo escolhido e o cliente confirmou -> cancela por ID;
 //   - já havia um alvo e o cliente negou -> aborta, sem cancelar nada;
@@ -451,6 +506,16 @@ async function resolveCancellation(
   if (ativos.length === 1) {
     return { kind: "needs_confirmation", appointmentId: ativos[0]!.id, label: appointmentLabel(ativos[0]!) };
   }
+
+  // Vários ativos: tenta resolver pelo que o cliente ACABOU de escrever
+  // ("o das 10 hrs") antes de perguntar de novo — inclusive na primeira
+  // mensagem, se ela já veio com a pista ("cancela minha limpeza de amanhã").
+  if (ultima) {
+    const hojeLocal = nowLocal(toolCtx.offset).dateStr;
+    const alvo = matchCancelTarget(ultima.text, ativos, hojeLocal);
+    if (alvo) return { kind: "needs_confirmation", appointmentId: alvo.id, label: appointmentLabel(alvo) };
+  }
+
   return { kind: "ambiguous", options: ativos.map((a) => ({ id: a.id, label: appointmentLabel(a) })) };
 }
 

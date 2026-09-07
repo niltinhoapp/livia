@@ -27,7 +27,14 @@ const FILLERS =
 // vazio), então a Livia dizia 09:30 e o backend reservava 09:00. O teste que
 // existia só checava se a reserva acontecia — e 09:00 também era reservável,
 // então o erro passou batido.
-const TIME_CORE = /^(\d{1,2})(?:(?:\s*[:h;.,]\s*|\s+e\s+|\s+)(\d{2}))?\s*(?:h|hs|horas?)?\b/;
+//
+// O sufixo tem "hrs" e "hs" ANTES de "h" de propósito: alternação de regex
+// testa em ordem, e "h" sozinho casava primeiro dentro de "hrs" ("cancele o
+// meu da 16hrs"), consumindo só o "h" e travando o \b seguinte no meio da
+// palavra ("h" e "r" são os dois \w, não há fronteira ali) — o sufixo inteiro
+// nunca chegava a ser tentado. Com "hrs"/"hs" primeiro, a alternativa mais
+// longa casa antes, e o \b cai depois do "s", onde de fato existe fronteira.
+const TIME_CORE = /^(\d{1,2})(?:(?:\s*[:h;.,]\s*|\s+e\s+|\s+)(\d{2}))?\s*(?:hrs|hs|h|horas?)?\b/;
 
 function toSelectedTime(hourStr: string, minuteStr: string | undefined): SelectedTime | null {
   const hour = Number(hourStr);
@@ -76,11 +83,13 @@ export function parseTimeSelection(text: string): SelectedTime | null {
 // igual a normalizar() em lib/ai/confirmation.ts: "às" vira "as", e \b passa
 // a funcionar normalmente antes dele.
 //
-// Casa as três formas em que a Livia menciona um horário: "13:00"/"13h30",
-// "13h" e "às 13". A primeira versão disto exigia o "às" e por isso não via
-// "o horário DAS 13:00 está disponível" — a frase exata que ela usou em
-// Production para propor o horário.
-const TIME_IN_TEXT = /(\d{1,2})[:h](\d{2})|(\d{1,2})\s*h\b|\bas\s+(\d{1,2})\b/g;
+// Casa as formas em que hora aparece em texto livre: "13:00"/"13h30", "13h"
+// / "13 hrs" (mesma ordem "hrs" antes de "h" que TIME_CORE, pelo mesmo
+// motivo), e "as 13"/"das 13". A primeira versão exigia "às" com acento e por
+// isso não via "o horário DAS 13:00 está disponível"; a segunda não tinha
+// "hrs" e por isso não via "o das 10 hrs" — as duas frases exatas que a
+// Livia e o cliente trocaram em Production, uma de cada lado da conversa.
+const TIME_IN_TEXT = /(\d{1,2})[:h](\d{2})|(\d{1,2})\s*(?:hrs|hs|h)\b|\bd?as\s+(\d{1,2})\b/g;
 
 // Faixa ou aproximação não é escolha de horário: "entre 14 e 15h", "depois
 // das 14", "umas 2 da tarde". Reservar 15:00 porque foi a única hora escrita
