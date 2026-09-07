@@ -319,7 +319,7 @@ export function deniesBooking(reply: string): boolean {
 // pouco menos personalizada; o custo do outro lado é o cliente não aparecer
 // para um horário que está reservado no nome dele.
 const BOOKING_AFFIRMED =
-  /\b(reservad[oa]|agendad[oa]|marcad[oa]|confirmad[oa]|prontinho|agendei|reservei|marquei|confirmei|est[áa] (marcado|agendado|reservado|confirmado))\b/i;
+  /\b(reservad[oa]|agendad[oa]|marcad[oa]|remarcad[oa]|transferid[oa]|confirmad[oa]|prontinho|agendei|reservei|marquei|remarquei|confirmei|est[áa] (marcado|agendado|reservado|confirmado|remarcado))\b/i;
 
 export function confirmsBooking(reply: string): boolean {
   return BOOKING_AFFIRMED.test(reply) && !deniesBooking(reply);
@@ -348,6 +348,15 @@ function bookingOutcomeSection(outcome: BookingOutcome | null): string {
       cabecalho +
       `AGENDAMENTO CRIADO com sucesso: ${outcome.serviceName} em ${outcome.when}. ` +
       "Confirme isso ao cliente de forma curta e simpática. NUNCA diga que o horário estava ocupado ou que não foi possível."
+    );
+  }
+
+  if (outcome.kind === "rescheduled") {
+    return (
+      cabecalho +
+      `AGENDAMENTO REMARCADO com sucesso${outcome.serviceName ? ` (${outcome.serviceName})` : ""} para ${outcome.when}. ` +
+      "O horário anterior foi liberado. Confirme isso ao cliente de forma curta e simpática. " +
+      "NUNCA diga que não foi possível remarcar."
     );
   }
 
@@ -513,6 +522,7 @@ const AWAITING_TIME_CHOICE = new Set<ConversationTask["state"]>(["offer_options"
 
 export type BookingOutcome =
   | { kind: "created"; when: string; serviceName: string }
+  | { kind: "rescheduled"; when: string; serviceName: string }
   | { kind: "conflict"; reason: string; alternatives: { time: string }[] }
   | { kind: "free_needs_service"; time: string };
 
@@ -554,6 +564,31 @@ async function resolveTimeSelection(
   const startAt = localToEpoch(date, escolhido.hour * 60 + escolhido.minute, config.utcOffsetMinutes);
   const serviceName =
     typeof task.collectedData.serviceName === "string" ? task.collectedData.serviceName : undefined;
+
+  // REMARCAÇÃO usa a ferramenta de remarcação. Antes disto, este caminho
+  // chamava create_appointment para os dois tipos de tarefa: numa remarcação
+  // ele CRIAVA UM SEGUNDO agendamento e deixava o antigo ativo — o cliente
+  // ficava com dois horários e a agenda com um bloqueio fantasma. Nunca foi
+  // observado em Production, mas era alcançável por qualquer pessoa que
+  // pedisse para remarcar e respondesse com um horário.
+  //
+  // reschedule_appointment resolve sozinha o agendamento alvo e o serviço
+  // (pelo próprio Appointment, ver lib/ai/tools.ts) — por isso não exige
+  // `serviceName` coletado e é decidida antes da checagem abaixo.
+  if (task.type === "reschedule_appointment") {
+    const result = await runTool("reschedule_appointment", { newStartAt: startAt }, toolCtx);
+    toolCalls.push({ name: "reschedule_appointment", args: { newStartAt: startAt } });
+
+    if (result.ok) {
+      const data = result.data as { when?: string; serviceName?: string } | undefined;
+      return { kind: "rescheduled", when: data?.when ?? "", serviceName: data?.serviceName ?? "" };
+    }
+    return {
+      kind: "conflict",
+      reason: result.reasonCode ?? result.error ?? "indisponível",
+      alternatives: await realAlternatives(toolCtx, date, toolCalls),
+    };
+  }
 
   // Sem serviço definido não dá para criar — mas a disponibilidade ainda é
   // decidida pelo backend, nunca pelo modelo.
@@ -682,6 +717,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // que a resposta é reescrita se o texto negar a reserva.
   let bookedInfo: { when: string; serviceName: string } | null = null;
   let rescheduled = false;
+  // Mesmo papel de bookedInfo, para remarcação: o horário NOVO já efetivado.
+  let rescheduledInfo: { when: string; serviceName: string } | null = null;
+  // Última consulta de disponibilidade bem-sucedida do turno.
+  let ultimaDisponibilidade: { date?: string; slots: { time: string }[] } | null = null;
   let cancelled = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
@@ -717,6 +756,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (bookingOutcome?.kind === "created") {
     booked = true;
     bookedInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
+  }
+  if (bookingOutcome?.kind === "rescheduled") {
+    rescheduled = true;
+    rescheduledInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
   }
 
   // Cancelamento: alvo resolvido e confirmação exigida pelo backend.
@@ -772,9 +815,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
             const data = result.data as { when?: string; serviceName?: string } | undefined;
             if (data?.when && data.serviceName) bookedInfo = { when: data.when, serviceName: data.serviceName };
           }
-          if (name === "reschedule_appointment") rescheduled = true;
+          if (name === "reschedule_appointment") {
+            rescheduled = true;
+            const data = result.data as { when?: string; serviceName?: string } | undefined;
+            if (data?.when) rescheduledInfo = { when: data.when, serviceName: data.serviceName ?? "" };
+          }
           if (name === "cancel_appointment") cancelled = true;
           if (name === "request_human_handoff") handoffRequested = true;
+          // Guardado para o caso de o loop estourar sem resposta final: os
+          // horários livres já foram consultados de verdade e são uma
+          // resposta muito melhor do que transferir (ver o fim de think()).
+          if (name === "find_available_appointments") {
+            const data = result.data as { date?: string; slots?: { time: string }[] } | undefined;
+            if (data?.slots?.length) ultimaDisponibilidade = { date: data.date, slots: data.slots };
+          }
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
       }
@@ -872,6 +926,15 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       handoff = false;
     }
 
+    // Mesma trava para REMARCAÇÃO: o horário antigo já foi liberado e o novo
+    // já está gravado. Negar isso deixaria o cliente convencido de que segue
+    // valendo o horário antigo — que não existe mais.
+    if (rescheduled && rescheduledInfo && !confirmsBooking(reply)) {
+      const servico = rescheduledInfo.serviceName ? `de ${rescheduledInfo.serviceName} ` : "";
+      reply = `Prontinho! Seu horário ${servico}foi remarcado para ${rescheduledInfo.when}.`;
+      handoff = false;
+    }
+
     // ---- Trava de desfecho inventado ----
     //
     // Qualquer RECUSA de horário — não só "ocupado/indisponível" — só pode
@@ -960,17 +1023,52 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
   }
 
-  // A mensagem anterior aqui ("já te retorno") era uma promessa VAZIA: nada
-  // continuava depois do return, e o cliente ficava esperando para sempre.
-  // Agora transfere de verdade — handoff: true faz o webhook mudar a conversa
-  // para "handoff" e avisa que alguém vai assumir.
+  // Antes de transferir, usar o que o turno JÁ produziu.
+  //
+  // Transferir é a decisão mais cara do sistema — o webhook grava a conversa
+  // como "handoff" e a Livia para de responder até alguém mexer no painel.
+  // Tomar essa decisão só porque o modelo gastou as iterações de ferramenta é
+  // desproporcional, e foi exatamente o que aconteceu em Production
+  // (06/09/2026, 20:38): a cliente pediu "as 14h" para remarcar e recebeu a
+  // transferência, com a agenda funcionando o tempo todo.
+  //
+  // A ordem abaixo vai do fato mais forte ao mais fraco. Os dois primeiros
+  // são os mais graves: a operação ACONTECEU, e sair daqui sem contar isso
+  // repete o pior bug da noite — o cliente com horário reservado sem saber.
+  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
+
+  if (booked && bookedInfo) {
+    return {
+      ...base,
+      reply: `Prontinho! Seu horário de ${bookedInfo.serviceName} está reservado para ${bookedInfo.when}.`,
+      handoff: false,
+    };
+  }
+
+  if (rescheduled && rescheduledInfo) {
+    const servico = rescheduledInfo.serviceName ? `de ${rescheduledInfo.serviceName} ` : "";
+    return {
+      ...base,
+      reply: `Prontinho! Seu horário ${servico}foi remarcado para ${rescheduledInfo.when}.`,
+      handoff: false,
+    };
+  }
+
+  if (ultimaDisponibilidade) {
+    const horarios = ultimaDisponibilidade.slots.map((s) => s.time).join(", ");
+    return {
+      ...base,
+      reply: `Estes são os horários livres: ${horarios}. Qual deles fica melhor pra você?`,
+      handoff: false,
+    };
+  }
+
+  // Nada aproveitável no turno: aí sim transferir é a resposta certa. A
+  // mensagem anterior a esta ("já te retorno") era uma promessa VAZIA — nada
+  // continuava depois do return e o cliente esperava para sempre.
   return {
+    ...base,
     reply: "Vou chamar uma pessoa da equipe para te ajudar com isso, tudo bem? Já já alguém te responde por aqui.",
     handoff: true,
-    booked,
-    rescheduled,
-    cancelled,
-    toolCalls,
-    pendingCancelAppointmentId,
   };
 }
