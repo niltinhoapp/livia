@@ -3,7 +3,7 @@
 // A frase que originou tudo: a Livia ofereceu atendente, o cliente respondeu
 // "n", e a conversa ficou muda para sempre.
 import { describe, expect, it } from "vitest";
-import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
+import { announcesTransfer, offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 
 describe("pedido explícito de humano", () => {
   it.each([
@@ -83,5 +83,31 @@ describe("reconhecer a oferta da Livia (dá sentido a um 'não' seco)", () => {
     "Os horários disponíveis são 09:00 e 09:30.",
   ])("não confunde resposta normal com oferta: %s", (texto) => {
     expect(offeredHuman(texto)).toBe(false);
+  });
+});
+
+// A resposta não pode anunciar uma transferência que não aconteceu.
+//
+// Production 06/09/2026: o cliente escreveu "nao precisa chamar ninguem", o
+// sistema corretamente NÃO transferiu (ela seguiu respondendo depois) — e o
+// texto ainda assim dizia "Vou transferir você para um atendente agora".
+describe("anúncio de transferência", () => {
+  it.each([
+    "Vou transferir você para um atendente agora. 😊",
+    "Você será transferido para um atendente agora.",
+    "Vou chamar uma pessoa da equipe pra te ajudar com isso.",
+    "Sinto muito, mas não consigo ajudar. Vou transferir você para um atendente.",
+  ])("anuncia: %s", (texto) => {
+    expect(announcesTransfer(texto)).toBe(true);
+  });
+
+  it.each([
+    // Pergunta é OFERTA, não anúncio — essa distinção é o ponto.
+    "Posso transferir você para um atendente humano? Você gostaria disso?",
+    "Quer que eu chame um atendente pra te ajudar?",
+    "Prontinho! Seu horário está reservado para 08/09 às 09:00.",
+    "Tudo bem, sigo com você por aqui! Me diz como posso ajudar. 😊",
+  ])("não anuncia: %s", (texto) => {
+    expect(announcesTransfer(texto)).toBe(false);
   });
 });

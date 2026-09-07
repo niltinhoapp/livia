@@ -86,3 +86,25 @@ const OFERTA_DE_HUMANO = new RegExp(
 export function offeredHuman(botText: string): boolean {
   return OFERTA_DE_HUMANO.test(normalizar(botText));
 }
+
+// A resposta ANUNCIA uma transferência ("vou transferir você", "será
+// transferido")? Diferente de OFERTA_DE_HUMANO de propósito: "posso
+// transferir?" pergunta, "vou transferir" afirma.
+//
+// Serve para o mesmo princípio já aplicado à reserva — a resposta tem que
+// refletir o estado real. Em Production (06/09/2026) o cliente escreveu "nao
+// precisa chamar ninguem", o sistema corretamente NÃO transferiu (ela
+// continuou respondendo depois), e mesmo assim o texto dizia "Vou transferir
+// você para um atendente agora". A trava impedia a mudança de estado, não a
+// frase.
+const ANUNCIA_TRANSFERENCIA = new RegExp(
+  [
+    `\\b(vou|irei|estou|vamos)\\s+(transferir|transferindo|chamar|chamando|passar|passando)\\b(?!.*\\?)`,
+    `\\bser[aá]\\s+transferid[oa]\\b`,
+    `\\b(transferindo|encaminhando)\\s+(voce|vc|seu atendimento)\\b`,
+  ].join("|"),
+);
+
+export function announcesTransfer(reply: string): boolean {
+  return ANUNCIA_TRANSFERENCIA.test(normalizar(reply));
+}

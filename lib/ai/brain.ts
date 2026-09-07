@@ -8,7 +8,7 @@ import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/schedulin
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
-import { readHumanIntent } from "@/lib/ai/humanRequest";
+import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
@@ -1058,6 +1058,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // Transferir já significa que ninguém vai voltar sozinho nesta conversa.
     if (handoff && looksLikeStalling(reply)) {
       reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
+    }
+
+    // ---- Trava: o texto não pode anunciar uma transferência que não houve ----
+    //
+    // Mesmo princípio já aplicado à reserva: a resposta reflete o estado
+    // real, nunca o contrário. Em Production o cliente escreveu "nao precisa
+    // chamar ninguem", o sistema corretamente não transferiu — e o texto
+    // ainda assim dizia "Vou transferir você para um atendente agora". Ele
+    // ficou sem saber se seria atendido por quem.
+    if (!handoff && announcesTransfer(reply)) {
+      reply = "Tudo bem, sigo com você por aqui! Me diz como posso ajudar. 😊";
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";

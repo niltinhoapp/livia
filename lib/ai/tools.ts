@@ -454,19 +454,31 @@ const confirmAppointment: ToolDefinition = {
 };
 
 // ---- rescheduleAppointment ----
-// Opera sobre o PRÓXIMO agendamento ativo do cliente (mesma noção já usada
-// pelo fluxo de confirmação de lembrete no webhook) — a IA não maneja IDs de
-// agendamento diretamente.
+// Remarca UM agendamento, identificado por id quando o cliente tem mais de
+// um ativo.
+//
+// Antes operava sempre sobre o PRÓXIMO agendamento na ordem cronológica, o
+// que produziu o pior erro de dado da noite de 06/09/2026: o cliente estava
+// remarcando a Limpeza de 09/09 13:00 e o sistema moveu a Avaliação de 07/09
+// 13:00 (a primeira da fila), respondendo "seu horário de Avaliação foi
+// remarcado". Um cliente real perderia o horário sem ser avisado.
+//
+// O cancelamento já resolvia isto perguntando "qual dos dois?"
+// (resolveCancellation em lib/ai/brain.ts); a remarcação nunca teve essa
+// desambiguação. Com um único agendamento ativo o comportamento é o mesmo de
+// antes; com vários, a ferramenta se recusa a escolher e devolve a lista
+// para que a pessoa diga qual — escolher sozinha é justamente o erro.
 const rescheduleAppointment: ToolDefinition = {
   name: "reschedule_appointment",
   enabled: (ctx) => ctx.est.bot.bookingEnabled,
   schema: fn(
     "reschedule_appointment",
-    "Remarca o próximo agendamento ativo do cliente para um novo horário. Use find_available_appointments antes para confirmar que o novo horário está livre.",
+    "Remarca um agendamento do cliente para um novo horário. Se ele tiver mais de um agendamento ativo, informe appointmentId (vindo de get_customer_appointments) — nunca escolha por conta própria. Use find_available_appointments antes para confirmar que o novo horário está livre.",
     {
       type: "object",
       properties: {
         newStartAt: { type: "number", description: "epoch em ms do novo horário, vindo de find_available_appointments" },
+        appointmentId: { type: "string", description: "id do agendamento a remarcar; obrigatório quando há mais de um ativo" },
       },
       required: ["newStartAt"],
     },
@@ -476,8 +488,31 @@ const rescheduleAppointment: ToolDefinition = {
     const diaErrado = assertSameDay(ctx, args.newStartAt);
     if (diaErrado) return diaErrado;
 
-    const appt = await findNextAppointment(ctx.est.id, normalizePhone(ctx.contactPhone));
-    if (!appt) return { ok: false, error: "nenhum agendamento ativo encontrado para remarcar" };
+    const ativos = await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), Date.now());
+    if (ativos.length === 0) return { ok: false, error: "nenhum agendamento ativo encontrado para remarcar" };
+
+    const pedido = typeof args.appointmentId === "string" ? args.appointmentId : undefined;
+    let appt = pedido ? ativos.find((a) => a.id === pedido) : undefined;
+
+    if (!appt) {
+      if (pedido) return { ok: false, error: "esse agendamento não está ativo para este cliente" };
+      if (ativos.length > 1) {
+        // Ambíguo: devolve a lista em vez de adivinhar.
+        return {
+          ok: false,
+          error:
+            "o cliente tem mais de um agendamento ativo; pergunte QUAL deles ele quer remarcar e chame de novo com appointmentId",
+          data: {
+            appointments: ativos.map((a) => ({
+              id: a.id,
+              serviceName: a.serviceName,
+              when: formatWhen(a.startAt, ctx.offset),
+            })),
+          },
+        };
+      }
+      appt = ativos[0]!;
+    }
 
     // Duração do BACKEND (pelo serviço do próprio agendamento), nunca do
     // modelo — e a MESMA regra de reservabilidade da listagem/criação, senão
