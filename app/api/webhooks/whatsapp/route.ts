@@ -488,6 +488,11 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     // campos estruturais do agendamento (nunca texto da conversa, telefone
     // ou token); `startAtIso` é o mesmo instante em UTC, para dizer de
     // imediato se caiu no dia certo. Remover depois da causa confirmada.
+    // O dia que a conversa estava tratando quando esta mensagem chegou. Sem
+    // ele, o `date`/`startAtIso` das ferramentas não diz se o dia usado
+    // estava certo ou errado — só qual foi.
+    taskDate: existingTask?.collectedData?.date ?? null,
+    statedDate,
     tools: toolCalls.map((t) => ({
       name: t.name,
       date: typeof t.args.date === "string" ? t.args.date : undefined,

@@ -736,14 +736,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const offset = config?.utcOffsetMinutes ?? -180;
   const now = nowLocal(offset);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile };
-  const tools = toolsFor(toolCtx);
-
   // Data citada pelo cliente nesta mensagem — resolvida por código, no fuso
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
   const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
+
+  // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
+  // precedência; senão, o que já estava na tarefa. As ferramentas de criar e
+  // remarcar validam o startAt contra ele (assertSameDay em lib/ai/tools.ts).
+  const discussedDate =
+    statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
+
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate };
+  const tools = toolsFor(toolCtx);
 
   let booked = false;
   // Dados da reserva REALMENTE criada neste turno (venha ela do caminho

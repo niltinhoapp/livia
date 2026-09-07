@@ -37,6 +37,10 @@ export interface ToolContext {
   contactName: string | null;
   offset: number; // utcOffsetMinutes efetivo (config, ou -180 sem config)
   customerProfile: CustomerProfile | null;
+  // Dia que a conversa está tratando (YYYY-MM-DD), decidido por código: a
+  // data que o cliente disse agora, ou a que já estava na tarefa. Serve de
+  // VALIDAÇÃO do startAt proposto pelo modelo — ver assertSameDay abaixo.
+  discussedDate?: string | null;
 }
 
 export interface ToolResult {
@@ -55,6 +59,41 @@ const NOT_BOOKABLE_MESSAGE: Record<NotBookableReason, string> = {
   too_soon: "esse horário está muito próximo de agora (antecedência mínima); ofereça um mais adiante",
   overlap: "esse horário acabou de ser ocupado; ofereça outro",
 };
+
+// Dia local (no fuso do estabelecimento) de um instante — inverso exato de
+// localToEpoch.
+function localDateOf(startAt: number, offset: number): string {
+  const d = new Date(startAt + offset * 60000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+// O startAt proposto cai no dia que a conversa está tratando?
+//
+// Rede de segurança da auditoria de 06/09/2026. A noite inteira teve o mesmo
+// sintoma por caminhos diferentes: a listagem oferecia horários de um dia e a
+// criação recebia um instante de OUTRO dia, devolvendo "muito próximo"
+// (horário de hoje já passado) ou "fechado" (hoje é domingo) para um dia que
+// estava aberto. O cliente chegou a perguntar "pq vc esta mostrando horios q
+// nao pode agendar?".
+//
+// Em vez de perseguir a origem do dia errado caso a caso, o sistema passa a
+// checar o fato: se a conversa está tratando 10/09, um startAt de 06/09 é um
+// erro, venha ele de onde vier. Devolve erro em vez de corrigir sozinho —
+// reservar no dia errado silenciosamente seria pior que recusar, e o modelo
+// tem a data certa no prompt para tentar de novo.
+//
+// Só age quando há um dia em discussão; sem isso, não há o que comparar.
+function assertSameDay(ctx: ToolContext, startAt: number): ToolResult | null {
+  if (!ctx.discussedDate) return null;
+  const dia = localDateOf(startAt, ctx.offset);
+  if (dia === ctx.discussedDate) return null;
+  return {
+    ok: false,
+    error:
+      `esse horário cai em ${dia}, mas a conversa está tratando o dia ${ctx.discussedDate}. ` +
+      `Use um horário do dia ${ctx.discussedDate}.`,
+  };
+}
 
 export interface ToolDefinition {
   name: string;
@@ -258,6 +297,9 @@ const createAppointmentTool: ToolDefinition = {
       return { ok: false, error: "serviceName e startAt são obrigatórios" };
     }
     const config = ctx.config!;
+    const diaErrado = assertSameDay(ctx, args.startAt);
+    if (diaErrado) return diaErrado;
+
     // MESMA resolução de duração usada na listagem — é isso que garante que
     // um horário oferecido continue reservável aqui.
     const duration = resolveServiceDuration(config, ctx.kb?.services, args.serviceName);
@@ -431,6 +473,9 @@ const rescheduleAppointment: ToolDefinition = {
   ),
   async execute(ctx, args) {
     if (typeof args.newStartAt !== "number") return { ok: false, error: "newStartAt é obrigatório" };
+    const diaErrado = assertSameDay(ctx, args.newStartAt);
+    if (diaErrado) return diaErrado;
+
     const appt = await findNextAppointment(ctx.est.id, normalizePhone(ctx.contactPhone));
     if (!appt) return { ok: false, error: "nenhum agendamento ativo encontrado para remarcar" };
 
