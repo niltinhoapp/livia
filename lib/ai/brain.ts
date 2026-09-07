@@ -5,7 +5,8 @@
 import OpenAI from "openai";
 import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
-import { parseTimeSelection, extractProposedTime } from "@/lib/ai/timeSelection";
+import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
+import { parseDateSelection } from "@/lib/ai/dateSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
@@ -552,13 +553,33 @@ async function resolveTimeSelection(
   // listado (a causa do "09:00 está fora do expediente" para um horário que
   // a própria Livia acabara de oferecer). Só olha a mensagem do BOT, nunca a
   // do cliente, então não interfere em nenhuma escolha explícita de horário.
+  // A data DITA AGORA pelo cliente vence a que estava na tarefa: ela é a
+  // informação mais recente e a única que veio dele, não de um argumento que
+  // o modelo escolheu numa chamada anterior. Sem isto, "quero terça as 14"
+  // usava a data que a listagem anterior tinha coletado.
+  const hojeLocal = nowLocal(config.utcOffsetMinutes).dateStr;
+  const dataDita = parseDateSelection(ultima.text, hojeLocal);
+  const date = dataDita ?? (typeof task.collectedData.date === "string" ? task.collectedData.date : undefined);
+
   let escolhido = parseTimeSelection(ultima.text);
+
+  // Dia e horário na mesma frase ("terça as 14", "dia 8 as 10"):
+  // parseTimeSelection exige o horário no COMEÇO do texto, então não vê o
+  // "14" depois do dia. Aqui o horário já não é o começo da frase, mas
+  // continua tendo que ser único e inequívoco — a mesma regra que impede
+  // adivinhar dentro de uma lista de opções.
+  if (!escolhido && dataDita) escolhido = extractSingleTime(ultima.text);
+
   if (!escolhido && readConfirmation(ultima.text) === "yes") {
+    // Confirmação sem repetir o horário ("ss", "ok", "sim" ao "Vou agendar
+    // para você às 09:00. Confirma?"): sem isto, a mensagem caía na IA, que
+    // tinha que "lembrar" e recalcular o horário proposto a partir do texto —
+    // e esse recálculo produzia um startAt fora do horário real listado. Só
+    // olha a mensagem do BOT, nunca a do cliente.
     const ultimoBot = [...history].reverse().find((m) => m.role === "bot");
-    escolhido = ultimoBot ? extractProposedTime(ultimoBot.text) : null;
+    escolhido = ultimoBot ? extractSingleTime(ultimoBot.text) : null;
   }
 
-  const date = typeof task.collectedData.date === "string" ? task.collectedData.date : undefined;
   if (!escolhido || !date) return null;
 
   const startAt = localToEpoch(date, escolhido.hour * 60 + escolhido.minute, config.utcOffsetMinutes);
@@ -695,6 +716,12 @@ export interface BrainResult {
   // lib/ai/taskState.ts para derivar o próximo estado da tarefa (Fase 4) sem
   // duplicar a lógica de quando cada ferramenta roda.
   toolCalls: ToolCallRecord[];
+  // Data que o CLIENTE citou nesta mensagem (YYYY-MM-DD), resolvida por
+  // código (lib/ai/dateSelection.ts), ou null se ele não citou nenhuma.
+  // O webhook grava isto na tarefa, e é o que faz a próxima mensagem — um
+  // "as 16" seco, sem repetir o dia — usar a data certa. Antes, a data da
+  // tarefa vinha só do argumento que o MODELO passou a alguma ferramenta.
+  statedDate: string | null;
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
@@ -710,6 +737,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
   const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile };
   const tools = toolsFor(toolCtx);
+
+  // Data citada pelo cliente nesta mensagem — resolvida por código, no fuso
+  // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
+  const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
+  const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
 
   let booked = false;
   // Dados da reserva REALMENTE criada neste turno (venha ela do caminho
@@ -1010,7 +1042,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
+    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
   }
 
   // Estouro do loop de ferramentas sem resposta final. Se a consulta de
@@ -1019,7 +1051,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (appointmentLookup?.ok) {
     const composed = composeAppointmentReply(appointmentLookup.data);
     if (composed) {
-      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
+      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
     }
   }
 
@@ -1035,7 +1067,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // A ordem abaixo vai do fato mais forte ao mais fraco. Os dois primeiros
   // são os mais graves: a operação ACONTECEU, e sair daqui sem contar isso
   // repete o pior bug da noite — o cliente com horário reservado sem saber.
-  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId };
+  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
 
   if (booked && bookedInfo) {
     return {

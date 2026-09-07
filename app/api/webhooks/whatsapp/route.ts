@@ -438,7 +438,8 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     logStage("AI call failed", { msgId: msg.id, estId: est.id, conversationId: conversation.id, error: String(err) });
     throw err;
   }
-  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId } = brainResult;
+  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate } =
+    brainResult;
   logStage("AI responded", {
     msgId: msg.id,
     estId: est.id,
@@ -495,6 +496,10 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     intent: detectedIntent,
     toolCalls,
     booked: operationCompleted,
+    // O dia que o cliente disse nesta mensagem, resolvido por código — é o
+    // que faz a PRÓXIMA mensagem ("as 16", sem repetir o dia) usar a data
+    // certa, em vez de herdar a que o modelo escolheu numa chamada anterior.
+    statedDate,
   });
   await setConversationIntent(est.id, conversation.id, detectedIntent.type);
   // Guarda o agendamento que está aguardando confirmação de cancelamento, pra

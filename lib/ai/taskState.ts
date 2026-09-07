@@ -34,11 +34,17 @@ export interface DeriveTaskStateInput {
   intent: Intent;
   toolCalls: ToolCallRecord[];
   booked: boolean;
+  // Data que o CLIENTE citou nesta mensagem, já resolvida por código
+  // (lib/ai/dateSelection.ts). Tem precedência sobre a data que veio nos
+  // argumentos das ferramentas: aquela é escolha do modelo, esta é o que a
+  // pessoa disse. Em Production a diferença entre as duas agendou uma
+  // cliente na segunda quando ela pediu terça.
+  statedDate?: string | null;
 }
 
 // null = nenhuma tarefa ativa (limpa o campo no Firestore).
 export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask | null {
-  const { existingTask, intent, toolCalls, booked } = input;
+  const { existingTask, intent, toolCalls, booked, statedDate } = input;
   const now = Date.now();
 
   // Agendamento concluído agora: a tarefa terminou, independente de qual era
@@ -55,7 +61,7 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     return {
       type: intent.type as ConversationTask["type"],
       state: nextStateFromTools(toolCalls, "collect_service"),
-      collectedData: collectFromTools(toolCalls, {}),
+      collectedData: collectFromTools(toolCalls, {}, statedDate),
       missingData: [],
       updatedAt: now,
     };
@@ -69,7 +75,7 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     return {
       ...existingTask,
       state: nextStateFromTools(toolCalls, existingTask.state),
-      collectedData: collectFromTools(toolCalls, existingTask.collectedData),
+      collectedData: collectFromTools(toolCalls, existingTask.collectedData, statedDate),
       updatedAt: now,
     };
   }
@@ -100,11 +106,16 @@ function nextStateFromTools(toolCalls: ToolCallRecord[], current: TaskState): Ta
 function collectFromTools(
   toolCalls: ToolCallRecord[],
   base: Record<string, string | number>,
+  statedDate?: string | null,
 ): Record<string, string | number> {
   const data = { ...base };
   for (const call of toolCalls) {
     if (typeof call.args.date === "string") data.date = call.args.date;
     if (typeof call.args.serviceName === "string") data.serviceName = call.args.serviceName;
   }
+  // Por último, e por isso vence: o dia que o cliente disse com todas as
+  // letras vale mais do que o dia que o modelo escolheu passar para uma
+  // ferramenta.
+  if (statedDate) data.date = statedDate;
   return data;
 }

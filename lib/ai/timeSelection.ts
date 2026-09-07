@@ -71,16 +71,32 @@ export function parseTimeSelection(text: string): SelectedTime | null {
 // Production para propor o horário.
 const TIME_IN_TEXT = /(\d{1,2})[:h](\d{2})|(\d{1,2})\s*h\b|\bas\s+(\d{1,2})\b/g;
 
-// O horário PROPOSTO só existe se a mensagem mencionar UM horário. Numa
-// mensagem com vários ("- 09:00 - 09:30 - 10:00…") não há proposta nenhuma:
-// é uma lista de opções, e adivinhar qual delas o "sim" confirma reservaria
-// um horário que ninguém escolheu. Nesse caso devolve null e o fluxo segue
-// normal — falso negativo é barato, reserva errada não.
-export function extractProposedTime(text: string): SelectedTime | null {
+// Faixa ou aproximação não é escolha de horário: "entre 14 e 15h", "depois
+// das 14", "umas 2 da tarde". Reservar 15:00 porque foi a única hora escrita
+// em "entre 14 e 15h" é decidir pelo cliente — e "umas 2 da tarde" viraria
+// 02:00 da madrugada. Nestes casos o sistema não decide: devolve null e a
+// conversa segue, com a Livia oferecendo os horários reais.
+const FAIXA_OU_APROXIMACAO =
+  /\b(entre|ate|apos|depois d[aeo]s?|antes d[aeo]s?|a partir d[aeo]s?|por volta|umas?|ou)\b/;
+
+// Só devolve algo se a mensagem mencionar UM horário. Numa mensagem com
+// vários ("- 09:00 - 09:30 - 10:00…") não há escolha nenhuma: é uma lista de
+// opções, e adivinhar qual delas um "sim" confirma reservaria um horário que
+// ninguém escolheu. Nesse caso devolve null e o fluxo segue normal — falso
+// negativo é barato, reserva errada não.
+//
+// Serve a dois usos, ambos com a mesma exigência de não-ambiguidade:
+//   - ler o horário que a LIVIA propôs, quando o cliente só confirma ("ss");
+//   - ler o horário do CLIENTE quando ele vem depois de outra coisa na
+//     frase ("terça as 14"), caso em que parseTimeSelection não serve porque
+//     exige o horário no começo do texto.
+export function extractSingleTime(text: string): SelectedTime | null {
   const normalizado = text
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "");
+
+  if (FAIXA_OU_APROXIMACAO.test(normalizado)) return null;
 
   const encontrados = new Set<string>();
   let escolhido: SelectedTime | null = null;
