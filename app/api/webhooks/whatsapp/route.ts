@@ -41,6 +41,7 @@ import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
+import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
@@ -138,9 +139,18 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // caminho comum para uma mensagem enviada com sucesso HTTP mas que falha na
   // entrega — a Meta avisa depois, assíncrono, por aqui). Antes disto era
   // descartado em silêncio, contado só como número em describePayloadStructure.
+  //
+  // Coexistence: eventos de espelhamento/sincronização não são mensagens
+  // novas do cliente. Eles nunca podem chegar ao pipeline da Livia/IA.
   const statuses: WebhookStatus[] = [];
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
+      const kind = classifyWebhookChange(change);
+      if (kind === "message_echo" || kind === "history" || kind === "app_state_sync") {
+        logStage("coexistence sync event ignored", { kind });
+        continue;
+      }
+
       const value = change.value;
       for (const msg of value?.messages ?? []) {
         messages.push({ value: value!, msg });
@@ -676,7 +686,6 @@ function emptyProfile(establishmentId: string, phone: string): CustomerProfile {
     preferredTime: null,
     frequentAddress: null,
     lastService: null,
-    lastIntent: null,
     notes: null,
     lastInteractionAt: now,
     createdAt: now,
