@@ -4,7 +4,11 @@
 // /api/knowledge/corrections) decide onde isso entra na base de
 // conhecimento. Nenhum dado crítico (agendamento, conexão de WhatsApp) passa
 // por aqui — este componente só fala com essa uma rota.
+//
+// Refino visual: agora sobre Radix Dialog (foco preso, ESC, role="dialog").
+// Props públicas, estado e lógica de save INALTERADOS.
 import { useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { GraduationCap, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Label, Select, Textarea, Input } from "@/components/ui/Field";
@@ -34,8 +38,6 @@ export function TeachDialog({ open, defaultQuestion, conversationId, onClose, on
   const [correctText, setCorrectText] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  if (!open) return null;
 
   async function save() {
     if (!correctText.trim()) {
@@ -70,19 +72,31 @@ export function TeachDialog({ open, defaultQuestion, conversationId, onClose, on
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
-      <div className="w-full max-w-md rounded-card bg-white p-6 shadow-popover">
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-ink-900/40 backdrop-blur-[1px]" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-card bg-white p-6 shadow-popover focus:outline-none">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="rounded-full bg-primary-light p-1.5 text-primary">
               <GraduationCap className="h-4 w-4" />
             </div>
-            <h3 className="text-base font-semibold text-ink-900">Ensinar a Livia</h3>
+            <Dialog.Title className="text-base font-semibold text-ink-900">Ensinar a Livia</Dialog.Title>
           </div>
-          <button onClick={onClose} className="rounded-control p-1 text-ink-400 hover:bg-line/30" aria-label="Fechar">
-            <X className="h-4 w-4" />
-          </button>
+          <Dialog.Close asChild>
+            <button className="rounded-control p-1 text-ink-400 hover:bg-line/30" aria-label="Fechar">
+              <X className="h-4 w-4" />
+            </button>
+          </Dialog.Close>
         </div>
+        <Dialog.Description className="sr-only">
+          Ensine a Livia com uma correção: escolha o tipo e escreva a resposta correta.
+        </Dialog.Description>
 
         <div className="space-y-4">
           <div>
@@ -121,11 +135,12 @@ export function TeachDialog({ open, defaultQuestion, conversationId, onClose, on
           <Button variant="secondary" size="sm" onClick={onClose}>
             Cancelar
           </Button>
-          <Button size="sm" disabled={saving} onClick={save}>
+          <Button size="sm" loading={saving} onClick={save}>
             {saving ? "Salvando…" : "Salvar correção"}
           </Button>
         </div>
-      </div>
-    </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
