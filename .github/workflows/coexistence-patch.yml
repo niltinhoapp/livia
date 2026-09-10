@@ -1,0 +1,94 @@
+name: Coexistence branch integration
+
+on:
+  push:
+    branches:
+      - feature/whatsapp-coexistence
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.event.head_commit.message != 'chore: integrate coexistence webhook guard'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/whatsapp-coexistence
+          fetch-depth: 0
+
+      - name: Integrate Coexistence webhook guard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('app/api/webhooks/whatsapp/route.ts')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = 'import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";\n'
+          new_import = old_import + 'import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";\n'
+          if new_import not in text:
+              if old_import not in text:
+                  raise SystemExit('expected humanRequest import not found')
+              text = text.replace(old_import, new_import, 1)
+
+          old_block = '''  const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
+  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): mesmo POST pode trazer statuses (o
+  // caminho comum para uma mensagem enviada com sucesso HTTP mas que falha na
+  // entrega — a Meta avisa depois, assíncrono, por aqui). Antes disto era
+  // descartado em silêncio, contado só como número em describePayloadStructure.
+  const statuses: WebhookStatus[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const value = change.value;
+      for (const msg of value?.messages ?? []) {
+        messages.push({ value: value!, msg });
+      }
+      for (const status of value?.statuses ?? []) {
+        statuses.push(status);
+      }
+    }
+  }
+'''
+
+          new_block = '''  const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
+  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): mesmo POST pode trazer statuses (o
+  // caminho comum para uma mensagem enviada com sucesso HTTP mas que falha na
+  // entrega — a Meta avisa depois, assíncrono, por aqui). Antes disto era
+  // descartado em silêncio, contado só como número em describePayloadStructure.
+  //
+  // Coexistence: smb_message_echoes/history/smb_app_state_sync são eventos de
+  // espelhamento/sincronização e NUNCA podem entrar no pipeline da IA.
+  const statuses: WebhookStatus[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const kind = classifyWebhookChange(change);
+      if (kind === "message_echo" || kind === "history" || kind === "app_state_sync") {
+        logStage("coexistence sync event ignored", { kind });
+        continue;
+      }
+
+      const value = change.value;
+      for (const msg of value?.messages ?? []) {
+        messages.push({ value: value!, msg });
+      }
+      for (const status of value?.statuses ?? []) {
+        statuses.push(status);
+      }
+    }
+  }
+'''
+
+          if old_block not in text:
+              raise SystemExit('expected webhook message/status block not found')
+          text = text.replace(old_block, new_block, 1)
+          path.write_text(text, encoding='utf-8')
+
+      - name: Commit integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/webhooks/whatsapp/route.ts
+          git diff --cached --quiet || git commit -m "chore: integrate coexistence webhook guard"
+          git push origin feature/whatsapp-coexistence
