@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { StatCard } from "@/components/ui/StatCard";
+import { Badge } from "@/components/ui/Badge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { ESTABLISHMENT_TYPE_LABELS, INTENT_LABEL } from "@/components/lib/labels";
@@ -86,79 +88,58 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <p className="mb-1 text-sm font-semibold text-primary">Olá 👋</p>
-      <h1 className="mb-1 text-2xl font-bold text-ink-900">
+      <h1 className="text-h1 text-ink-900">
         {establishment.name || "Bem-vindo(a) à Livia"}
       </h1>
-      <p className="mb-8 text-sm text-ink-500">
+      <p className="mb-8 mt-1 text-sm text-ink-500">
         {establishment.name ? ESTABLISHMENT_TYPE_LABELS[establishment.type] : "Vamos configurar seu atendimento."}
       </p>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">WhatsApp</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">
-                {whatsappConnected ? "Conectado" : "Não conectado"}
-              </p>
-            </div>
-            <div className={`rounded-full p-2 ${whatsappConnected ? "bg-success-bg text-success-fg" : "bg-warning-bg text-warning-fg"}`}>
-              {whatsappConnected ? <MessageCircle className="h-5 w-5" /> : <MessageCircleOff className="h-5 w-5" />}
-            </div>
-          </div>
-          <Link href="/painel/whatsapp" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
-            {whatsappConnected ? "Ver conexão" : "Conectar agora"} <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </Card>
-
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Agendamentos hoje</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">{activeToday.length}</p>
-            </div>
-            <div className="rounded-full bg-info-bg p-2 text-info-fg">
-              <CalendarDays className="h-5 w-5" />
-            </div>
-          </div>
-          <Link href="/painel/agenda" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
-            Ver agenda <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </Card>
-      </div>
-
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Base de conhecimento</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">{knowledgeComplete ? "Configurada" : "Incompleta"}</p>
-            </div>
-            <div className={`rounded-full p-2 ${knowledgeComplete ? "bg-success-bg text-success-fg" : "bg-warning-bg text-warning-fg"}`}>
-              <BookOpen className="h-5 w-5" />
-            </div>
-          </div>
-          <Link href="/painel/conhecimento" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
-            {knowledgeComplete ? "Editar" : "Completar agora"} <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </Card>
-
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Agendamento pela IA</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">
-                {establishment.bot?.bookingEnabled ? "Ativado" : "Desativado"}
-              </p>
-            </div>
-            <div className="rounded-full bg-line/60 p-2 text-ink-500">
-              <Settings className="h-5 w-5" />
-            </div>
-          </div>
-          <Link href="/painel/configuracoes" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
-            Ajustar <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </Card>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="WhatsApp"
+          value={whatsappConnected ? "Conectado" : "Não conectado"}
+          tone={whatsappConnected ? "success" : "warning"}
+          icon={whatsappConnected ? <MessageCircle className="h-5 w-5" /> : <MessageCircleOff className="h-5 w-5" />}
+          footer={
+            <Link href="/painel/whatsapp" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+              {whatsappConnected ? "Ver conexão" : "Conectar agora"} <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          }
+        />
+        <StatCard
+          label="Agendamentos hoje"
+          value={activeToday.length}
+          tone="info"
+          icon={<CalendarDays className="h-5 w-5" />}
+          footer={
+            <Link href="/painel/agenda" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+              Ver agenda <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          }
+        />
+        <StatCard
+          label="Base de conhecimento"
+          value={knowledgeComplete ? "Configurada" : "Incompleta"}
+          tone={knowledgeComplete ? "success" : "warning"}
+          icon={<BookOpen className="h-5 w-5" />}
+          footer={
+            <Link href="/painel/conhecimento" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+              {knowledgeComplete ? "Editar" : "Completar agora"} <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          }
+        />
+        <StatCard
+          label="Agendamento pela IA"
+          value={establishment.bot?.bookingEnabled ? "Ativado" : "Desativado"}
+          tone="neutral"
+          icon={<Settings className="h-5 w-5" />}
+          footer={
+            <Link href="/painel/configuracoes" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+              Ajustar <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          }
+        />
       </div>
 
       <Card className="mt-4">
@@ -225,39 +206,24 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
       </Card>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Cancelamentos hoje</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">{metrics.cancelamentosHoje}</p>
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Pendências abertas</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">{metrics.pendenciasAbertas}</p>
-            </div>
-            <div className="rounded-full bg-warning-bg p-2 text-warning-fg">
-              <ListChecks className="h-5 w-5" />
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink-500">Precisam de você</p>
-              <p className="mt-1 text-lg font-bold text-ink-900">{metrics.conversasPrecisandoHumano}</p>
-            </div>
-            <div className="rounded-full bg-danger-bg p-2 text-danger-fg">
-              <UserCheck className="h-5 w-5" />
-            </div>
-          </div>
-          <Link href="/painel/conversas" className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
-            Ver conversas <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </Card>
+        <StatCard label="Cancelamentos hoje" value={metrics.cancelamentosHoje} />
+        <StatCard
+          label="Pendências abertas"
+          value={metrics.pendenciasAbertas}
+          tone="warning"
+          icon={<ListChecks className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Precisam de você"
+          value={metrics.conversasPrecisandoHumano}
+          tone="danger"
+          icon={<UserCheck className="h-5 w-5" />}
+          footer={
+            <Link href="/painel/conversas" className="inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+              Ver conversas <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          }
+        />
       </div>
 
       {/* "A Livia encontrou oportunidades" */}
@@ -297,9 +263,9 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
           <CardTitle>Intenções mais frequentes hoje</CardTitle>
           <div className="mt-3 flex flex-wrap gap-2">
             {metrics.intencoesFrequentesHoje.map((i) => (
-              <span key={i.intent} className="rounded-full bg-line/40 px-3 py-1 text-xs font-semibold text-ink-700">
+              <Badge key={i.intent} tone="neutral">
                 {INTENT_LABEL[i.intent] ?? i.intent} · {i.count}
-              </span>
+              </Badge>
             ))}
           </div>
         </Card>
