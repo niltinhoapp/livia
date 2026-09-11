@@ -39,6 +39,7 @@ export function useEmbeddedSignup({
   const completedRef = useRef(false);
   const attemptIdRef = useRef(0);
   const cancelledAttemptIdRef = useRef<number | null>(null);
+  const sdkReadyRef = useRef(false);
 
   const onCompletedRef = useRef(onCompleted);
   onCompletedRef.current = onCompleted;
@@ -114,6 +115,22 @@ export function useEmbeddedSignup({
 
   useEffect(() => () => detachMessageListener(), [detachMessageListener]);
 
+  // O popup precisa ser aberto diretamente a partir do gesto do usuário.
+  // Por isso o SDK é aquecido enquanto a página está carregando, em vez de
+  // esperar um await de rede dentro do clique de "Conectar WhatsApp".
+  useEffect(() => {
+    sdkReadyRef.current = false;
+    if (!appId) return;
+
+    void loadFacebookSdk(appId)
+      .then(() => {
+        sdkReadyRef.current = Boolean(window.FB);
+      })
+      .catch(() => {
+        sdkReadyRef.current = false;
+      });
+  }, [appId]);
+
   const start = useCallback(async () => {
     const attemptId = (attemptIdRef.current += 1);
     detachMessageListener();
@@ -127,42 +144,45 @@ export function useEmbeddedSignup({
       return;
     }
 
-    try {
-      await loadFacebookSdk(appId);
-    } catch {
-      onFailed?.("sdk-load-failed");
-      return;
-    }
-    if (!window.FB) {
-      onFailed?.("sdk-unavailable");
+    // Não fazemos await do carregamento aqui: um popup OAuth disparado depois
+    // de uma operação assíncrona pode ser bloqueado pelo navegador. O SDK deve
+    // ter sido pré-carregado pelo effect acima antes do clique.
+    if (!sdkReadyRef.current || !window.FB) {
+      onFailed?.("sdk-not-ready");
       return;
     }
     if (!isAttemptValid(attemptId)) return;
 
     attachMessageListener(attemptId);
     onPopupOpened?.();
-    window.FB.login(
-      (response) => {
-        if (!isAttemptValid(attemptId)) return;
-        const code = response.authResponse?.code;
-        if (!code) {
-          handleCancel(attemptId);
-          return;
-        }
-        codeRef.current = code;
-        tryComplete(attemptId);
-      },
-      {
-        config_id: configId,
-        response_type: "code",
-        override_default_response_type: true,
-        extras: {
-          setup: {},
-          sessionInfoVersion: "3",
-          ...(mode === "coexistence" ? { featureType: "whatsapp_business_app_onboarding" } : {}),
+
+    try {
+      window.FB.login(
+        (response) => {
+          if (!isAttemptValid(attemptId)) return;
+          const code = response.authResponse?.code;
+          if (!code) {
+            handleCancel(attemptId);
+            return;
+          }
+          codeRef.current = code;
+          tryComplete(attemptId);
         },
-      },
-    );
+        {
+          config_id: configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: {
+            setup: {},
+            sessionInfoVersion: "3",
+            ...(mode === "coexistence" ? { featureType: "whatsapp_business_app_onboarding" } : {}),
+          },
+        },
+      );
+    } catch {
+      handleCancel(attemptId);
+      onFailed?.("fb-login-failed");
+    }
   }, [
     appId,
     configId,
