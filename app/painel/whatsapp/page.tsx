@@ -64,7 +64,7 @@ export default function WhatsAppPage() {
         });
         if (res.ok) {
           setPhase("connected");
-          load(); // atualiza connectedAt a partir do GET (fonte da verdade)
+          load();
           return;
         }
         const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -83,6 +83,7 @@ export default function WhatsAppPage() {
   const { start } = useEmbeddedSignup({
     appId: META_APP_ID,
     configId: ES_CONFIG_ID,
+    mode: "coexistence",
     onPopupOpened: handlePopupOpened,
     onCancelled: handleCancelled,
     onFailed: handleFailed,
@@ -94,16 +95,13 @@ export default function WhatsAppPage() {
     start();
   }, [start]);
 
-  // Desconectar: a Livia para de atender pelo número, mas nada do negócio é
-  // apagado — o backend preserva o PIN do número justamente para que
-  // reconectar depois seja possível (ver app/api/whatsapp/disconnect).
   const handleDisconnectConfirm = useCallback(async () => {
     setConfirmDisconnect(false);
     setPhase("disconnecting");
     try {
       const res = await fetch("/api/whatsapp/disconnect", { method: "POST" });
       if (res.ok) {
-        load(); // GET é a fonte da verdade — volta para "idle"
+        load();
         return;
       }
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -150,9 +148,6 @@ export default function WhatsAppPage() {
   );
 }
 
-// Só existe em desenvolvimento (compilado fora do bundle de produção) — deixa
-// os 8 estados visuais fáceis de validar sem precisar passar pelo fluxo real
-// da Meta a cada teste.
 function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange: (p: WhatsAppPhase) => void }) {
   const phases: WhatsAppPhase[] = [
     "idle",
@@ -168,9 +163,7 @@ function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange:
   ];
   return (
     <div className="mt-6 rounded-control border border-dashed border-line p-3">
-      <p className="mb-2 text-xs font-semibold text-ink-400">
-        Pré-visualização de estados (só em desenvolvimento)
-      </p>
+      <p className="mb-2 text-xs font-semibold text-ink-400">Pré-visualização de estados (só em desenvolvimento)</p>
       <div className="flex flex-wrap gap-1.5">
         {phases.map((p) => (
           <button
