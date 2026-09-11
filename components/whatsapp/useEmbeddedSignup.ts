@@ -12,6 +12,7 @@ export interface EmbeddedSignupResult {
   code: string;
   wabaId: string;
   phoneNumberId: string;
+  connectionMode: WhatsappSignupMode;
 }
 
 interface UseEmbeddedSignupOptions {
@@ -66,12 +67,16 @@ export function useEmbeddedSignup({
       if (completedRef.current) return;
       if (!codeRef.current || !idsRef.current) return;
       completedRef.current = true;
-      const result: EmbeddedSignupResult = { code: codeRef.current, ...idsRef.current };
+      const result: EmbeddedSignupResult = {
+        code: codeRef.current,
+        ...idsRef.current,
+        connectionMode: mode,
+      };
       codeRef.current = null;
       idsRef.current = null;
       onCompletedRef.current(result);
     },
-    [isAttemptValid],
+    [isAttemptValid, mode],
   );
 
   const activeListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
