@@ -39,7 +39,7 @@ export function WhatsAppConnectionCard({
 }: WhatsAppConnectionCardProps) {
   if (phase === "connected") {
     return (
-      <Card className="border-success/30 bg-success-bg/30">
+      <Card className="border-success/30 bg-success-bg/40">
         <div className="flex flex-wrap items-start gap-4">
           <div className="rounded-full bg-success-bg p-2.5 text-success-fg"><CheckCircle2 className="h-6 w-6" /></div>
           <div className="min-w-0 flex-1">
@@ -57,7 +57,7 @@ export function WhatsAppConnectionCard({
 
   if (phase === "error-number-in-use") {
     return (
-      <Card className="border-danger/30 bg-danger-bg/20">
+      <Card className="border-danger/30 bg-danger-bg/30">
         <div className="flex items-start gap-4">
           <div className="rounded-full bg-danger-bg p-2.5 text-danger-fg"><ShieldAlert className="h-6 w-6" /></div>
           <div className="flex-1">
@@ -84,7 +84,7 @@ export function WhatsAppConnectionCard({
 
   if (phase === "in-progress") {
     return (
-      <Card className="border-warning/30 bg-warning-bg/30">
+      <Card className="border-warning/30 bg-warning-bg/40">
         <div className="flex items-start gap-4">
           <div className="rounded-full bg-warning-bg p-2.5 text-warning-fg"><Clock className="h-6 w-6" /></div>
           <div className="flex-1">
@@ -100,7 +100,7 @@ export function WhatsAppConnectionCard({
   if (phase === "error-recoverable" || phase === "error-attention") {
     const attention = phase === "error-attention";
     return (
-      <Card className={attention ? "border-danger/30 bg-danger-bg/20" : "border-warning/30 bg-warning-bg/20"}>
+      <Card className={attention ? "border-danger/30 bg-danger-bg/30" : "border-warning/30 bg-warning-bg/40"}>
         <div className="flex items-start gap-4">
           <div className={`rounded-full p-2.5 ${attention ? "bg-danger-bg text-danger-fg" : "bg-warning-bg text-warning-fg"}`}>
             {attention ? <ShieldAlert className="h-6 w-6" /> : <AlertTriangle className="h-6 w-6" />}
