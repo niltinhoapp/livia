@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
     // visível nos logs — nunca é engolida.
     console.error("[livia webhook] erro não tratado:", err);
   }
-  // Sempre 200 pra Meta não desativar/reenviar o webhook.
+  // Sempre 200 pra Meta não desativar/reenviar webhook.
   return NextResponse.json({ received: true });
 }
 
@@ -686,6 +686,7 @@ function emptyProfile(establishmentId: string, phone: string): CustomerProfile {
     preferredTime: null,
     frequentAddress: null,
     lastService: null,
+    lastIntent: null,
     notes: null,
     lastInteractionAt: now,
     createdAt: now,
