@@ -18,9 +18,6 @@ import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsap
 import { useEmbeddedSignup, type EmbeddedSignupResult } from "@/components/whatsapp/useEmbeddedSignup";
 import { mapErrorToPhase } from "@/components/whatsapp/errorMapping";
 
-// Env públicas (NEXT_PUBLIC_*) — não são segredo, o próprio popup da Meta as
-// expõe. META_APP_SECRET nunca é referenciado aqui nem em nenhum arquivo
-// client-side (só em lib/whatsapp/embedded.ts, server-only).
 const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? "";
 const ES_CONFIG_ID = process.env.NEXT_PUBLIC_WHATSAPP_ES_CONFIG_ID ?? "";
 
@@ -33,6 +30,7 @@ export default function WhatsAppPage() {
   const [status, setStatus] = useState<ConnectStatus | null>(null);
   const [error, setError] = useState(false);
   const [phase, setPhase] = useState<WhatsAppPhase>("idle");
+  const [failureReason, setFailureReason] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const load = useCallback(() => {
@@ -51,10 +49,9 @@ export default function WhatsAppPage() {
     load();
   }, [load]);
 
-  // Só chamado pelo hook quando code + wabaId + phoneNumberId já estão
-  // sincronizados — nunca com dado parcial (ver useEmbeddedSignup).
   const finalizeConnection = useCallback(
     async (result: EmbeddedSignupResult) => {
+      setFailureReason(null);
       setPhase("finalizing");
       try {
         const res = await fetch("/api/whatsapp/connect", {
@@ -76,9 +73,16 @@ export default function WhatsAppPage() {
     [load],
   );
 
-  const handlePopupOpened = useCallback(() => setPhase("awaiting-meta"), []);
+  const handlePopupOpened = useCallback(() => {
+    setFailureReason(null);
+    setPhase("awaiting-meta");
+  }, []);
   const handleCancelled = useCallback(() => setPhase("idle"), []);
-  const handleFailed = useCallback(() => setPhase("error-recoverable"), []);
+  const handleFailed = useCallback((reason: string) => {
+    console.error("[WhatsApp Coexistence] Meta startup failed:", reason);
+    setFailureReason(reason);
+    setPhase("error-recoverable");
+  }, []);
 
   const { start } = useEmbeddedSignup({
     appId: META_APP_ID,
@@ -91,6 +95,7 @@ export default function WhatsAppPage() {
   });
 
   const handleConnectClick = useCallback(() => {
+    setFailureReason(null);
     setPhase("connecting");
     start();
   }, [start]);
@@ -121,6 +126,7 @@ export default function WhatsAppPage() {
       <WhatsAppConnectionCard
         phase={phase}
         connectedAt={status.connectedAt}
+        failureReason={failureReason}
         onConnectClick={handleConnectClick}
         onDisconnectClick={() => setConfirmDisconnect(true)}
         onRetry={load}
