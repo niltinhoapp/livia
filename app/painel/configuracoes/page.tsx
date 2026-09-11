@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select, FieldHelp } from "@/components/ui/Field";
 import { Toggle } from "@/components/ui/Toggle";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { ESTABLISHMENT_TYPE_LABELS, WEEKDAY_LABELS } from "@/components/lib/labels";
@@ -78,19 +79,12 @@ export default function ConfigPanel() {
     <div className="mx-auto max-w-3xl">
       <PageHeader title="Configurações" />
 
-      <div className="mb-5 flex gap-1 rounded-control bg-line/40 p-1">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`flex-1 rounded-control px-3 py-2 text-sm font-semibold transition-colors ${
-              tab === t.key ? "bg-white text-ink-900 shadow-card" : "text-ink-500 hover:text-ink-700"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        className="mb-5"
+        items={TABS.map((t) => ({ id: t.key, label: t.label }))}
+        value={tab}
+        onChange={setTab}
+      />
 
       {tab === "empresa" && (
         <Card>
@@ -178,30 +172,34 @@ export default function ConfigPanel() {
               const day = sched.days[k] ?? null;
               const br = day?.breaks?.[0];
               return (
-                <div key={k} className="flex flex-wrap items-center gap-3 py-2.5">
-                  <label className="flex min-w-[110px] cursor-pointer items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={!!day}
-                      onChange={(e) => setDay(k, e.target.checked ? { open: "09:00", close: "18:00" } : null)}
-                      className="h-4 w-4 accent-primary"
-                    />
-                    <span className="text-sm font-semibold text-ink-700">{dl}</span>
-                  </label>
-                  {day ? (
-                    <>
+                <div key={k} className="py-3">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!!day}
+                    onChange={(e) => setDay(k, e.target.checked ? { open: "09:00", close: "18:00" } : null)}
+                    className="h-4 w-4 accent-primary"
+                  />
+                  <span className="text-sm font-semibold text-ink-700">{dl}</span>
+                </label>
+                {day ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 pl-6">
+                    <div className="flex items-center gap-2">
                       <Input type="time" className="w-auto" value={day.open} onChange={(e) => setDay(k, { ...day, open: e.target.value })} />
                       <span className="text-ink-400">às</span>
                       <Input type="time" className="w-auto" value={day.close} onChange={(e) => setDay(k, { ...day, close: e.target.value })} />
+                    </div>
+                    <div className="flex items-center gap-2">
                       <span className="text-xs text-ink-400">pausa</span>
                       <Input type="time" className="w-auto" value={br?.start ?? ""} onChange={(e) => setDay(k, withBreak(day, e.target.value, br?.end ?? ""))} />
                       <span className="text-ink-400">-</span>
                       <Input type="time" className="w-auto" value={br?.end ?? ""} onChange={(e) => setDay(k, withBreak(day, br?.start ?? "", e.target.value))} />
-                    </>
-                  ) : (
-                    <span className="text-sm text-ink-400">Fechado</span>
-                  )}
-                </div>
+                    </div>
+                  </div>
+                ) : (
+                  <span className="mt-1 block pl-6 text-sm text-ink-400">Fechado</span>
+                )}
+              </div>
               );
             })}
           </div>
