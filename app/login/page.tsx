@@ -11,6 +11,7 @@ import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
 } from "firebase/auth";
+import { MessageCircle, AlertCircle, CheckCircle2 } from "lucide-react";
 import { clientAuth, googleProvider } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Field";
@@ -91,10 +92,25 @@ function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-line/20 px-4">
-      <div className="w-full max-w-[380px] rounded-card border border-line bg-white p-8 shadow-card">
-        <p className="mb-1 text-2xl font-bold text-ink-900">Entrar na Livia</p>
-        <p className="mb-6 text-sm text-ink-500">Acesse o painel do seu estabelecimento.</p>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-surface-muted px-4 py-10">
+      {/* Fundo sutil com a identidade roxa — sem imagem nem lib */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-gradient-to-b from-primary-light/60 via-white to-surface-muted"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/10 blur-3xl"
+      />
+
+      <div className="relative w-full max-w-sm rounded-lg border border-line bg-white p-8 shadow-e3">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-card bg-primary text-white shadow-e2">
+            <MessageCircle className="h-6 w-6" />
+          </div>
+          <h1 className="text-h2 text-ink-900">Entrar na Livia</h1>
+          <p className="mt-1 text-sm text-ink-500">Acesse o painel do seu estabelecimento.</p>
+        </div>
 
         <Button type="button" variant="secondary" className="w-full" onClick={withGoogle} disabled={busy}>
           <GoogleIcon />
@@ -119,7 +135,16 @@ function LoginForm() {
             />
           </div>
           <div>
-            <Label>Senha</Label>
+            <div className="mb-1.5 flex items-center justify-between">
+              <Label>Senha</Label>
+              <button
+                type="button"
+                onClick={forgotPassword}
+                className="rounded-sm text-xs font-semibold text-primary hover:underline"
+              >
+                Esqueci minha senha
+              </button>
+            </div>
             <Input
               type="password"
               required
@@ -128,20 +153,23 @@ function LoginForm() {
               placeholder="••••••••"
             />
           </div>
-          <button
-            type="button"
-            onClick={forgotPassword}
-            className="text-sm font-semibold text-primary hover:underline"
-          >
-            Esqueci minha senha
-          </button>
-          <Button type="submit" className="w-full" disabled={busy}>
+          <Button type="submit" className="w-full" loading={busy}>
             {busy ? "Entrando…" : "Entrar"}
           </Button>
         </form>
 
-        {error && <p className="mt-4 text-sm text-danger-fg">{error}</p>}
-        {resetMsg && <p className="mt-4 text-sm text-success-fg">{resetMsg}</p>}
+        {error && (
+          <div className="mt-4 flex items-start gap-2 rounded-control border border-danger/30 bg-danger-bg/50 px-3 py-2.5 text-sm text-danger-fg">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>{error}</span>
+          </div>
+        )}
+        {resetMsg && (
+          <div className="mt-4 flex items-start gap-2 rounded-control border border-success/30 bg-success-bg/50 px-3 py-2.5 text-sm text-success-fg">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>{resetMsg}</span>
+          </div>
+        )}
       </div>
     </main>
   );
