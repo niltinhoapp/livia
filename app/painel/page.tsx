@@ -21,7 +21,8 @@ import { Button } from "@/components/ui/Button";
 import { StatCard } from "@/components/ui/StatCard";
 import { Badge } from "@/components/ui/Badge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { LoadingState, ErrorState } from "@/components/ui/States";
+import { ErrorState } from "@/components/ui/States";
+import { Skeleton, SkeletonCard } from "@/components/ui/Skeleton";
 import { ESTABLISHMENT_TYPE_LABELS, INTENT_LABEL } from "@/components/lib/labels";
 import type { Appointment, Establishment, IntentType, KnowledgeBase, Opportunity } from "@/types";
 import type { FunnelResult } from "@/lib/ai/funnel";
@@ -79,7 +80,20 @@ export default function DashboardPage() {
   }, []);
 
   if (error) return <ErrorState onRetry={() => window.location.reload()} />;
-  if (!data) return <LoadingState />;
+  if (!data)
+    return (
+      <div className="mx-auto max-w-5xl">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="mt-2 h-7 w-56" />
+        <Skeleton className="mb-8 mt-2 h-4 w-40" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+        <Skeleton className="mt-4 h-48 w-full rounded-card" />
+      </div>
+    );
 
   const { establishment, whatsappConnected, todayAppointments, knowledge, metrics } = data;
   const activeToday = todayAppointments.filter((a) => a.status !== "cancelled");
