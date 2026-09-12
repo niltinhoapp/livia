@@ -25,6 +25,8 @@ import {
 import type { EstablishmentType, KnowledgeService, KnowledgeFaq } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
+import { Chip } from "@/components/ui/SegmentedControl";
 import { Input, Label, Textarea } from "@/components/ui/Field";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
@@ -191,22 +193,14 @@ export default function KnowledgePanel() {
           </p>
           <div className="mb-3 flex flex-wrap gap-2">
             {KNOWLEDGE_TEMPLATES.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setActiveTemplateId(t.id)}
-                className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition-colors ${
-                  activeTemplateId === t.id
-                    ? "border-primary bg-primary text-white"
-                    : "border-line bg-white text-ink-700 hover:bg-line/30"
-                }`}
-              >
+              <Chip key={t.id} active={activeTemplateId === t.id} onClick={() => setActiveTemplateId(t.id)}>
                 {t.label}
                 {suggested?.id === t.id && (
-                  <span className="ml-1.5 rounded-full bg-success-bg px-1.5 py-0.5 text-[10px] font-bold text-success-fg">
+                  <Badge tone="success" className="ml-1 px-1.5 py-0 text-[10px]">
                     recomendado
-                  </span>
+                  </Badge>
                 )}
-              </button>
+              </Chip>
             ))}
           </div>
           <Button size="sm" onClick={() => setConfirmApply(true)}>
@@ -348,12 +342,14 @@ export default function KnowledgePanel() {
         </Button>
       </GuidedSection>
 
-      <div className="flex items-center gap-4">
-        <Button disabled={state === "saving"} onClick={save}>
-          {state === "saving" ? "Salvando…" : "Salvar"}
-        </Button>
-        {state === "saved" && <span className="text-sm font-semibold text-success-fg">Salvo!</span>}
-        {state === "error" && <span className="text-sm font-semibold text-danger-fg">Erro ao salvar.</span>}
+      <div className="mt-6 border-t border-line bg-white/90 py-3 lg:sticky lg:bottom-0 lg:z-10 lg:-mx-6 lg:px-6 lg:backdrop-blur">
+        <div className="flex items-center gap-4">
+          <Button loading={state === "saving"} onClick={save}>
+            {state === "saving" ? "Salvando…" : "Salvar"}
+          </Button>
+          {state === "saved" && <span className="text-sm font-semibold text-success-fg">Salvo!</span>}
+          {state === "error" && <span className="text-sm font-semibold text-danger-fg">Erro ao salvar.</span>}
+        </div>
       </div>
 
       <RecentCorrections />
@@ -394,9 +390,7 @@ function RecentCorrections() {
         {corrections.slice(0, 8).map((c) => (
           <div key={c.id} className="border-b border-line pb-3 last:border-b-0 last:pb-0">
             <div className="flex items-center gap-2">
-              <span className="rounded-full bg-primary-light px-2 py-0.5 text-[11px] font-semibold text-primary">
-                {CATEGORY_LABEL[c.category] ?? c.category}
-              </span>
+              <Badge tone="primary">{CATEGORY_LABEL[c.category] ?? c.category}</Badge>
               <span className="text-[11px] text-ink-400">
                 {new Date(c.createdAt).toLocaleDateString("pt-BR")}
               </span>
