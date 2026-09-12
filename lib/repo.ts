@@ -4,6 +4,7 @@ import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
+import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
 import type {
   Establishment,
   EstablishmentType,
@@ -321,7 +322,13 @@ export async function claimWhatsappConnection(
 export async function finalizeWhatsappConnection(
   id: string,
   attemptId: string,
-  data: { wabaId: string; phoneNumberId: string; accessToken: EncryptedToken; registeredAt?: number },
+  data: {
+    wabaId: string;
+    phoneNumberId: string;
+    accessToken: EncryptedToken;
+    connectionMode: WhatsappConnectionMode;
+    registeredAt?: number;
+  },
 ): Promise<{ ok: boolean }> {
   const ref = establishmentRef(id);
   return db.runTransaction(async (tx) => {
@@ -336,6 +343,7 @@ export async function finalizeWhatsappConnection(
     tx.update(ref, {
       "whatsapp.wabaId": data.wabaId,
       "whatsapp.phoneNumberId": data.phoneNumberId,
+      "whatsapp.connectionMode": data.connectionMode,
       "whatsapp.accessToken": data.accessToken,
       "whatsapp.status": "connected",
       "whatsapp.connectedAt": now,
