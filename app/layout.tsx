@@ -5,6 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata = {
+  metadataBase: new URL("https://livia-seven.vercel.app"),
   title: "Livia — Atendente virtual no WhatsApp",
   description:
     "Livia atende, responde com IA e agenda pelo WhatsApp para clínicas, pets, salões e serviços locais.",
