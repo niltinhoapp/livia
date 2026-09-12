@@ -23,7 +23,6 @@ export type WhatsAppPhase =
 interface WhatsAppConnectionCardProps {
   phase: WhatsAppPhase;
   connectedAt?: number | null;
-  failureReason?: string | null;
   onConnectClick: () => void;
   onDisconnectClick?: () => void;
   onRetry: () => void;
@@ -32,7 +31,6 @@ interface WhatsAppConnectionCardProps {
 export function WhatsAppConnectionCard({
   phase,
   connectedAt,
-  failureReason,
   onConnectClick,
   onDisconnectClick,
   onRetry,
@@ -108,11 +106,6 @@ export function WhatsAppConnectionCard({
           <div className="flex-1">
             <p className="font-semibold text-ink-900">{attention ? "Não conseguimos concluir a conexão" : "Algo deu errado ao conectar"}</p>
             <p className="mt-1 text-sm text-ink-500">{attention ? "Verifique se você escolheu o número correto na Meta e tente novamente." : "Pode ter sido algo temporário. Tente novamente."}</p>
-            {failureReason && (
-              <p className="mt-2 rounded-control bg-ink-900 px-2.5 py-2 font-mono text-xs text-white">
-                diagnóstico temporário: {failureReason}
-              </p>
-            )}
             <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>Tentar novamente</Button>
           </div>
         </div>

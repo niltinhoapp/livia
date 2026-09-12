@@ -1,8 +1,7 @@
 // GET /api/knowledge  -> base de conhecimento do estabelecimento
 // PUT /api/knowledge  -> salva a base de conhecimento
 //
-// Tenant resolvido por resolveEstablishmentId (dev: ?est= ou header;
-// produção: token — TODO).
+// Tenant resolvido por sessão Firebase via resolveEstablishmentId.
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getKnowledgeBase, saveKnowledgeBase } from "@/lib/repo";

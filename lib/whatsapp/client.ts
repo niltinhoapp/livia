@@ -91,19 +91,7 @@ export async function sendText(
     }),
   });
 
-  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): a Meta aceita o POST (2xx,
-  // messages[0].id presente) mas a mensagem não chega ao celular. Sem ver o
-  // status/corpo/id reais, é impossível saber se a Graph API já sinalizou
-  // algo (corpo "vazio" com 2xx) ou se o problema é assíncrono, resolvido só
-  // por um evento de status posterior (ver processStatus em route.ts). Nunca
-  // loga o access token; loga `to`/`phoneNumberId` porque são os únicos dados
-  // que provam se o envio foi pro destinatário/canal certo. Remover depois
-  // que a causa raiz da não-entrega for confirmada.
   const rawBody = await res.clone().text();
-  console.log(
-    "[livia whatsapp] sendText debug",
-    JSON.stringify({ status: res.status, to, phoneNumberId, body: rawBody.slice(0, 500) }),
-  );
 
   if (!res.ok) {
     throw new Error(`WhatsApp sendText ${res.status}: ${rawBody}`);
