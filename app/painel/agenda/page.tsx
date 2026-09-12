@@ -9,7 +9,7 @@ import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type { Appointment, AppointmentStatus, ScheduleConfig } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Field";
+import { Input, Label } from "@/components/ui/Field";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -186,13 +186,17 @@ export default function AgendaPanel() {
                 {a.note && <p className="mt-1 text-xs text-ink-400">{a.note}</p>}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {a.status === "pending" && (
-                    <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "confirmed" })}>
+                    <Button size="sm" variant="primary" onClick={() => patch(a.id, { status: "confirmed" })}>
                       Confirmar
                     </Button>
                   )}
                   {(a.status === "pending" || a.status === "confirmed") && (
                     <>
-                      <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "completed" })}>
+                      <Button
+                        size="sm"
+                        variant={a.status === "confirmed" ? "primary" : "secondary"}
+                        onClick={() => patch(a.id, { status: "completed" })}
+                      >
                         Concluir
                       </Button>
                       <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "no_show" })}>
@@ -265,10 +269,19 @@ function NewAppointment({
 
   return (
     <Card className="mb-5 bg-primary-light/40">
-      <div className="mb-3 flex flex-wrap gap-3">
-        <Input className="flex-1 basis-[200px]" value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="Serviço" />
-        <Input className="flex-1 basis-[160px]" value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Nome do cliente" />
-        <Input className="flex-1 basis-[150px]" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="WhatsApp (DDD+número)" />
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        <div>
+          <Label>Serviço</Label>
+          <Input value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="Ex.: Consulta" />
+        </div>
+        <div>
+          <Label hint="(opcional)">Nome do cliente</Label>
+          <Input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Nome do cliente" />
+        </div>
+        <div>
+          <Label>WhatsApp</Label>
+          <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="DDD + número" />
+        </div>
       </div>
       <p className="mb-2 text-sm text-ink-500">Horários livres em {prettyDate(date)}:</p>
       {state === "loadingSlots" ? (
@@ -281,8 +294,8 @@ function NewAppointment({
             <button
               key={s.startAt}
               onClick={() => setPicked(s.startAt)}
-              className={`rounded-control border px-3 py-1.5 text-sm font-semibold ${
-                picked === s.startAt ? "border-primary bg-primary text-white" : "border-line text-ink-700 hover:bg-line/30"
+              className={`rounded-control border px-3 py-1.5 text-sm font-semibold transition-colors duration-150 ${
+                picked === s.startAt ? "border-primary bg-primary text-white" : "border-line text-ink-700 hover:bg-ink-50"
               }`}
             >
               {s.time}
