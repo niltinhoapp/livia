@@ -9,8 +9,10 @@ import Link from "next/link";
 import { User, Clock, Briefcase, MapPin, Phone } from "lucide-react";
 import type { CustomerProfile, IntentType, PendingTask } from "@/types";
 import { Card } from "@/components/ui/Card";
+import { Avatar } from "@/components/ui/Avatar";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { Skeleton, SkeletonList } from "@/components/ui/Skeleton";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { INTENT_LABEL } from "@/components/lib/labels";
 
@@ -48,7 +50,19 @@ export default function CustomersPage() {
   }, [load]);
 
   if (error) return <ErrorState onRetry={load} />;
-  if (!customers) return <LoadingState />;
+  if (!customers)
+    return (
+      <div className="mx-auto max-w-5xl">
+        <Skeleton className="h-7 w-32" />
+        <Skeleton className="mb-4 mt-2 h-4 w-80" />
+        <div className="flex h-[calc(100dvh-11rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
+          <div className="w-full shrink-0 border-r border-line sm:w-80">
+            <SkeletonList rows={7} />
+          </div>
+          <div className="hidden flex-1 sm:block" />
+        </div>
+      </div>
+    );
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -57,7 +71,7 @@ export default function CustomersPage() {
         description="O perfil de cada cliente é construído automaticamente pelo atendimento da Livia — nada aqui precisa ser preenchido à mão."
       />
 
-      <div className="flex overflow-hidden rounded-card border border-line bg-white" style={{ height: "70vh" }}>
+      <div className="flex h-[calc(100dvh-11rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
         <div className={`w-full shrink-0 overflow-y-auto border-r border-line sm:w-80 ${selectedPhone ? "hidden sm:block" : "block"}`}>
           {customers.length === 0 ? (
             <div className="p-4">
@@ -68,15 +82,18 @@ export default function CustomersPage() {
               <button
                 key={c.phone}
                 onClick={() => setSelectedPhone(c.phone)}
-                className={`block w-full border-b border-line px-4 py-3 text-left transition-colors hover:bg-line/20 ${
+                className={`flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors duration-150 hover:bg-ink-50 ${
                   selectedPhone === c.phone ? "bg-primary-light/50" : ""
                 }`}
               >
-                <p className="truncate text-sm font-semibold text-ink-900">{c.name || c.phone}</p>
-                <p className="mt-0.5 text-xs text-ink-400">
-                  {c.lastIntent && INTENT_LABEL[c.lastIntent] ? `${INTENT_LABEL[c.lastIntent]} · ` : ""}
-                  {relativeTime(c.lastInteractionAt)}
-                </p>
+                <Avatar name={c.name} phone={c.phone} size="md" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-ink-900">{c.name || c.phone}</p>
+                  <p className="mt-0.5 text-xs text-ink-400">
+                    {c.lastIntent && INTENT_LABEL[c.lastIntent] ? `${INTENT_LABEL[c.lastIntent]} · ` : ""}
+                    {relativeTime(c.lastInteractionAt)}
+                  </p>
+                </div>
               </button>
             ))
           )}
@@ -87,7 +104,11 @@ export default function CustomersPage() {
             <CustomerDetailPanel phone={selectedPhone} onBack={() => setSelectedPhone(null)} />
           ) : (
             <div className="flex flex-1 items-center justify-center p-6">
-              <p className="text-sm text-ink-400">Selecione um cliente à esquerda.</p>
+              <EmptyState
+                icon={<User className="h-5 w-5" />}
+                title="Selecione um cliente"
+                description="Escolha um cliente à esquerda para ver o perfil."
+              />
             </div>
           )}
         </div>
@@ -128,11 +149,14 @@ function CustomerDetailPanel({ phone, onBack }: { phone: string; onBack: () => v
       </button>
 
       <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-lg font-bold text-ink-900">{profile.name || profile.phone}</p>
-          <p className="flex items-center gap-1 text-xs text-ink-400">
-            <Phone className="h-3 w-3" /> {profile.phone}
-          </p>
+        <div className="flex items-center gap-3">
+          <Avatar name={profile.name} phone={profile.phone} size="lg" />
+          <div>
+            <p className="text-lg font-bold text-ink-900">{profile.name || profile.phone}</p>
+            <p className="flex items-center gap-1 text-xs text-ink-400">
+              <Phone className="h-3 w-3" /> {profile.phone}
+            </p>
+          </div>
         </div>
         <StatusBadge tone={rel.tone}>{rel.label}</StatusBadge>
       </div>
