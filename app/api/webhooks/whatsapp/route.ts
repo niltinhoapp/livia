@@ -135,14 +135,8 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // só olhava entry[0].changes[0].messages[0] — qualquer mensagem além dessa
   // era descartada em silêncio, sem log e sem erro. Processa todas, em ordem.
   const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
-  // DIAGNÓSTICO TEMPORÁRIO (05/09/2026): mesmo POST pode trazer statuses (o
-  // caminho comum para uma mensagem enviada com sucesso HTTP mas que falha na
-  // entrega — a Meta avisa depois, assíncrono, por aqui). Antes disto era
-  // descartado em silêncio, contado só como número em describePayloadStructure.
-  //
   // Coexistence: eventos de espelhamento/sincronização não são mensagens
   // novas do cliente. Eles nunca podem chegar ao pipeline da Livia/IA.
-  const statuses: WebhookStatus[] = [];
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const kind = classifyWebhookChange(change);
@@ -155,31 +149,11 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       for (const msg of value?.messages ?? []) {
         messages.push({ value: value!, msg });
       }
-      for (const status of value?.statuses ?? []) {
-        statuses.push(status);
-      }
-    }
-  }
-
-  if (statuses.length > 0) {
-    logStage("statuses in payload", { count: statuses.length });
-    for (const status of statuses) {
-      processStatus(status);
     }
   }
 
   if (messages.length === 0) {
-    // Evento real, mas não é mensagem de entrada — status de entrega/leitura,
-    // ou qualquer outro tipo de change. Comportamento correto é ignorar; mas
-    // sem ver a ESTRUTURA real do que chegou não dá pra confirmar isso — só
-    // "entries: 1" não diz se foi status, verificação, ou um formato de
-    // mensagem que o parsing não reconhece. Log estrutural, nunca de
-    // conteúdo: nenhum texto de mensagem, telefone completo, token ou
-    // assinatura aparece aqui — só contagens, nomes de campo e tipos.
-    logStage("no incoming message in payload", {
-      entries: body.entry?.length ?? 0,
-      detail: describePayloadStructure(body),
-    });
+    logStage("no incoming message in payload", { entries: body.entry?.length ?? 0 });
     return;
   }
 
@@ -187,70 +161,6 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   for (const { value, msg } of messages) {
     await processMessage(value, msg);
   }
-}
-
-// DIAGNÓSTICO TEMPORÁRIO (05/09/2026): log dedicado pra correlacionar o
-// waMessageId (devolvido por sendText, ver "[livia whatsapp] sendText debug")
-// com o desfecho real — sent/delivered/read/failed — e, se failed, o motivo
-// exato da Graph API. Nunca loga texto de mensagem nem telefone completo;
-// `recipientId` é o wa_id do cliente tal como a Meta o formata, não PII nova
-// além do que o número de telefone já é. Remover depois que a causa raiz da
-// não-entrega for confirmada.
-function processStatus(status: WebhookStatus): void {
-  logStage("delivery status", {
-    waMessageId: status.id ?? null,
-    status: status.status ?? null,
-    recipientId: status.recipient_id ?? null,
-    timestamp: status.timestamp ?? null,
-    errors: (status.errors ?? []).map((e) => ({
-      code: e.code ?? null,
-      title: e.title ?? null,
-      message: e.message ?? null,
-    })),
-  });
-}
-
-// Diagnóstico TEMPORÁRIO (04/09/2026): "entries: 1" sozinho não diz se o
-// change era mensagem, status, verificação ou algo em formato inesperado —
-// e foi exatamente essa dúvida que motivou isto. Descreve a FORMA do payload
-// real da Meta (nomes de campo, presença/contagem de arrays, tipos), nunca o
-// conteúdo. Sem texto de mensagem, sem telefone completo, sem token, sem
-// assinatura. Remover depois que a causa raiz for confirmada nos logs.
-function describePayloadStructure(body: WebhookBody): unknown {
-  const raw = body as unknown as {
-    object?: string;
-    entry?: {
-      id?: string;
-      changes?: {
-        field?: string;
-        value?: Record<string, unknown> & { messages?: unknown[]; statuses?: unknown[] };
-      }[];
-    }[];
-  };
-  return {
-    object: raw.object ?? null,
-    entries: (raw.entry ?? []).map((entry) => ({
-      changes: (entry.changes ?? []).map((change) => {
-        const value = change.value;
-        return {
-          field: change.field ?? null,
-          hasValue: value !== undefined,
-          valueKeys: value ? Object.keys(value) : [],
-          messagesCount: Array.isArray(value?.messages) ? value!.messages!.length : null,
-          messageTypes: Array.isArray(value?.messages)
-            ? (value!.messages as { type?: string }[]).map((m) => m.type ?? "unknown")
-            : [],
-          statusesCount: Array.isArray(value?.statuses) ? value!.statuses!.length : null,
-          // Só os últimos 4 dígitos — o suficiente para confirmar "é o mesmo
-          // número de sempre" sem logar um identificador completo.
-          phoneNumberIdMasked:
-            typeof value?.metadata === "object" && value?.metadata && "phone_number_id" in value.metadata
-              ? String((value.metadata as { phone_number_id?: string }).phone_number_id ?? "").slice(-4)
-              : null,
-        };
-      }),
-    })),
-  };
 }
 
 async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise<void> {
@@ -490,26 +400,6 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     conversationId: conversation.id,
     replyLength: reply.length,
     handoff,
-    // DIAGNÓSTICO TEMPORÁRIO (06/09/2026): a agenda recusa horários que a
-    // própria listagem acabou de oferecer ("muito próximo", "fora do
-    // expediente"). A divergência só pode vir do INSTANTE usado em cada
-    // lado, e até aqui nenhum log mostrava qual `date`/`startAt` cada
-    // ferramenta recebeu — sem isso, qualquer explicação é palpite. Só os
-    // campos estruturais do agendamento (nunca texto da conversa, telefone
-    // ou token); `startAtIso` é o mesmo instante em UTC, para dizer de
-    // imediato se caiu no dia certo. Remover depois da causa confirmada.
-    // O dia que a conversa estava tratando quando esta mensagem chegou. Sem
-    // ele, o `date`/`startAtIso` das ferramentas não diz se o dia usado
-    // estava certo ou errado — só qual foi.
-    taskDate: existingTask?.collectedData?.date ?? null,
-    statedDate,
-    tools: toolCalls.map((t) => ({
-      name: t.name,
-      date: typeof t.args.date === "string" ? t.args.date : undefined,
-      serviceName: typeof t.args.serviceName === "string" ? t.args.serviceName : undefined,
-      startAt: typeof t.args.startAt === "number" ? t.args.startAt : undefined,
-      startAtIso: typeof t.args.startAt === "number" ? new Date(t.args.startAt).toISOString() : undefined,
-    })),
   });
 
   let sent: { waMessageId?: string };
@@ -646,24 +536,10 @@ interface WebhookMessage {
   type: string;
   text?: { body: string };
 }
-// DIAGNÓSTICO TEMPORÁRIO (05/09/2026): a Meta manda um evento de status
-// (sent/delivered/read/failed) pra cada mensagem enviada pela Livia, de forma
-// assíncrona — chega num POST separado, não na resposta HTTP do envio. Até
-// agora esse evento era só contado (describePayloadStructure), nunca lido.
-// Ver processStatus() abaixo. Remover a modelagem de erro detalhada se, depois
-// da causa raiz confirmada, ela não for mais necessária.
-interface WebhookStatus {
-  id?: string;
-  status?: string;
-  timestamp?: string;
-  recipient_id?: string;
-  errors?: { code?: number; title?: string; message?: string }[];
-}
 interface WebhookValue {
   metadata?: { phone_number_id?: string };
   contacts?: { profile?: { name?: string } }[];
   messages?: WebhookMessage[];
-  statuses?: WebhookStatus[];
 }
 interface WebhookBody {
   entry?: {

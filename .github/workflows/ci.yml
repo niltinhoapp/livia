@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feature/whatsapp-coexistence
   pull_request:
     branches:
       - main
