@@ -15,12 +15,14 @@ export function MobileTabBar() {
           <Link
             key={item.href}
             href={item.href}
-            className={`flex flex-1 flex-col items-center gap-1 px-0.5 py-2.5 text-[10px] font-medium leading-none ${
+            aria-current={active ? "page" : undefined}
+            className={`relative flex flex-1 flex-col items-center gap-1 px-0.5 py-2.5 text-[10px] font-medium leading-none transition-colors duration-150 ${
               active ? "text-primary" : "text-ink-400"
             }`}
           >
+            {active && <span className="absolute inset-x-3 top-0 h-0.5 rounded-full bg-primary" />}
             <Icon className="h-5 w-5 shrink-0" />
-            <span className="truncate">{item.mobileLabel}</span>
+            <span className="w-full truncate text-center">{item.mobileLabel}</span>
           </Link>
         );
       })}

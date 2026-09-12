@@ -22,12 +22,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [loading, data, pathname, router]);
 
   return (
-    <div className="flex min-h-screen bg-line/20">
-      <Sidebar />
+    <div className="flex min-h-screen bg-surface-muted">
+      <Sidebar data={data} />
       <div className="flex min-h-screen flex-1 flex-col">
         <Header data={data} />
         {data && !data.serviceActive ? (
-          <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6">
+          <div className="border-b border-warning/30 bg-warning-bg/50 px-4 py-3 text-sm text-warning-fg sm:px-6">
             <strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo
             automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo
             registradas em Conversas. Fale com o suporte para reativar.

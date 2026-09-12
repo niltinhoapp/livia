@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MessageCircle, MessageCircleOff } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { ESTABLISHMENT_TYPE_LABELS } from "@/components/lib/labels";
 import type { ShellData } from "@/components/hooks/useShellData";
@@ -24,11 +23,11 @@ export function Header({ data }: { data: ShellData | null }) {
       <div className="flex items-center gap-3">
         <Link
           href="/painel/whatsapp"
-          className={`hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold sm:inline-flex ${
-            data?.whatsappConnected ? "bg-success-bg text-success-fg" : "bg-warning-bg text-warning-fg"
+          className={`hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium sm:inline-flex ${
+            data?.whatsappConnected ? "border-success/30 text-success-fg" : "border-warning/40 text-warning-fg"
           }`}
         >
-          {data?.whatsappConnected ? <MessageCircle className="h-3.5 w-3.5" /> : <MessageCircleOff className="h-3.5 w-3.5" />}
+          <span className={`h-1.5 w-1.5 rounded-full ${data?.whatsappConnected ? "bg-success" : "bg-warning"}`} />
           {data?.whatsappConnected ? "WhatsApp conectado" : "WhatsApp não conectado"}
         </Link>
         <LogoutButton />
