@@ -12,6 +12,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Valores sintéticos somente para permitir o build no CI.
+  # Nunca são usados para acessar o Firebase de produção.
+  FIREBASE_PROJECT_ID: ci-livia
+  FIREBASE_CLIENT_EMAIL: ci@ci-livia.iam.gserviceaccount.com
+  FIREBASE_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nci-only\\n-----END PRIVATE KEY-----\\n"
+
 jobs:
   validate:
     runs-on: ubuntu-latest
