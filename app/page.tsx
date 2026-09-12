@@ -7,6 +7,12 @@ export default function Home() {
         agenda horários e reduz faltas — para clínicas, pets, salões e serviços
         locais.
       </p>
+      <a
+        href="/login"
+        style={{ display: "inline-block", marginTop: 24, fontSize: 18, fontWeight: 600 }}
+      >
+        Entrar
+      </a>
     </main>
   );
 }
