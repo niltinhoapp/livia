@@ -24,7 +24,6 @@ import {
 } from "@/lib/whatsapp/embedded";
 import { encryptToken } from "@/lib/whatsapp/tokenCrypto";
 import { normalizeConnectionMode } from "@/lib/whatsapp/coexistence";
-import { persistWhatsappConnectionMode } from "@/lib/whatsapp/connectionMode";
 
 const ID_PATTERN = /^\d+$/;
 
@@ -65,16 +64,9 @@ export async function GET(req: NextRequest) {
     wabaId: wa.wabaId,
     connectedAt: wa.connectedAt,
     tokenRefreshedAt: wa.tokenRefreshedAt,
-    connectionMode: normalizeConnectionMode((wa as EstablishmentWhatsappWithMode).connectionMode),
+    connectionMode: normalizeConnectionMode(wa.connectionMode),
   });
 }
-
-// Persistência tolerante durante a migração: EstablishmentWhatsapp ainda não
-// precisa ser alterado no contrato central para que documentos legados sem
-// connectionMode continuem compilando como Cloud API.
-type EstablishmentWhatsappWithMode = {
-  connectionMode?: unknown;
-};
 
 export async function POST(req: NextRequest) {
   const id = await resolveEstablishmentId(req);
@@ -162,6 +154,7 @@ export async function POST(req: NextRequest) {
       wabaId,
       phoneNumberId,
       accessToken: encryptToken(accessToken),
+      connectionMode,
       registeredAt,
     });
   } catch (err) {
@@ -171,18 +164,6 @@ export async function POST(req: NextRequest) {
   if (!finalized.ok) {
     logFailure("finalize (lease perdida para outra tentativa)", id);
     return NextResponse.json({ error: "STALE_ATTEMPT" }, { status: 409 });
-  }
-
-  // O modo é gravado em um update separado para não reescrever nem alterar o
-  // contrato legado de EstablishmentWhatsapp. Ausência continua significando
-  // Cloud API; a escrita só acontece depois de uma conexão efetivamente
-  // finalizada.
-  try {
-    await persistWhatsappConnectionMode(id, connectionMode);
-  } catch (err) {
-    // A conexão já está válida. Não devolvemos erro falso ao cliente; registramos
-    // a falha para retry/diagnóstico, mantendo o comportamento seguro do canal.
-    logFailure("persist connectionMode", id, err);
   }
 
   return NextResponse.json({ connected: true, phoneNumberId, wabaId, connectionMode });

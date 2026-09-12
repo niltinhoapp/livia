@@ -10,7 +10,6 @@ const exchangeCodeForToken = vi.fn();
 const getWabaPhoneNumbers = vi.fn();
 const subscribeAppToWaba = vi.fn();
 const registerPhoneNumber = vi.fn();
-const persistWhatsappConnectionMode = vi.fn();
 
 vi.mock("@/lib/auth/session", () => ({
   resolveEstablishmentId: (...a: unknown[]) => resolveEstablishmentId(...a),
@@ -31,10 +30,6 @@ vi.mock("@/lib/whatsapp/embedded", () => ({
 vi.mock("@/lib/whatsapp/tokenCrypto", () => ({
   encryptToken: (token: string) => ({ ciphertext: `encrypted:${token}`, iv: "iv", authTag: "tag" }),
 }));
-vi.mock("@/lib/whatsapp/connectionMode", () => ({
-  persistWhatsappConnectionMode: (...a: unknown[]) => persistWhatsappConnectionMode(...a),
-}));
-
 const { POST } = await import("@/app/api/whatsapp/connect/route");
 
 const ESTABLISHMENT_ID = "est_1";
@@ -62,7 +57,6 @@ beforeEach(() => {
   registerPhoneNumber.mockResolvedValue({ registered: true });
   finalizeWhatsappConnection.mockResolvedValue({ ok: true });
   releaseWhatsappConnectionAttempt.mockResolvedValue(undefined);
-  persistWhatsappConnectionMode.mockResolvedValue(undefined);
 });
 
 describe("POST /api/whatsapp/connect — Cloud API", () => {
@@ -78,9 +72,14 @@ describe("POST /api/whatsapp/connect — Cloud API", () => {
     expect(finalizeWhatsappConnection).toHaveBeenCalledWith(
       ESTABLISHMENT_ID,
       ATTEMPT_ID,
-      expect.objectContaining({ wabaId: WABA_ID, phoneNumberId: PHONE_NUMBER_ID, accessToken: expect.any(Object), registeredAt: expect.any(Number) }),
+      expect.objectContaining({
+        wabaId: WABA_ID,
+        phoneNumberId: PHONE_NUMBER_ID,
+        connectionMode: "cloud_api",
+        accessToken: expect.any(Object),
+        registeredAt: expect.any(Number),
+      }),
     );
-    expect(persistWhatsappConnectionMode).toHaveBeenCalledWith(ESTABLISHMENT_ID, "cloud_api");
   });
 
   it("reconexão Cloud API reutiliza o PIN retornado pela claim", async () => {
@@ -116,24 +115,25 @@ describe("POST /api/whatsapp/connect — Coexistence", () => {
     expect(getWabaPhoneNumbers).toHaveBeenCalledWith(WABA_ID, TOKEN);
     expect(subscribeAppToWaba).toHaveBeenCalledWith(WABA_ID, TOKEN);
     expect(registerPhoneNumber).not.toHaveBeenCalled();
-    expect(finalizeWhatsappConnection).toHaveBeenCalledWith(ESTABLISHMENT_ID, ATTEMPT_ID, expect.objectContaining({ registeredAt: undefined }));
-    expect(persistWhatsappConnectionMode).toHaveBeenCalledWith(ESTABLISHMENT_ID, "coexistence");
+    expect(finalizeWhatsappConnection).toHaveBeenCalledWith(
+      ESTABLISHMENT_ID,
+      ATTEMPT_ID,
+      expect.objectContaining({ connectionMode: "coexistence", registeredAt: undefined }),
+    );
   });
 
-  it("documenta o risco atual: finaliza antes da persistência separada do modo", async () => {
+  it("falha de finalização não confirma conexão parcialmente persistida", async () => {
     const silentError = vi.spyOn(console, "error").mockImplementation(() => {});
-    persistWhatsappConnectionMode.mockRejectedValueOnce(new Error("Firestore unavailable after finalize"));
+    finalizeWhatsappConnection.mockRejectedValueOnce(new Error("Firestore transaction failed"));
 
     const response = await POST(request({ connectionMode: "coexistence" }) as never);
 
-    // Comportamento atual deliberadamente documentado para o FIX-2: a conexão
-    // já foi finalizada e a rota responde sucesso mesmo que o update do modo falhe.
-    expect(response.status).toBe(200);
+    // `connectionMode` agora compõe a mesma operação de finalize: se ela falha,
+    // não existe um segundo update de modo e a rota não declara sucesso.
+    expect(response.status).toBe(500);
     expect(finalizeWhatsappConnection).toHaveBeenCalledTimes(1);
-    expect(persistWhatsappConnectionMode).toHaveBeenCalledWith(ESTABLISHMENT_ID, "coexistence");
-    expect(finalizeWhatsappConnection.mock.invocationCallOrder[0]).toBeLessThan(
-      persistWhatsappConnectionMode.mock.invocationCallOrder[0]!,
-    );
+    expect(await response.json()).toEqual({ error: "INTERNAL_ERROR" });
+    expect(releaseWhatsappConnectionAttempt).toHaveBeenCalledWith(ESTABLISHMENT_ID, ATTEMPT_ID);
     silentError.mockRestore();
   });
 });
@@ -175,7 +175,6 @@ describe("POST /api/whatsapp/connect — ownership, lease e abort", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "STALE_ATTEMPT" });
-    expect(persistWhatsappConnectionMode).not.toHaveBeenCalled();
     expect(releaseWhatsappConnectionAttempt).not.toHaveBeenCalled();
     silentError.mockRestore();
   });

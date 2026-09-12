@@ -45,6 +45,9 @@ export interface Establishment {
 export interface EstablishmentWhatsapp {
   wabaId: string;
   phoneNumberId: string;
+  // Ausente apenas em documentos anteriores ao Coexistence; a leitura
+  // conservadora continua tratando ausência como Cloud API.
+  connectionMode?: "cloud_api" | "coexistence";
   status: "connecting" | "connected" | "disconnected";
   // PIN de registro (2 etapas do número na Cloud API) — gerado pela Livia,
   // nunca escolhido pelo estabelecimento, sempre cifrado (encryptPin/
