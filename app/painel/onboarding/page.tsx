@@ -13,7 +13,7 @@
 // do zero — não é decidido aqui.
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Building2, CalendarClock, MessageCircle, CheckCircle2 } from "lucide-react";
+import { Sparkles, Building2, CalendarClock, MessageCircle, CheckCircle2, Check } from "lucide-react";
 import type { EstablishmentType, ScheduleConfig, DayHours } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -106,11 +106,35 @@ export default function OnboardingPage() {
 
   return (
     <div className="mx-auto max-w-xl">
-      <div className="mb-6 flex items-center gap-1.5">
-        {STEP_LABELS.map((_, i) => (
-          <div key={i} className={`h-1.5 flex-1 rounded-full ${i <= step ? "bg-primary" : "bg-line"}`} />
-        ))}
-      </div>
+      <ol className="mb-6 flex items-center gap-2">
+        {STEP_LABELS.map((label, i) => {
+          const done = i < step;
+          const current = i === step;
+          return (
+            <li key={i} className="flex flex-1 items-center gap-2">
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors duration-150 ${
+                  done
+                    ? "bg-primary text-white"
+                    : current
+                      ? "bg-primary-light text-primary ring-2 ring-primary/30"
+                      : "bg-ink-100 text-ink-400"
+                }`}
+              >
+                {done ? <Check className="h-3.5 w-3.5" /> : i + 1}
+              </span>
+              <span className={`hidden truncate text-xs font-medium sm:block ${current ? "text-ink-900" : "text-ink-400"}`}>
+                {label}
+              </span>
+              {i < STEP_LABELS.length - 1 && (
+                <span className={`h-0.5 flex-1 rounded-full transition-colors duration-150 ${done ? "bg-primary" : "bg-line"}`} />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+
+      <div key={step} className="animate-fade-in">
 
       {step === 0 && (
         <Card className="text-center">
@@ -146,7 +170,7 @@ export default function OnboardingPage() {
               </Select>
             </div>
           </div>
-          <Button className="mt-6 w-full" disabled={!name || saving} onClick={saveEmpresa}>
+          <Button className="mt-6 w-full" disabled={!name} loading={saving} onClick={saveEmpresa}>
             {saving ? "Salvando…" : "Continuar"}
           </Button>
           {saveError && <p className="mt-2 text-center text-sm text-danger-fg">{saveError}</p>}
@@ -161,8 +185,8 @@ export default function OnboardingPage() {
             {WEEKDAY_LABELS.map(({ key: k, label: dl }) => {
               const day = sched.days[k] ?? null;
               return (
-                <div key={k} className="flex flex-wrap items-center gap-3 py-2">
-                  <label className="flex min-w-[100px] cursor-pointer items-center gap-2">
+                <div key={k} className="py-2.5">
+                  <label className="flex cursor-pointer items-center gap-2">
                     <input
                       type="checkbox"
                       checked={!!day}
@@ -172,19 +196,19 @@ export default function OnboardingPage() {
                     <span className="text-sm font-semibold text-ink-700">{dl}</span>
                   </label>
                   {day ? (
-                    <>
+                    <div className="mt-2 flex items-center gap-2 pl-6">
                       <Input type="time" className="w-auto" value={day.open} onChange={(e) => setDay(k, { ...day, open: e.target.value })} />
                       <span className="text-ink-400">às</span>
                       <Input type="time" className="w-auto" value={day.close} onChange={(e) => setDay(k, { ...day, close: e.target.value })} />
-                    </>
+                    </div>
                   ) : (
-                    <span className="text-sm text-ink-400">Fechado</span>
+                    <span className="mt-1 block pl-6 text-sm text-ink-400">Fechado</span>
                   )}
                 </div>
               );
             })}
           </div>
-          <Button className="mt-6 w-full" disabled={!hasOpenDay || saving} onClick={saveHorarios}>
+          <Button className="mt-6 w-full" disabled={!hasOpenDay} loading={saving} onClick={saveHorarios}>
             {saving ? "Salvando…" : "Continuar"}
           </Button>
           {!hasOpenDay && <p className="mt-2 text-center text-xs text-ink-400">Abra pelo menos um dia para continuar.</p>}
@@ -235,6 +259,7 @@ export default function OnboardingPage() {
           </Button>
         </Card>
       )}
+      </div>
     </div>
   );
 }
