@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/whatsapp-coexistence
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  # Valores sintéticos somente para permitir o build no CI.
+  # Nunca são usados para acessar serviços de produção.
+  FIREBASE_PROJECT_ID: ci-livia
+  FIREBASE_CLIENT_EMAIL: ci@ci-livia.iam.gserviceaccount.com
+  OPENAI_API_KEY: ci-build-only-not-a-real-key
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - name: Create CI Firebase credentials
+        run: |
+          openssl genrsa 2048 > /tmp/ci-firebase-key.pem
+          {
+            echo 'FIREBASE_PRIVATE_KEY<<EOF'
+            cat /tmp/ci-firebase-key.pem
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
+      - run: npm run build

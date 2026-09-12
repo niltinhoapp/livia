@@ -11,12 +11,14 @@
 // nunca do postMessage.
 const ALLOWED_ORIGINS = new Set(["https://www.facebook.com", "https://web.facebook.com"]);
 
+const FINISH_EVENTS = new Set(["FINISH", "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"]);
+
 export function isAllowedEmbeddedSignupOrigin(origin: string): boolean {
   return ALLOWED_ORIGINS.has(origin);
 }
 
 export interface EmbeddedSignupMessage {
-  event: string; // "FINISH" | "CANCEL" | outros que a Meta possa enviar
+  event: string;
   wabaId?: string;
   phoneNumberId?: string;
 }
@@ -40,5 +42,9 @@ export function parseEmbeddedSignupMessage(raw: unknown): EmbeddedSignupMessage 
   const wabaId = typeof data?.waba_id === "string" ? data.waba_id : undefined;
   const phoneNumberId = typeof data?.phone_number_id === "string" ? data.phone_number_id : undefined;
 
-  return { event: obj.event, wabaId, phoneNumberId };
+  return {
+    event: FINISH_EVENTS.has(obj.event) ? "FINISH" : obj.event,
+    wabaId,
+    phoneNumberId,
+  };
 }

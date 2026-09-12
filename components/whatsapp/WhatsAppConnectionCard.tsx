@@ -4,32 +4,27 @@
 // isso é responsabilidade de quem usa este componente (hoje,
 // app/painel/whatsapp/page.tsx + components/whatsapp/useEmbeddedSignup.ts).
 // `onConnectClick` é só o gatilho; a fase (`phase`) é controlada de fora.
-//
-// Nunca exibe wabaId, phoneNumberId, accessToken, PIN ou termos técnicos da
-// Meta — só o que o lojista precisa entender.
 import { CheckCircle2, Loader2, MessageCircle, AlertTriangle, Clock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
 export type WhatsAppPhase =
-  | "idle" // não conectado, pronto pra iniciar
-  | "connecting" // botão clicado, abrindo o fluxo
-  | "awaiting-meta" // popup aberto, aguardando o lojista na Meta
-  | "finalizing" // popup fechou, backend processando (POST /api/whatsapp/connect)
-  | "connected" // sucesso
-  | "disconnecting" // botão "Desconectar" confirmado, backend processando
-  | "in-progress" // CONNECTION_IN_PROGRESS / ALREADY_CONNECTED — já tem uma tentativa rodando
-  | "error-recoverable" // EXCHANGE_FAILED, STALE_ATTEMPT, INVALID_PAYLOAD, INTERNAL_ERROR — só tentar de novo
-  | "error-attention" // OWNERSHIP_MISMATCH, SUBSCRIBE_FAILED, REGISTER_FAILED — algo a checar na Meta
-  | "error-number-in-use"; // NUMBER_IN_USE — o número já está conectado em outra conta
+  | "idle"
+  | "connecting"
+  | "awaiting-meta"
+  | "finalizing"
+  | "connected"
+  | "disconnecting"
+  | "in-progress"
+  | "error-recoverable"
+  | "error-attention"
+  | "error-number-in-use";
 
 interface WhatsAppConnectionCardProps {
   phase: WhatsAppPhase;
   connectedAt?: number | null;
+  failureReason?: string | null;
   onConnectClick: () => void;
-  // Opcional: o botão "Desconectar" só aparece onde há um fluxo real de
-  // desconexão por trás (hoje /painel/whatsapp). O onboarding usa este card
-  // como demonstração e não expõe a ação.
   onDisconnectClick?: () => void;
   onRetry: () => void;
 }
@@ -37,6 +32,7 @@ interface WhatsAppConnectionCardProps {
 export function WhatsAppConnectionCard({
   phase,
   connectedAt,
+  failureReason,
   onConnectClick,
   onDisconnectClick,
   onRetry,
@@ -45,9 +41,7 @@ export function WhatsAppConnectionCard({
     return (
       <Card className="border-success/30 bg-success-bg/30">
         <div className="flex flex-wrap items-start gap-4">
-          <div className="rounded-full bg-success-bg p-2.5 text-success-fg">
-            <CheckCircle2 className="h-6 w-6" />
-          </div>
+          <div className="rounded-full bg-success-bg p-2.5 text-success-fg"><CheckCircle2 className="h-6 w-6" /></div>
           <div className="min-w-0 flex-1">
             <p className="font-semibold text-ink-900">WhatsApp conectado</p>
             <p className="mt-1 text-sm text-ink-500">
@@ -55,11 +49,7 @@ export function WhatsAppConnectionCard({
               {connectedAt ? ` desde ${new Date(connectedAt).toLocaleDateString("pt-BR")}` : ""}.
             </p>
           </div>
-          {onDisconnectClick && (
-            <Button size="sm" variant="secondary" onClick={onDisconnectClick}>
-              Desconectar
-            </Button>
-          )}
+          {onDisconnectClick && <Button size="sm" variant="secondary" onClick={onDisconnectClick}>Desconectar</Button>}
         </div>
       </Card>
     );
@@ -69,38 +59,19 @@ export function WhatsAppConnectionCard({
     return (
       <Card className="border-danger/30 bg-danger-bg/20">
         <div className="flex items-start gap-4">
-          <div className="rounded-full bg-danger-bg p-2.5 text-danger-fg">
-            <ShieldAlert className="h-6 w-6" />
-          </div>
+          <div className="rounded-full bg-danger-bg p-2.5 text-danger-fg"><ShieldAlert className="h-6 w-6" /></div>
           <div className="flex-1">
             <p className="font-semibold text-ink-900">Esse número já está em uso</p>
-            <p className="mt-1 text-sm text-ink-500">
-              O número escolhido já está conectado em outra conta da Livia. Desconecte-o por lá antes de
-              conectá-lo aqui, ou escolha outro número.
-            </p>
-            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>
-              Tentar novamente
-            </Button>
+            <p className="mt-1 text-sm text-ink-500">O número escolhido já está conectado em outra conta da Livia. Desconecte-o por lá antes de conectá-lo aqui, ou escolha outro número.</p>
+            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>Tentar novamente</Button>
           </div>
         </div>
       </Card>
     );
   }
 
-  if (
-    phase === "connecting" ||
-    phase === "awaiting-meta" ||
-    phase === "finalizing" ||
-    phase === "disconnecting"
-  ) {
-    const label =
-      phase === "connecting"
-        ? "Abrindo a conexão com a Meta…"
-        : phase === "awaiting-meta"
-          ? "Siga os passos na janela da Meta para escolher seu número…"
-          : phase === "finalizing"
-            ? "Finalizando a conexão…"
-            : "Desconectando…";
+  if (phase === "connecting" || phase === "awaiting-meta" || phase === "finalizing" || phase === "disconnecting") {
+    const label = phase === "connecting" ? "Abrindo a conexão com a Meta…" : phase === "awaiting-meta" ? "Siga os passos na janela da Meta para escolher seu número…" : phase === "finalizing" ? "Finalizando a conexão…" : "Desconectando…";
     return (
       <Card>
         <div className="flex flex-col items-center gap-3 py-6 text-center">
@@ -115,15 +86,11 @@ export function WhatsAppConnectionCard({
     return (
       <Card className="border-warning/30 bg-warning-bg/30">
         <div className="flex items-start gap-4">
-          <div className="rounded-full bg-warning-bg p-2.5 text-warning-fg">
-            <Clock className="h-6 w-6" />
-          </div>
+          <div className="rounded-full bg-warning-bg p-2.5 text-warning-fg"><Clock className="h-6 w-6" /></div>
           <div className="flex-1">
             <p className="font-semibold text-ink-900">Já existe uma conexão em andamento</p>
             <p className="mt-1 text-sm text-ink-500">Aguarde alguns instantes e tente novamente.</p>
-            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>
-              Tentar novamente
-            </Button>
+            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>Tentar novamente</Button>
           </div>
         </div>
       </Card>
@@ -139,36 +106,27 @@ export function WhatsAppConnectionCard({
             {attention ? <ShieldAlert className="h-6 w-6" /> : <AlertTriangle className="h-6 w-6" />}
           </div>
           <div className="flex-1">
-            <p className="font-semibold text-ink-900">
-              {attention ? "Não conseguimos concluir a conexão" : "Algo deu errado ao conectar"}
-            </p>
-            <p className="mt-1 text-sm text-ink-500">
-              {attention
-                ? "Verifique se você escolheu o número correto na Meta e tente novamente."
-                : "Pode ter sido algo temporário. Tente novamente."}
-            </p>
-            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>
-              Tentar novamente
-            </Button>
+            <p className="font-semibold text-ink-900">{attention ? "Não conseguimos concluir a conexão" : "Algo deu errado ao conectar"}</p>
+            <p className="mt-1 text-sm text-ink-500">{attention ? "Verifique se você escolheu o número correto na Meta e tente novamente." : "Pode ter sido algo temporário. Tente novamente."}</p>
+            {failureReason && (
+              <p className="mt-2 rounded-control bg-ink-900 px-2.5 py-2 font-mono text-xs text-white">
+                diagnóstico temporário: {failureReason}
+              </p>
+            )}
+            <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>Tentar novamente</Button>
           </div>
         </div>
       </Card>
     );
   }
 
-  // idle
   return (
     <Card>
       <div className="flex flex-col items-center gap-4 py-4 text-center">
-        <div className="rounded-full bg-primary-light p-3 text-primary">
-          <MessageCircle className="h-7 w-7" />
-        </div>
+        <div className="rounded-full bg-primary-light p-3 text-primary"><MessageCircle className="h-7 w-7" /></div>
         <div>
           <p className="font-semibold text-ink-900">Conecte o WhatsApp do seu negócio</p>
-          <p className="mx-auto mt-1 max-w-sm text-sm text-ink-500">
-            Clique abaixo, entre com sua conta da Meta, escolha seu número de WhatsApp e pronto — a Livia
-            já passa a atender por lá.
-          </p>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-ink-500">Clique abaixo, entre com sua conta da Meta, escolha seu número de WhatsApp e pronto — a Livia já passa a atender por lá.</p>
         </div>
         <Button onClick={onConnectClick}>Conectar WhatsApp</Button>
       </div>

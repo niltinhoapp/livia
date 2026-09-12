@@ -18,9 +18,6 @@ import { WhatsAppConnectionCard, type WhatsAppPhase } from "@/components/whatsap
 import { useEmbeddedSignup, type EmbeddedSignupResult } from "@/components/whatsapp/useEmbeddedSignup";
 import { mapErrorToPhase } from "@/components/whatsapp/errorMapping";
 
-// Env públicas (NEXT_PUBLIC_*) — não são segredo, o próprio popup da Meta as
-// expõe. META_APP_SECRET nunca é referenciado aqui nem em nenhum arquivo
-// client-side (só em lib/whatsapp/embedded.ts, server-only).
 const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? "";
 const ES_CONFIG_ID = process.env.NEXT_PUBLIC_WHATSAPP_ES_CONFIG_ID ?? "";
 
@@ -33,6 +30,7 @@ export default function WhatsAppPage() {
   const [status, setStatus] = useState<ConnectStatus | null>(null);
   const [error, setError] = useState(false);
   const [phase, setPhase] = useState<WhatsAppPhase>("idle");
+  const [failureReason, setFailureReason] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const load = useCallback(() => {
@@ -51,10 +49,9 @@ export default function WhatsAppPage() {
     load();
   }, [load]);
 
-  // Só chamado pelo hook quando code + wabaId + phoneNumberId já estão
-  // sincronizados — nunca com dado parcial (ver useEmbeddedSignup).
   const finalizeConnection = useCallback(
     async (result: EmbeddedSignupResult) => {
+      setFailureReason(null);
       setPhase("finalizing");
       try {
         const res = await fetch("/api/whatsapp/connect", {
@@ -64,7 +61,7 @@ export default function WhatsAppPage() {
         });
         if (res.ok) {
           setPhase("connected");
-          load(); // atualiza connectedAt a partir do GET (fonte da verdade)
+          load();
           return;
         }
         const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -76,13 +73,21 @@ export default function WhatsAppPage() {
     [load],
   );
 
-  const handlePopupOpened = useCallback(() => setPhase("awaiting-meta"), []);
+  const handlePopupOpened = useCallback(() => {
+    setFailureReason(null);
+    setPhase("awaiting-meta");
+  }, []);
   const handleCancelled = useCallback(() => setPhase("idle"), []);
-  const handleFailed = useCallback(() => setPhase("error-recoverable"), []);
+  const handleFailed = useCallback((reason: string) => {
+    console.error("[WhatsApp Coexistence] Meta startup failed:", reason);
+    setFailureReason(reason);
+    setPhase("error-recoverable");
+  }, []);
 
   const { start } = useEmbeddedSignup({
     appId: META_APP_ID,
     configId: ES_CONFIG_ID,
+    mode: "coexistence",
     onPopupOpened: handlePopupOpened,
     onCancelled: handleCancelled,
     onFailed: handleFailed,
@@ -90,20 +95,18 @@ export default function WhatsAppPage() {
   });
 
   const handleConnectClick = useCallback(() => {
+    setFailureReason(null);
     setPhase("connecting");
     start();
   }, [start]);
 
-  // Desconectar: a Livia para de atender pelo número, mas nada do negócio é
-  // apagado — o backend preserva o PIN do número justamente para que
-  // reconectar depois seja possível (ver app/api/whatsapp/disconnect).
   const handleDisconnectConfirm = useCallback(async () => {
     setConfirmDisconnect(false);
     setPhase("disconnecting");
     try {
       const res = await fetch("/api/whatsapp/disconnect", { method: "POST" });
       if (res.ok) {
-        load(); // GET é a fonte da verdade — volta para "idle"
+        load();
         return;
       }
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -123,6 +126,7 @@ export default function WhatsAppPage() {
       <WhatsAppConnectionCard
         phase={phase}
         connectedAt={status.connectedAt}
+        failureReason={failureReason}
         onConnectClick={handleConnectClick}
         onDisconnectClick={() => setConfirmDisconnect(true)}
         onRetry={load}
@@ -150,9 +154,6 @@ export default function WhatsAppPage() {
   );
 }
 
-// Só existe em desenvolvimento (compilado fora do bundle de produção) — deixa
-// os 8 estados visuais fáceis de validar sem precisar passar pelo fluxo real
-// da Meta a cada teste.
 function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange: (p: WhatsAppPhase) => void }) {
   const phases: WhatsAppPhase[] = [
     "idle",
@@ -168,9 +169,7 @@ function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange:
   ];
   return (
     <div className="mt-6 rounded-control border border-dashed border-line p-3">
-      <p className="mb-2 text-xs font-semibold text-ink-400">
-        Pré-visualização de estados (só em desenvolvimento)
-      </p>
+      <p className="mb-2 text-xs font-semibold text-ink-400">Pré-visualização de estados (só em desenvolvimento)</p>
       <div className="flex flex-wrap gap-1.5">
         {phases.map((p) => (
           <button

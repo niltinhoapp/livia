@@ -12,6 +12,8 @@ import { getScheduleConfig, listAppointments, updateAppointment } from "@/lib/sc
 import { sendTemplate } from "@/lib/whatsapp/client";
 import type { Establishment } from "@/types";
 
+export const dynamic = "force-dynamic";
+
 const WINDOW_MS = 24 * 3600000; // avisa quem começa nas próximas 24h
 
 export async function GET(req: NextRequest) {
