@@ -7,10 +7,12 @@
 // cada vez (lista, ou a conversa com um botão "Voltar").
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bot, UserCheck, AlertCircle, RefreshCw, Trash2, Clock, CalendarClock, Sparkles, MessageCircleWarning, CheckCircle2 } from "lucide-react";
+import { Bot, UserCheck, AlertCircle, RefreshCw, Trash2, Clock, CalendarClock, Sparkles, MessageCircleWarning, CheckCircle2, MessagesSquare } from "lucide-react";
 import type { Conversation, InboxCategory } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
+import { Chip } from "@/components/ui/SegmentedControl";
+import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -180,7 +182,7 @@ export default function ConversationsPage() {
   const filtered = withOpportunities.filter((c) => matchesFilter(c, filter));
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-6xl">
       <PageHeader
         title="Conversas"
         description="Acompanhe o que a Livia está conversando no WhatsApp e assuma quando precisar."
@@ -220,22 +222,16 @@ export default function ConversationsPage() {
         {FILTERS.map((f) => {
           const count = f.id === "all" ? withOpportunities.length : withOpportunities.filter((c) => matchesFilter(c, f.id)).length;
           return (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
-              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                filter === f.id ? "border-primary bg-primary text-white" : "border-line text-ink-500 hover:bg-line/20"
-              }`}
-            >
+            <Chip key={f.id} active={filter === f.id} onClick={() => setFilter(f.id)}>
               {f.label} {count > 0 && <span className="opacity-70">({count})</span>}
-            </button>
+            </Chip>
           );
         })}
       </div>
 
-      <div className="flex overflow-hidden rounded-card border border-line bg-white" style={{ height: "70vh" }}>
+      <div className="flex h-[calc(100dvh-13rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
         {/* Lista — some no mobile quando uma conversa está aberta */}
-        <div className={`w-full shrink-0 overflow-y-auto border-r border-line sm:w-72 ${selectedId ? "hidden sm:block" : "block"}`}>
+        <div className={`w-full shrink-0 overflow-y-auto border-r border-line sm:w-80 ${selectedId ? "hidden sm:block" : "block"}`}>
           {filtered.length === 0 ? (
             <div className="p-4">
               <EmptyState
@@ -255,23 +251,26 @@ export default function ConversationsPage() {
                 <button
                   key={c.id}
                   onClick={() => setSelectedId(c.id)}
-                  className={`block w-full border-b border-line px-4 py-3 text-left transition-colors hover:bg-line/20 ${
+                  className={`flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left transition-colors duration-150 hover:bg-ink-50 ${
                     selectedId === c.id ? "bg-primary-light/50" : ""
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-semibold text-ink-900">{c.contactName ?? c.contactPhone}</p>
-                    <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <p className="text-xs text-ink-400">
-                      {new Date(c.lastMessageAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                    </p>
-                    {c.inboxCategory !== "resolved" && (
-                      <span className="flex items-center gap-1 text-[11px] font-semibold text-ink-500">
-                        <InboxIcon className="h-3 w-3" /> {INBOX_CATEGORY_LABEL[c.inboxCategory]}
-                      </span>
-                    )}
+                  <Avatar name={c.contactName} phone={c.contactPhone} size="md" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate text-sm font-semibold text-ink-900">{c.contactName ?? c.contactPhone}</p>
+                      <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <p className="text-xs text-ink-400">
+                        {new Date(c.lastMessageAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                      {c.inboxCategory !== "resolved" && (
+                        <span className="flex items-center gap-1 text-[11px] font-semibold text-ink-500">
+                          <InboxIcon className="h-3 w-3" /> {INBOX_CATEGORY_LABEL[c.inboxCategory]}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </button>
               );
@@ -290,11 +289,61 @@ export default function ConversationsPage() {
             />
           ) : (
             <div className="flex flex-1 items-center justify-center p-6">
-              <p className="text-sm text-ink-400">Selecione uma conversa à esquerda.</p>
+              <EmptyState
+                icon={<MessagesSquare className="h-5 w-5" />}
+                title="Selecione uma conversa"
+                description="Escolha uma conversa à esquerda para ver as mensagens."
+              />
             </div>
           )}
         </div>
+
+        {/* Detalhes de contexto — coluna 3, só em telas largas (xl+) */}
+        {selected && (
+          <aside className="hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-surface-muted/60 xl:flex">
+            <ConversationContext conversation={selected} />
+          </aside>
+        )}
       </div>
+    </div>
+  );
+}
+
+// Painel de contexto (coluna 3). Puramente apresentacional: usa apenas os
+// campos que já vêm em cada conversa (nenhum fetch, nenhuma lógica nova).
+function ConversationContext({ conversation }: { conversation: InboxConversation }) {
+  const s = STATUS_LABEL[conversation.status];
+  const InboxIcon = INBOX_ICON[conversation.inboxCategory];
+  return (
+    <div className="p-5">
+      <div className="flex flex-col items-center text-center">
+        <Avatar name={conversation.contactName} phone={conversation.contactPhone} size="lg" />
+        <p className="mt-3 text-sm font-semibold text-ink-900">{conversation.contactName ?? conversation.contactPhone}</p>
+        <p className="text-xs text-ink-400">{conversation.contactPhone}</p>
+        <div className="mt-3">
+          <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
+        </div>
+      </div>
+      <dl className="mt-6 space-y-4">
+        <div>
+          <dt className="text-xs font-medium text-ink-400">Categoria</dt>
+          <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium text-ink-700">
+            <InboxIcon className="h-4 w-4 text-ink-400" /> {INBOX_CATEGORY_LABEL[conversation.inboxCategory]}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-ink-400">Última mensagem</dt>
+          <dd className="mt-1 text-sm font-medium text-ink-700">
+            {new Date(conversation.lastMessageAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-medium text-ink-400">Conversa desde</dt>
+          <dd className="mt-1 text-sm font-medium text-ink-700">
+            {new Date(conversation.createdAt).toLocaleDateString("pt-BR")}
+          </dd>
+        </div>
+      </dl>
     </div>
   );
 }

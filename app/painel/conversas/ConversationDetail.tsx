@@ -8,6 +8,7 @@ import { ArrowLeft, GraduationCap, UserCheck, AlertCircle, Bot } from "lucide-re
 import type { Conversation, Message } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
+import { Avatar } from "@/components/ui/Avatar";
 import { LoadingState } from "@/components/ui/States";
 import { TeachDialog } from "@/components/knowledge/TeachDialog";
 
@@ -92,10 +93,11 @@ export function ConversationDetail({
   return (
     <>
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
           <button onClick={onBack} className="rounded-control p-1.5 text-ink-500 hover:bg-line/30 sm:hidden">
             <ArrowLeft className="h-4 w-4" />
           </button>
+          <Avatar name={conversation.contactName} phone={conversation.contactPhone} size="sm" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-ink-900">{conversation.contactName ?? conversation.contactPhone}</p>
             <p className="text-xs text-ink-400">{conversation.contactPhone}</p>
@@ -177,11 +179,15 @@ function MessageBubble({
       <div className="max-w-[80%]">
         <div
           className={`rounded-card px-3 py-2 text-sm ${
-            fromCustomer ? "bg-line/40 text-ink-900" : message.role === "agent" ? "bg-info text-white" : "bg-primary text-white"
+            fromCustomer
+              ? "rounded-bl-sm bg-ink-100 text-ink-900"
+              : message.role === "agent"
+                ? "rounded-br-sm bg-info text-white"
+                : "rounded-br-sm bg-primary text-white"
           }`}
         >
           <p className="whitespace-pre-wrap">{message.text}</p>
-          <p className={`mt-1 text-[10px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
+          <p className={`mt-1 text-[11px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
             {new Date(message.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
             {!fromCustomer && (message.role === "agent" ? " · atendente" : " · Livia")}
           </p>
@@ -189,7 +195,7 @@ function MessageBubble({
         {message.role === "bot" && (
           <button
             onClick={() => onCorrect(precedingCustomerText)}
-            className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-ink-400 hover:text-primary"
+            className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-ink-500 hover:text-primary"
           >
             <GraduationCap className="h-3 w-3" /> Corrigir
           </button>
