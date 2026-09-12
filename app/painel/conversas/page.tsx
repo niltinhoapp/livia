@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { Chip } from "@/components/ui/SegmentedControl";
 import { Avatar } from "@/components/ui/Avatar";
-import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { EmptyState, ErrorState } from "@/components/ui/States";
+import { SkeletonList, Skeleton } from "@/components/ui/Skeleton";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { INBOX_CATEGORY_LABEL, applyOpportunityOverride } from "@/lib/ai/inbox";
@@ -168,7 +169,24 @@ export default function ConversationsPage() {
   }
 
   if (error) return <ErrorState onRetry={loadList} />;
-  if (!conversations) return <LoadingState />;
+  if (!conversations)
+    return (
+      <div className="mx-auto max-w-6xl">
+        <Skeleton className="h-7 w-40" />
+        <Skeleton className="mb-4 mt-2 h-4 w-72" />
+        <div className="mb-3 flex gap-1.5">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-7 w-24 rounded-full" />
+          ))}
+        </div>
+        <div className="flex h-[calc(100dvh-13rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
+          <div className="w-full shrink-0 border-r border-line sm:w-80">
+            <SkeletonList rows={7} />
+          </div>
+          <div className="hidden flex-1 sm:block" />
+        </div>
+      </div>
+    );
 
   // Merge client-side da oportunidade (fetch à parte, cadência mais longa) —
   // a categoria que vem de /api/conversations nunca é "opportunity" mais
