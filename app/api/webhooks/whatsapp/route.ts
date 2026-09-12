@@ -42,6 +42,7 @@ import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
+import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
@@ -183,18 +184,16 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
 
   // TEMPORÁRIO (gravação do App Review, só Preview): se o phone_number_id
   // recebido é o número de teste da Meta, resolve direto pro estabelecimento
-  // fixo de teste (nunca escreve nada no Firestore) e ignora o gate de
-  // "connected" — só nesse caminho. Nenhuma das envs existe em Production,
-  // então isTestPhoneNumber é sempre false lá e o comportamento não muda.
+  // fixo de teste e ignora o gate de "connected" — só nesse caminho. A guarda
+  // centralizada bloqueia Production,
+  // desenvolvimento local e ambiente desconhecido, mesmo se as envs existirem.
   // Remover após a gravação.
-  const testPhoneNumberId = process.env.WHATSAPP_TEST_PHONE_NUMBER_ID;
-  const testEstablishmentId = process.env.WHATSAPP_TEST_ESTABLISHMENT_ID;
-  const isTestPhoneNumber =
-    Boolean(testPhoneNumberId) && value.metadata.phone_number_id === testPhoneNumberId;
+  const testCredentials = getWhatsappTestCredentials();
+  const isTestPhoneNumber = testCredentials?.phoneNumberId === value.metadata.phone_number_id;
 
   let est: Establishment | null;
-  if (isTestPhoneNumber && testEstablishmentId) {
-    est = await getEstablishment(testEstablishmentId);
+  if (isTestPhoneNumber && testCredentials) {
+    est = await getEstablishment(testCredentials.establishmentId);
     if (!est) {
       logStage("test establishment not found", { msgId: msg.id });
       return;

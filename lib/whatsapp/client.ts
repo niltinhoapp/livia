@@ -8,6 +8,7 @@
 // cifrado (EncryptedToken) — este módulo decifra em memória, na hora de
 // montar cada requisição, e nunca guarda/loga/devolve o valor em claro.
 import { decryptToken } from "@/lib/whatsapp/tokenCrypto";
+import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import type { EstablishmentWhatsapp } from "@/types";
 
 const GRAPH = "https://graph.facebook.com/v22.0";
@@ -30,9 +31,10 @@ export function normalizePhone(raw: string): string {
 // não tem credencial válida. Falha explícita em qualquer outro caso, nunca
 // monta um Authorization vazio/inválido.
 // TEMPORÁRIO (gravação do App Review, só Preview): quando as três envs abaixo
-// existem E o envio é para o `establishmentId` de teste, usa o número/token
-// de teste da Meta em vez do Firestore. As três nunca existem em Production,
-// então lá este bloco nunca dispara. E mesmo em Preview, qualquer OUTRO
+// existem em Preview (ou nos testes) E o envio é para o `establishmentId` de
+// teste, usa o número/token de teste da Meta em vez do Firestore. Production,
+// desenvolvimento local e ambientes desconhecidos nunca ativam esse bloco.
+// Mesmo em Preview, qualquer OUTRO
 // estabelecimento (a Odonto real inclusa) segue 100% pelo caminho normal —
 // a checagem de `establishmentId` é o que impede o bypass de vazar para
 // outro tenant só porque as envs de teste existem no ambiente. O token de
@@ -40,12 +42,9 @@ export function normalizePhone(raw: string): string {
 // regras de nunca logar/persistir — só usado localmente para montar o header
 // Authorization. Remover após a gravação.
 function resolveTestCredentials(establishmentId: string): { phoneNumberId: string; accessToken: string } | null {
-  const phoneNumberId = process.env.WHATSAPP_TEST_PHONE_NUMBER_ID;
-  const accessToken = process.env.WHATSAPP_TEST_ACCESS_TOKEN;
-  const testEstablishmentId = process.env.WHATSAPP_TEST_ESTABLISHMENT_ID;
-  if (!phoneNumberId || !accessToken || !testEstablishmentId) return null;
-  if (establishmentId !== testEstablishmentId) return null;
-  return { phoneNumberId, accessToken };
+  const test = getWhatsappTestCredentials();
+  if (!test || establishmentId !== test.establishmentId) return null;
+  return test;
 }
 
 function resolveSendCredentials(

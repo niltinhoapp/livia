@@ -6,7 +6,7 @@
 // diferentes: cada cenário confirma o que REALMENTE aconteceu (think foi
 // chamado? sendText foi chamado? o erro subiu ou foi engolido?), não só o
 // status HTTP da resposta.
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import type { Establishment } from "@/types";
 
@@ -15,6 +15,7 @@ process.env.META_APP_SECRET = APP_SECRET;
 
 // ---- dublês ----
 const findEstablishmentByPhoneNumberId = vi.fn();
+const getEstablishment = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
@@ -24,7 +25,7 @@ const markAsRead = vi.fn();
 
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
-  getEstablishment: vi.fn(async () => null),
+  getEstablishment: (...a: unknown[]) => getEstablishment(...a),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
@@ -131,6 +132,7 @@ beforeEach(() => {
   alreadyProcessed.mockResolvedValue(false);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+  getEstablishment.mockResolvedValue(establishment());
   loadConversation.mockResolvedValue(conversa("bot"));
   think.mockResolvedValue({
     reply: "Claro! Posso te ajudar com isso.",
@@ -153,6 +155,44 @@ describe("1 — mensagem de texto recebida", () => {
     expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "bot", "Claro! Posso te ajudar com isso.", "wamid.bot");
   });
 });
+
+describe("1b — credenciais de App Review", () => {
+  const testPhoneNumberId = "test-phone-number-id";
+  const testEstablishmentId = "test-establishment-id";
+
+  function configurarCredenciaisDeTeste(environment: "production" | "preview") {
+    vi.stubEnv("VERCEL_ENV", environment);
+    vi.stubEnv("WHATSAPP_TEST_PHONE_NUMBER_ID", testPhoneNumberId);
+    vi.stubEnv("WHATSAPP_TEST_ESTABLISHMENT_ID", testEstablishmentId);
+    vi.stubEnv("WHATSAPP_TEST_ACCESS_TOKEN", "test-access-token");
+  }
+
+  it("em Production não aceita o bypass nem para o phoneNumberId de teste", async () => {
+    configurarCredenciaisDeTeste("production");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+
+    await enviarPayload({
+      entry: [{ changes: [{ value: { ...payloadMensagem().entry[0].changes[0].value, metadata: { phone_number_id: testPhoneNumberId } } }] }],
+    });
+
+    expect(getEstablishment).not.toHaveBeenCalled();
+    expect(findEstablishmentByPhoneNumberId).toHaveBeenCalledWith(testPhoneNumberId);
+  });
+
+  it("em Preview mantém o bypass somente para o estabelecimento configurado", async () => {
+    configurarCredenciaisDeTeste("preview");
+    getEstablishment.mockResolvedValue(establishment({ id: testEstablishmentId }));
+
+    await enviarPayload({
+      entry: [{ changes: [{ value: { ...payloadMensagem().entry[0].changes[0].value, metadata: { phone_number_id: testPhoneNumberId } } }] }],
+    });
+
+    expect(getEstablishment).toHaveBeenCalledWith(testEstablishmentId);
+    expect(findEstablishmentByPhoneNumberId).not.toHaveBeenCalled();
+  });
+});
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
   it("tipo diferente de texto: 200, mas a IA NUNCA é chamada", async () => {
