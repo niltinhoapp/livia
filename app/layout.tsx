@@ -8,6 +8,9 @@ export const metadata = {
   title: "Livia — Atendente virtual no WhatsApp",
   description:
     "Livia atende, responde com IA e agenda pelo WhatsApp para clínicas, pets, salões e serviços locais.",
+  openGraph: {
+    images: ["/livia-icon-oficial-master.png"],
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
