@@ -14,9 +14,10 @@ permissions:
 
 env:
   # Valores sintéticos somente para permitir o build no CI.
-  # Nunca são usados para acessar o Firebase de produção.
+  # Nunca são usados para acessar serviços de produção.
   FIREBASE_PROJECT_ID: ci-livia
   FIREBASE_CLIENT_EMAIL: ci@ci-livia.iam.gserviceaccount.com
+  OPENAI_API_KEY: ci-build-only-not-a-real-key
 
 jobs:
   validate:
