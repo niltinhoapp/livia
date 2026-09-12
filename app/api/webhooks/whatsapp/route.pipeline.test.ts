@@ -195,6 +195,35 @@ describe("3 — status update (sem messages[])", () => {
   });
 });
 
+describe("3b — eventos de sincronização Coexistence", () => {
+  for (const field of ["smb_message_echoes", "history", "smb_app_state_sync"]) {
+    it(`${field}: responde 200 sem atingir processMessage, IA ou envio`, async () => {
+      const res = await enviarPayload({
+        entry: [
+          {
+            changes: [
+              {
+                field,
+                value: {
+                  metadata: { phone_number_id: "pn_1" },
+                  messages: [{ id: `wamid.${field}`, from: PHONE, type: "text", text: { body: "evento espelhado" } }],
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(res.status).toBe(200);
+      expect(alreadyProcessed).not.toHaveBeenCalled();
+      expect(findEstablishmentByPhoneNumberId).not.toHaveBeenCalled();
+      expect(think).not.toHaveBeenCalled();
+      expect(sendText).not.toHaveBeenCalled();
+      expect(appendMessage).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe("4 — evento desconhecido / payload vazio", () => {
   it("entry vazio: 200, sem exceção, sem processar nada", async () => {
     const res = await enviarPayload({ entry: [] });
