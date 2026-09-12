@@ -17,7 +17,6 @@ env:
   # Nunca são usados para acessar o Firebase de produção.
   FIREBASE_PROJECT_ID: ci-livia
   FIREBASE_CLIENT_EMAIL: ci@ci-livia.iam.gserviceaccount.com
-  FIREBASE_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nci-only\\n-----END PRIVATE KEY-----\\n"
 
 jobs:
   validate:
@@ -31,4 +30,12 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
+      - name: Create CI Firebase credentials
+        run: |
+          openssl genrsa 2048 > /tmp/ci-firebase-key.pem
+          {
+            echo 'FIREBASE_PRIVATE_KEY<<EOF'
+            cat /tmp/ci-firebase-key.pem
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
       - run: npm run build
