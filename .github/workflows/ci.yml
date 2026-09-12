@@ -17,6 +17,12 @@ env:
   # Nunca são usados para acessar serviços de produção.
   FIREBASE_PROJECT_ID: ci-livia
   FIREBASE_CLIENT_EMAIL: ci@ci-livia.iam.gserviceaccount.com
+  # Configuração pública do Firebase Web. O formato da API key é válido para
+  # a SDK, mas não aponta para projeto, credencial ou serviço real.
+  NEXT_PUBLIC_FIREBASE_API_KEY: AIzaSyDummYCIOnlyNotARealFirebaseKey1234567
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-livia.firebaseapp.com
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-livia
+  NEXT_PUBLIC_FIREBASE_APP_ID: 1:123456789012:web:ci00000000000000000000
   OPENAI_API_KEY: ci-build-only-not-a-real-key
 
 jobs:
@@ -31,12 +37,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
-      - name: Create CI Firebase credentials
-        run: |
-          openssl genrsa 2048 > /tmp/ci-firebase-key.pem
-          {
-            echo 'FIREBASE_PRIVATE_KEY<<EOF'
-            cat /tmp/ci-firebase-key.pem
-            echo 'EOF'
-          } >> "$GITHUB_ENV"
-      - run: npm run build
+      - name: Build with ephemeral Firebase Admin credentials
+        # Não usa GITHUB_ENV: variáveis multilinha ali são mostradas pelo
+        # runner na seção `env` dos passos posteriores. A chave é gerada só
+        # para este processo e nunca é escrita nem impressa no log.
+        run: FIREBASE_PRIVATE_KEY="$(openssl genrsa 2048)" npm run build
