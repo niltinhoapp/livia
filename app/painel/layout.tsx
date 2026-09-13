@@ -9,7 +9,8 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { AppShell } from "@/components/layout/AppShell";
 
 export default async function PainelLayout({ children }: { children: ReactNode }) {
-  const cookie = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const cookie = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   let ok = false;
   if (cookie) {
     try {

@@ -8,11 +8,12 @@ import { getCustomerDetail } from "@/lib/dashboard";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest, { params }: { params: { phone: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ phone: string }> }) {
+  const { phone } = await params;
   const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
-  const detail = await getCustomerDetail(id, decodeURIComponent(params.phone));
+  const detail = await getCustomerDetail(id, decodeURIComponent(phone));
   if (!detail) return NextResponse.json({ error: "cliente não encontrado" }, { status: 404 });
   return NextResponse.json(detail);
 }
