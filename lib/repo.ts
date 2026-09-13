@@ -504,8 +504,7 @@ export async function findEstablishmentByPhoneNumberId(
   // para investigação e segue com o primeiro, mantendo o atendimento de pé.
   if (connected.length > 1) {
     console.error(
-      `[livia webhook] phone_number_id ${phoneNumberId} está conectado em ${connected.length} estabelecimentos ` +
-        `(${connected.map((e) => e.id).join(", ")}) — usando o primeiro; corrigir os dados.`,
+      `[livia webhook] número conectado em ${connected.length} estabelecimentos; usando o primeiro; corrigir os dados.`,
     );
   }
 

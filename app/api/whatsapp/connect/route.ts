@@ -29,10 +29,10 @@ const ID_PATTERN = /^\d+$/;
 
 function logFailure(step: string, establishmentId: string, err?: unknown): void {
   const graph = err !== undefined ? graphErrorOf(err) : undefined;
-  const detail = graph ? ` graph=${JSON.stringify(graph)}` : "";
-  console.error(
-    `[whatsapp connect] falha em "${step}" (estabelecimento=${establishmentId})${detail}`,
-  );
+  const establishment = establishmentId.length <= 4
+    ? "[redacted]"
+    : `${establishmentId.slice(0, 2)}…${establishmentId.slice(-2)}`;
+  console.error("[whatsapp connect] falha", JSON.stringify({ step, establishment, graph: graph ?? null }));
 }
 
 async function abort(

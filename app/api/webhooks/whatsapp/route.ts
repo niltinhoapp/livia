@@ -46,14 +46,28 @@ import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
-// mensagem, só identificadores técnicos (message id da Meta, establishment
-// id, conversation id, contagens, booleanos). Existe porque "POST 200" não
+// mensagem. Identificadores técnicos são mascarados; contagens e estados são
+// preservados. Existe porque "POST 200" não
 // prova que a mensagem foi processada: o caso real que motivou isto foi o
 // webhook retornando 200 em ~8ms, sem nenhuma chamada externa — a assinatura
 // estava falhando e ninguém sabia exatamente por quê (secret ausente? header
 // ausente? assinatura não bate?), porque o retorno era idêntico nos três casos.
+const IDENTIFIER_LOG_FIELDS = new Set(["msgId", "estId", "conversationId", "phoneNumberId", "wabaId"]);
+
+function maskIdentifier(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  if (value.length <= 4) return "[redacted]";
+  return `${value.slice(0, 2)}…${value.slice(-2)}`;
+}
+
+function sanitizeLogData(data: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [key, IDENTIFIER_LOG_FIELDS.has(key) ? maskIdentifier(value) : value]),
+  );
+}
+
 function logStage(stage: string, data?: Record<string, unknown>) {
-  console.log(`[livia webhook] ${stage}`, data ? JSON.stringify(data) : "");
+  console.log(`[livia webhook] ${stage}`, data ? JSON.stringify(sanitizeLogData(data)) : "");
 }
 
 export async function GET(req: NextRequest) {
@@ -114,7 +128,7 @@ export async function POST(req: NextRequest) {
   try {
     body = JSON.parse(raw) as WebhookBody;
   } catch (err) {
-    logStage("payload parse failed", { error: String(err) });
+    logStage("payload parse failed", { errorType: err instanceof Error ? err.name : "unknown" });
     return NextResponse.json({ received: true });
   }
 
@@ -124,7 +138,9 @@ export async function POST(req: NextRequest) {
     // Não silencioso: qualquer exceção não tratada por um passo específico
     // (ver os try/catch nomeados dentro de handleWebhook) cai aqui e fica
     // visível nos logs — nunca é engolida.
-    console.error("[livia webhook] erro não tratado:", err);
+    console.error("[livia webhook] erro não tratado", {
+      errorType: err instanceof Error ? err.name : "unknown",
+    });
   }
   // Sempre 200 pra Meta não desativar/reenviar webhook.
   return NextResponse.json({ received: true });
@@ -388,7 +404,12 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).
     // Sem isto, o erro subia genérico até o catch do POST e o log não dizia
     // em qual etapa exatamente a mensagem morreu.
-    logStage("AI call failed", { msgId: msg.id, estId: est.id, conversationId: conversation.id, error: String(err) });
+    logStage("AI call failed", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+      errorType: err instanceof Error ? err.name : "unknown",
+    });
     throw err;
   }
   const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate } =
@@ -414,7 +435,7 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
       msgId: msg.id,
       estId: est.id,
       conversationId: conversation.id,
-      error: String(err),
+      errorType: err instanceof Error ? err.name : "unknown",
     });
     throw err;
   }
