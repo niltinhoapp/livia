@@ -11,7 +11,7 @@ import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
 } from "firebase/auth";
-import { MessageCircle, AlertCircle, CheckCircle2 } from "lucide-react";
+import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { clientAuth, googleProvider } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/Button";
 import { Input, Label } from "@/components/ui/Field";
@@ -92,24 +92,11 @@ function LoginForm() {
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-surface-muted px-4 py-10">
-      {/* Fundo sutil com a identidade roxa — sem imagem nem lib */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-gradient-to-b from-primary-light/60 via-white to-surface-muted"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/10 blur-3xl"
-      />
-
-      <div className="relative w-full max-w-sm rounded-lg border border-line bg-white p-8 shadow-e3">
-        <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-card bg-primary text-white shadow-e2">
-            <MessageCircle className="h-6 w-6" />
-          </div>
-          <h1 className="text-h2 text-ink-900">Entrar na Livia</h1>
-          <p className="mt-1 text-sm text-ink-500">Acesse o painel do seu estabelecimento.</p>
+    <main className="flex min-h-screen items-center justify-center bg-surface-muted px-4 py-10 sm:px-6">
+      <div className="w-full max-w-sm rounded-card border border-line bg-white p-6 shadow-e1 sm:p-8">
+        <div className="mb-7">
+          <h1 className="text-h2 text-ink-900">Acesse sua conta</h1>
+          <p className="mt-2 text-sm text-ink-500">Entre com seus dados para continuar.</p>
         </div>
 
         <Button type="button" variant="secondary" className="w-full" onClick={withGoogle} disabled={busy}>
