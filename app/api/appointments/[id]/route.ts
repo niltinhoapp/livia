@@ -15,12 +15,13 @@ const VALID: AppointmentStatus[] = ["pending", "confirmed", "cancelled", "comple
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const { id: appointmentId } = await params;
   const estId = await resolveEstablishmentId(req);
   if (!estId) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
-  const appt = await getAppointment(estId, params.id);
+  const appt = await getAppointment(estId, appointmentId);
   if (!appt) return NextResponse.json({ error: "agendamento não encontrado" }, { status: 404 });
 
   const b = (await req.json().catch(() => ({}))) as {

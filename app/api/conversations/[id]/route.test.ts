@@ -48,7 +48,7 @@ async function patch(action: string) {
     method: "PATCH",
     body: JSON.stringify({ action }),
   });
-  return PATCH(req as never, { params: { id: CONV } });
+  return PATCH(req as never, { params: Promise.resolve({ id: CONV }) });
 }
 
 beforeEach(() => {
