@@ -3,7 +3,7 @@
 // mesmo módulo no Nuvem Rush (lib/whatsapp/embedded.ts), removendo tudo que
 // era específico de e-commerce (template de pós-venda, schema `stores`).
 //
-// Fluxo completo (a parte de UI/rota ainda não existe — ver TODOs no fim):
+// Fluxo completo:
 //   1. Estabelecimento clica "Conectar WhatsApp" -> popup da Meta (FB.login
 //      com config_id) -> ele cria/escolhe a própria WABA e o próprio número.
 //   2. O popup devolve um `code` (OAuth) + waba_id + phone_number_id.
@@ -21,8 +21,8 @@
 //
 // Segurança de token: nenhuma função aqui loga, persiste ou devolve o access
 // token para o frontend — ele só existe em memória, no retorno da função, e
-// cabe à rota backend que ainda vai chamar isto (futura /api/whatsapp/connect)
-// cifrá-lo com lib/whatsapp/tokenCrypto.ts antes de gravar em qualquer lugar.
+// a rota backend /api/whatsapp/connect o cifra com
+// lib/whatsapp/tokenCrypto.ts antes de gravar em qualquer lugar.
 
 const GRAPH_VERSION = "v24.0";
 const GRAPH_BASE_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -48,15 +48,13 @@ function loadAppCredentials(): { appId: string; appSecret: string } {
 
 // Diagnóstico SANITIZADO de uma falha na Graph API, anexado ao Error lançado
 // (propriedade `graphError`). Só campos de diagnóstico da própria Meta —
-// nunca token, app secret ou o `code` do OAuth. `message` só é incluída
-// depois de conferir que não contém nenhum dos segredos passados em
-// `redact` (a Meta não os devolve, mas não confiamos nisso sem checar).
+// nunca token, app secret, `code` do OAuth ou texto livre vindo da Meta.
 export type GraphErrorInfo = {
   httpStatus?: number;
   type?: string;
   code?: number;
   subcode?: number;
-  message?: string;
+  reason?: string;
   fbtraceId?: string;
   networkFailure?: true;
 };
@@ -70,18 +68,11 @@ function attachGraphError(err: Error, info: GraphErrorInfo): Error {
   return err;
 }
 
-function safeMessage(message: string | undefined, redact: string[]): string | undefined {
-  if (!message) return undefined;
-  return redact.some((s) => s && message.includes(s)) ? undefined : message;
-}
-
 // Formata o corpo de erro da Graph API em uma mensagem útil, SEM jamais
-// incluir token/secret (nenhum dos dois aparece nesses payloads de erro da
-// Meta, mas o parsing aqui é propositalmente restrito aos campos de erro).
+// incluir token/secret ou texto livre da Meta.
 async function graphJson(
   res: Response,
   action: string,
-  redact: string[] = [],
 ): Promise<Record<string, unknown>> {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
@@ -97,13 +88,11 @@ async function graphJson(
         };
       }
     ).error;
-    const detail = err?.error_user_title ?? err?.message ?? JSON.stringify(body);
-    throw attachGraphError(new Error(`Graph API (${action}) ${res.status}: ${detail}`), {
+    throw attachGraphError(new Error(`Graph API (${action}) falhou (HTTP ${res.status})`), {
       httpStatus: res.status,
       type: err?.type,
       code: err?.code,
       subcode: err?.error_subcode,
-      message: safeMessage(err?.message, redact),
       fbtraceId: err?.fbtrace_id,
     });
   }
@@ -129,12 +118,12 @@ export async function exchangeCodeForToken(code: string): Promise<string> {
     });
   }
 
-  const body = await graphJson(res, "exchangeCodeForToken", [code, appSecret]);
+  const body = await graphJson(res, "exchangeCodeForToken");
   const token = body.access_token as string | undefined;
   if (!token) {
     throw attachGraphError(
       new Error("Graph API (exchangeCodeForToken): resposta sem access_token."),
-      { httpStatus: res.status, message: "resposta 200 sem access_token" },
+      { httpStatus: res.status, reason: "missing_access_token" },
     );
   }
   return token;
@@ -151,7 +140,7 @@ export async function refreshBusinessToken(currentToken: string): Promise<string
     `${GRAPH_BASE_URL}/oauth/access_token?grant_type=fb_exchange_token` +
     `&client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}` +
     `&fb_exchange_token=${encodeURIComponent(currentToken)}`;
-  const body = await graphJson(await fetch(url), "refreshBusinessToken", [currentToken, appSecret]);
+  const body = await graphJson(await fetch(url), "refreshBusinessToken");
   const token = body.access_token as string | undefined;
   if (!token) {
     throw new Error("Graph API (refreshBusinessToken): resposta sem access_token.");
@@ -176,7 +165,6 @@ export async function getWabaPhoneNumbers(wabaId: string, token: string): Promis
       headers: { Authorization: `Bearer ${token}` },
     }),
     "getWabaPhoneNumbers",
-    [token],
   );
   const data = (body.data as Array<{ id?: string }> | undefined) ?? [];
   return data.map((p) => p.id).filter((id): id is string => Boolean(id));
@@ -191,7 +179,6 @@ export async function subscribeAppToWaba(wabaId: string, token: string): Promise
       headers: { Authorization: `Bearer ${token}` },
     }),
     "subscribeAppToWaba",
-    [token],
   );
 }
 
@@ -215,7 +202,6 @@ export async function unsubscribeAppFromWaba(wabaId: string, token: string): Pro
       headers: { Authorization: `Bearer ${token}` },
     }),
     "unsubscribeAppFromWaba",
-    [token],
   );
 }
 
@@ -278,15 +264,11 @@ export async function registerPhoneNumber(
   };
   const code = body.error?.code;
   const subcode = body.error?.error_subcode;
-  // Só como diagnóstico complementar no erro lançado — nunca decide sucesso.
-  const diagnosticText = body.error?.error_user_title ?? body.error?.message ?? "";
   const info: GraphErrorInfo = {
     httpStatus: res.status,
     type: body.error?.type,
     code,
     subcode,
-    // PIN e token nunca podem vazar pela mensagem da Meta.
-    message: safeMessage(body.error?.message, [token, pin]),
     fbtraceId: body.error?.fbtrace_id,
   };
 
@@ -298,8 +280,7 @@ export async function registerPhoneNumber(
     throw attachGraphError(
       new Error(
         `Graph API (registerPhoneNumber): erro conhecido ${code}` +
-          (subcode ? `/${subcode}` : "") +
-          (diagnosticText ? ` — ${diagnosticText}` : ""),
+          (subcode ? `/${subcode}` : ""),
       ),
       info,
     );
@@ -311,8 +292,7 @@ export async function registerPhoneNumber(
       `Graph API (registerPhoneNumber): erro não reconhecido (HTTP ${res.status}` +
         (code !== undefined ? `, code ${code}` : "") +
         (subcode !== undefined ? `/${subcode}` : "") +
-        `)` +
-        (diagnosticText ? ` — ${diagnosticText}` : ""),
+        `)`,
     ),
     info,
   );

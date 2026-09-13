@@ -68,7 +68,7 @@ describe("markAsRead — sucesso", () => {
 });
 
 describe("markAsRead — erro HTTP da Graph API", () => {
-  it("registra status, code, subcode, type, message e fbtrace_id", async () => {
+  it("registra status, code, subcode, type e fbtrace_id sem texto livre da Meta", async () => {
     fetchMock.mockResolvedValue(
       resposta(
         400,
@@ -94,7 +94,6 @@ describe("markAsRead — erro HTTP da Graph API", () => {
       code: 100,
       subcode: 33,
       type: "OAuthException",
-      message: "(#100) The parameter message_id is required.",
       fbtraceId: "AbCdEfGh123",
     });
   });
@@ -127,7 +126,7 @@ describe("markAsRead — erro HTTP da Graph API", () => {
     expect(logado).not.toContain("5514996447132");
   });
 
-  it("trunca mensagens longas da Meta", async () => {
+  it("não registra mensagens longas da Meta", async () => {
     fetchMock.mockResolvedValue(
       resposta(400, JSON.stringify({ error: { message: "x".repeat(500), code: 100 } })),
     );
@@ -135,7 +134,7 @@ describe("markAsRead — erro HTTP da Graph API", () => {
     await markAsRead(wa, "est_odonto", MSG_ID);
 
     const payload = JSON.parse((warn.mock.calls[0] as [string, string])[1]);
-    expect(payload.message).toHaveLength(200);
+    expect(payload.message).toBeUndefined();
   });
 });
 

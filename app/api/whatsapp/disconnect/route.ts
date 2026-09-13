@@ -50,21 +50,16 @@ async function tryUnsubscribe(
     // os webhooks dele também. Não é erro — é o caso legítimo de uma WABA com
     // vários números; simplesmente não removemos a inscrição.
     if (await hasOtherConnectedEstablishmentWithWaba(wabaId, id)) {
-      console.info(
-        `[whatsapp disconnect] inscrição da WABA mantida (estabelecimento=${id}): ` +
-          `outro estabelecimento conectado usa a mesma WABA.`,
-      );
+      console.info("[whatsapp disconnect] inscrição da WABA mantida: outro estabelecimento conectado usa a mesma WABA.");
       return;
     }
     const token = decryptToken(encryptedToken);
     await unsubscribeAppFromWaba(wabaId, token);
   } catch (err) {
     const graph = graphErrorOf(err);
-    const detail = graph ? ` graph=${JSON.stringify(graph)}` : "";
-    console.error(
-      `[whatsapp disconnect] falha ao remover inscrição da WABA (estabelecimento=${id})` +
-        `${detail} — desconectando mesmo assim.`,
-    );
+    console.error("[whatsapp disconnect] falha ao remover inscrição da WABA; desconectando mesmo assim.", {
+      graph: graph ?? null,
+    });
   }
 }
 
@@ -85,7 +80,9 @@ export async function POST(req: NextRequest) {
   try {
     result = await disconnectWhatsapp(id);
   } catch (err) {
-    console.error(`[whatsapp disconnect] falha ao limpar o estado (estabelecimento=${id})`, err);
+    console.error("[whatsapp disconnect] falha ao limpar o estado", {
+      errorType: err instanceof Error ? err.name : "unknown",
+    });
     return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
   }
 

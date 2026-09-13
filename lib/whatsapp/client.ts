@@ -90,10 +90,9 @@ export async function sendText(
     }),
   });
 
-  const rawBody = await res.clone().text();
-
   if (!res.ok) {
-    throw new Error(`WhatsApp sendText ${res.status}: ${rawBody}`);
+    const detail = graphErrorDetail(await res.clone().text());
+    throw new Error(`WhatsApp sendText falhou: ${JSON.stringify({ status: res.status, ...detail })}`);
   }
   const data = (await res.json().catch(() => ({}))) as {
     messages?: { id: string }[];
@@ -138,8 +137,8 @@ export async function sendTemplate(
   });
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`WhatsApp sendTemplate ${res.status}: ${body}`);
+    const detail = graphErrorDetail(await res.text());
+    throw new Error(`WhatsApp sendTemplate falhou: ${JSON.stringify({ status: res.status, ...detail })}`);
   }
   const data = (await res.json().catch(() => ({}))) as { messages?: { id: string }[] };
   return { waMessageId: data.messages?.[0]?.id };
@@ -147,9 +146,8 @@ export async function sendTemplate(
 
 // Extrai só os campos de diagnóstico do erro da Graph API. Nunca devolve o
 // corpo cru: o corpo é da Meta e não carrega token, mas despejar texto livre
-// em log é exatamente como dado inesperado acaba vazando. `message` vem
-// truncada — a mensagem da Meta pode citar o wamid (que o webhook já loga
-// como msgId) e nada além disso é necessário para diagnosticar.
+// em log é exatamente como dado inesperado acaba vazando. Só status/códigos
+// estruturados e fbtrace_id são úteis para diagnóstico.
 function graphErrorDetail(rawBody: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(rawBody) as {
@@ -161,7 +159,6 @@ function graphErrorDetail(rawBody: string): Record<string, unknown> {
       code: e.code ?? null,
       subcode: e.error_subcode ?? null,
       type: e.type ?? null,
-      message: typeof e.message === "string" ? e.message.slice(0, 200) : null,
       fbtraceId: e.fbtrace_id ?? null,
     };
   } catch {
@@ -215,7 +212,10 @@ export async function markAsRead(
       );
     }
   } catch (err) {
-    // Falha de rede/timeout — segue best-effort, mas agora visível.
-    console.warn("[livia whatsapp] markAsRead falhou (rede)", JSON.stringify({ error: String(err).slice(0, 200) }));
+    // Falha de rede/timeout — segue best-effort, mas agora visível sem expor
+    // texto livre vindo de bibliotecas/intermediários HTTP.
+    console.warn("[livia whatsapp] markAsRead falhou (rede)", JSON.stringify({
+      errorType: err instanceof Error ? err.name : "unknown",
+    }));
   }
 }
