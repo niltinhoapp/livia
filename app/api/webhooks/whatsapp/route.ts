@@ -44,6 +44,7 @@ import { readConfirmation } from "@/lib/ai/confirmation";
 import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
+import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
 import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
@@ -152,7 +153,7 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   // duas mensagens do cliente em rápida sucessão chegam batched). O código
   // só olhava entry[0].changes[0].messages[0] — qualquer mensagem além dessa
   // era descartada em silêncio, sem log e sem erro. Processa todas, em ordem.
-  const messages: { value: WebhookValue; msg: WebhookMessage }[] = [];
+  const messages: { value: WebhookValue; msg: MetaInboundMessage }[] = [];
   // Coexistence: eventos de espelhamento/sincronização não são mensagens
   // novas do cliente. Eles nunca podem chegar ao pipeline da Livia/IA.
   for (const entry of body.entry ?? []) {
@@ -177,24 +178,34 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
 
   logStage("messages in payload", { count: messages.length });
   for (const { value, msg } of messages) {
-    await processMessage(value, msg);
+    // Um item inválido/falho não pode descartar os demais itens do mesmo
+    // lote da Meta. O POST continua respondendo 200 pela estratégia atual.
+    try {
+      await processMessage(value, msg);
+    } catch (err) {
+      // Mantém a falha visível sem expor o conteúdo/identificadores da
+      // mensagem e segue com os demais itens do mesmo lote.
+      console.error("[livia webhook] message processing failed", {
+        errorType: err instanceof Error ? err.name : "unknown",
+      });
+    }
   }
 }
 
-async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise<void> {
+async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Promise<void> {
   if (!value.metadata?.phone_number_id) {
     logStage("message without phone_number_id, ignored", { msgId: msg.id });
     return;
   }
 
-  // Só tratamos texto por enquanto (áudio/imagem/localização virão depois).
-  if (msg.type !== "text" || !msg.text?.body) {
-    logStage("non-text message ignored", { msgId: msg.id, type: msg.type });
+  const inbound = parseInboundMessage(msg);
+  if (!inbound.from) {
+    logStage("message without sender, ignored", { msgId: msg.id });
     return;
   }
 
   // Dedupe de reentrega.
-  if (msg.id && (await alreadyProcessed(msg.id))) {
+  if (inbound.waMessageId && (await alreadyProcessed(inbound.waMessageId))) {
     logStage("duplicate message, ignored", { msgId: msg.id });
     return;
   }
@@ -238,12 +249,12 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
   const wa: EstablishmentWhatsapp =
     est.whatsapp ?? { wabaId: "", phoneNumberId: "", status: "connecting", pin: { ciphertext: "", iv: "", authTag: "" } };
 
-  const contactPhone = msg.from;
+  const contactPhone = inbound.from;
   const contactName = value.contacts?.[0]?.profile?.name ?? null;
-  const customerText = msg.text.body;
+  const customerText = inbound.text;
 
   // Marca como lida (feedback visual pro cliente).
-  if (msg.id) await markAsRead(wa, est.id, msg.id);
+  if (inbound.waMessageId) await markAsRead(wa, est.id, inbound.waMessageId);
 
   const { conversation, history } = await loadConversation(
     est.id,
@@ -254,7 +265,18 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
   // Registra a mensagem do cliente. Acontece ANTES de qualquer decisão de
   // parar o fluxo (estabelecimento inativo, handoff, humano no controle):
   // "a Livia não responde" nunca pode significar "a mensagem sumiu".
-  await appendMessage(est.id, conversation.id, "customer", customerText, msg.id);
+  await appendMessage(est.id, conversation.id, "customer", customerText, inbound.waMessageId, {
+    kind: inbound.kind,
+    phoneNumberId: value.metadata.phone_number_id,
+    ...(inbound.media ? { media: inbound.media } : {}),
+  });
+
+  // V2.0 registra toda mídia, mas não a encaminha à IA, não responde e não
+  // abre PendingTask. Transcrição e tratamento multimodal ficam para V2.1+.
+  if (inbound.kind !== "text") {
+    logStage("non-text message persisted without AI", { msgId: msg.id, type: inbound.kind });
+    return;
+  }
 
   // Estabelecimento comercialmente inativo (Establishment.status
   // "suspended"). Antes disto o webhook simplesmente retornava e o cliente
@@ -535,16 +557,10 @@ async function replyAndLog(
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
-interface WebhookMessage {
-  id?: string;
-  from: string;
-  type: string;
-  text?: { body: string };
-}
 interface WebhookValue {
   metadata?: { phone_number_id?: string };
   contacts?: { profile?: { name?: string } }[];
-  messages?: WebhookMessage[];
+  messages?: MetaInboundMessage[];
 }
 interface WebhookBody {
   entry?: {

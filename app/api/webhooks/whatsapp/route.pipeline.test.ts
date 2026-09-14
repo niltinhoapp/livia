@@ -18,6 +18,7 @@ const findEstablishmentByPhoneNumberId = vi.fn();
 const getEstablishment = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
+const upsertPendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
@@ -35,7 +36,7 @@ vi.mock("@/lib/repo", () => ({
   setConversationSummary: vi.fn(),
   getCustomerProfile: vi.fn(async () => null),
   upsertCustomerProfile: vi.fn(),
-  upsertPendingTask: vi.fn(),
+  upsertPendingTask: (...a: unknown[]) => upsertPendingTask(...a),
   resolvePendingTask: vi.fn(),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
 }));
@@ -195,12 +196,21 @@ describe("1b — credenciais de App Review", () => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
-  it("tipo diferente de texto: 200, mas a IA NUNCA é chamada", async () => {
-    const res = await enviarPayload(payloadMensagem({ type: "audio", omitText: true }));
+  it("áudio é persistido com phoneNumberId, mas não chama IA, envio nem cria pendência", async () => {
+    const audio = payloadMensagem({ type: "audio", omitText: true });
+    const msg = audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    msg.audio = { id: "media.audio", mime_type: "audio/ogg", sha256: "hash", voice: true };
+    const res = await enviarPayload(audio);
 
     expect(res.status).toBe(200);
     expect(think).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
+    expect(upsertPendingTask).not.toHaveBeenCalled();
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Áudio recebido]", "wamid.1", {
+      kind: "audio",
+      phoneNumberId: "pn_1",
+      media: { metaMediaId: "media.audio", mimeType: "audio/ogg", sha256: "hash", voice: true },
+    });
   });
 
   it("type=text mas sem corpo: mesmo tratamento, sem chamar a IA", async () => {
@@ -290,6 +300,18 @@ describe("5 — mensagem duplicada (reentrega da Meta)", () => {
 
     expect(think).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("reentrega de mídia pelo mesmo wamid não grava duas mensagens", async () => {
+    alreadyProcessed.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const audio = payloadMensagem({ type: "audio", omitText: true, id: "wamid.audio.dup" });
+    const msg = audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    msg.audio = { id: "media.audio" };
+    await enviarPayload(audio);
+    await enviarPayload(audio);
+
+    expect(appendMessage.mock.calls.filter((c) => c[2] === "customer")).toHaveLength(1);
+    expect(think).not.toHaveBeenCalled();
   });
 });
 
@@ -384,5 +406,42 @@ describe("múltiplas mensagens no mesmo POST (batch da Meta)", () => {
     expect(res.status).toBe(200);
     expect(think).toHaveBeenCalledTimes(2);
     expect(sendText).toHaveBeenCalledTimes(2);
+  });
+
+  it("falha em uma mensagem não impede o texto seguinte do lote", async () => {
+    loadConversation.mockRejectedValueOnce(new Error("falha isolada")).mockResolvedValueOnce(conversa("bot"));
+    const body = {
+      entry: [{ changes: [{ value: {
+        metadata: { phone_number_id: "pn_1" },
+        contacts: [{ profile: { name: "Ana" } }],
+        messages: [
+          { id: "wamid.fail", from: PHONE, type: "text", text: { body: "primeira" } },
+          { id: "wamid.ok", from: PHONE, type: "text", text: { body: "segunda" } },
+        ],
+      } }] }],
+    };
+
+    const res = await enviarPayload(body);
+
+    expect(res.status).toBe(200);
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("mídia durante atendimento humano permanece somente registrada", async () => {
+    loadConversation.mockResolvedValue(conversa("human"));
+    const image = payloadMensagem({ type: "image", omitText: true });
+    const msg = image.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    msg.image = { id: "media.image" };
+
+    const res = await enviarPayload(image);
+
+    expect(res.status).toBe(200);
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(upsertPendingTask).not.toHaveBeenCalled();
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Imagem recebida]", "wamid.1", {
+      kind: "image", phoneNumberId: "pn_1", media: { metaMediaId: "media.image" },
+    });
   });
 });
