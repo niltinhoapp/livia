@@ -2,175 +2,315 @@
 
 ## Missão desta fase
 
-**Colocar a Lívia trabalhando com clientes reais e começar a gerar receita.**
+**Colocar a Lívia trabalhando com clientes reais, preservar o que já funciona e evoluir a V2 sem interromper produção.**
 
-Este arquivo é o checklist prático das próximas sessões. O `README.md` contém a direção oficial do projeto.
+O `README.md` contém a direção oficial. O `LIVIA-V2-ROADMAP.md` contém a evolução planejada.
 
 ---
 
-## Regra principal
+# 1. Estado atual
 
-Não desenvolver recurso novo por entusiasmo ou roadmap.
+Já está validado:
 
-Uma alteração só entra agora quando resolver diretamente um destes pontos:
+- Meta aprovada;
+- WhatsApp oficial funcionando;
+- Coexistência funcionando com cliente real em portfólio separado;
+- webhook e resposta E2E funcionando;
+- agenda, conhecimento, CRM e handoff existentes;
+- produção ativa na Vercel.
 
+A fase "aguardando aprovação da Meta" terminou.
+
+Não alterar Meta/Coexistência sem necessidade real.
+
+---
+
+# 2. Regra principal
+
+Uma alteração só entra agora quando resolver diretamente:
+
+- estabilidade;
 - venda;
 - ativação;
 - atendimento;
 - agenda/operação;
 - cobrança;
+- CRM necessário para V2;
 - erro real de produção.
 
 Caso contrário: backlog.
 
 ---
 
-# Checklist de retomada
+# 3. Checklist técnico antes de qualquer OT
 
-## 1. Estado técnico
-
-- [ ] Confirmar branch/commit que está em produção.
-- [ ] Confirmar deploy atual da Vercel.
-- [ ] Confirmar que não há mudança pendente importante fora do GitHub.
-- [ ] Rodar suíte completa de testes.
-- [ ] Rodar TypeScript.
-- [ ] Rodar build.
-
-## 2. WhatsApp real
-
-- [ ] Mensagem chega ao webhook.
-- [ ] Estabelecimento correto é identificado.
-- [ ] Conversa correta é carregada.
-- [ ] Resposta é enviada uma única vez.
-- [ ] Mensagem fica registrada.
-- [ ] Não há resposta cruzada entre tenants.
-
-## 3. Conhecimento
-
-Testar perguntas reais de estabelecimento:
-
-- [ ] preço;
-- [ ] horário de funcionamento;
-- [ ] endereço;
-- [ ] serviço;
-- [ ] pergunta não cadastrada.
-
-Esperado: usar fonte real quando existir e não inventar quando não existir.
-
-## 4. Agenda — fluxo principal
-
-- [ ] “Quero marcar um horário”.
-- [ ] serviço é coletado.
-- [ ] data é coletada.
-- [ ] disponibilidade real é consultada.
-- [ ] opções reais são apresentadas.
-- [ ] cliente escolhe.
-- [ ] agendamento é persistido.
-- [ ] painel mostra o agendamento.
-
-## 5. Agenda — cliente já agendado
-
-Testar frases reais:
-
-- [ ] “Tenho consulta hoje?”
-- [ ] “Qual horário marquei?”
-- [ ] “Quando é minha consulta?”
-- [ ] “Confirma minha consulta.”
-- [ ] “Olhe a agenda, está marcado hoje às 9.”
-
-Esperado:
-
-- backend consulta o Appointment real;
-- não oferecer horários livres como se o cliente não estivesse marcado;
-- não inventar hoje/amanhã;
-- não responder “vou verificar” sem continuação;
-- não fazer handoff se os dados reais já responderem à pergunta.
-
-## 6. Remarcação e cancelamento
-
-- [ ] cliente remarca um agendamento existente;
-- [ ] disponibilidade é validada;
-- [ ] registro correto é alterado;
-- [ ] cliente cancela;
-- [ ] status correto é persistido;
-- [ ] dashboard/funil não ficam inconsistentes.
-
-## 7. Handoff humano
-
-- [ ] cliente pede atendente humano;
-- [ ] conversa muda realmente para handoff;
-- [ ] humano consegue assumir;
-- [ ] IA não continua respondendo enquanto humano atende;
-- [ ] humano consegue devolver conversa para IA;
-- [ ] contexto necessário permanece disponível.
-
-## 8. CRM e painel
-
-- [ ] cliente aparece no CRM;
-- [ ] nome/telefone corretos;
-- [ ] intenção faz sentido;
-- [ ] resumo não inventa fatos;
-- [ ] pendência representa situação real;
-- [ ] caixa de entrada classifica corretamente;
-- [ ] dashboard deriva números de documentos reais;
-- [ ] funil nunca ultrapassa 100%;
-- [ ] múltiplos agendamentos da mesma conversa não inflam conversão.
-
-## 9. Meta
-
-Enquanto estiver em análise:
-
-- [ ] não alterar permissões sem necessidade;
-- [ ] não alterar Embedded Signup sem necessidade;
-- [ ] não alterar configuração externa do webhook sem necessidade;
-- [ ] não alterar WABA da revisão sem necessidade.
-
-Quando houver aprovação:
-
-- [ ] confirmar status/permissões;
-- [ ] revisar variáveis de produção;
-- [ ] retirar bypass de teste quando aplicável;
-- [ ] testar Embedded Signup real;
-- [ ] testar mensagem recebida;
-- [ ] testar resposta enviada;
-- [ ] testar agenda;
-- [ ] testar handoff.
-
-## 10. Trial e cobrança
-
-Antes de abrir aquisição em escala:
-
-- [ ] novo estabelecimento inicia 7 dias grátis corretamente;
-- [ ] não exige cartão para iniciar, conforme oferta atual;
-- [ ] data de início/fim é confiável;
-- [ ] acesso durante trial funciona;
-- [ ] fim do trial não deixa uso pago liberado indevidamente;
-- [ ] caminho para assinatura é simples;
-- [ ] pagamento aprovado libera acesso;
-- [ ] cancelamento segue a regra comercial;
-- [ ] status da assinatura é confiável.
-
-## 11. Primeiro cliente real
-
-- [ ] cadastrar/configurar estabelecimento real;
-- [ ] conectar WhatsApp pelo fluxo oficial quando produção estiver disponível;
-- [ ] preencher conhecimento real;
-- [ ] configurar agenda real;
-- [ ] acompanhar primeiras conversas;
-- [ ] registrar toda falha real;
-- [ ] corrigir causa raiz;
-- [ ] adicionar teste de regressão;
-- [ ] acompanhar até atendimento ficar estável.
+- [ ] conferir `main` remoto;
+- [ ] confirmar commit/deploy em produção;
+- [ ] confirmar que não existe PR conflitante;
+- [ ] mapear arquivos e contratos afetados;
+- [ ] criar branch isolada;
+- [ ] não alterar produção diretamente;
+- [ ] rodar testes relevantes;
+- [ ] rodar suíte completa quando aplicável;
+- [ ] rodar TypeScript;
+- [ ] rodar build;
+- [ ] abrir PR;
+- [ ] validar checks/preview;
+- [ ] merge somente com verde.
 
 ---
 
-# Regra para bugs reais
+# 4. Atendimento real
 
-Para cada problema:
+- [ ] mensagem chega ao webhook;
+- [ ] estabelecimento correto é identificado;
+- [ ] conversa correta é carregada;
+- [ ] resposta é enviada uma única vez;
+- [ ] mensagem fica registrada;
+- [ ] não existe resposta cruzada entre tenants;
+- [ ] echo/history/app-state não entram no pipeline normal da IA;
+- [ ] contexto permanece correto.
+
+---
+
+# 5. Conhecimento
+
+Testar:
+
+- [ ] preço cadastrado;
+- [ ] horário;
+- [ ] endereço;
+- [ ] serviço;
+- [ ] pergunta não cadastrada;
+- [ ] pergunta ambígua;
+- [ ] conversa encerrada/reação simples.
+
+Esperado: usar fonte real, não inventar e não prolongar conversa sem necessidade.
+
+---
+
+# 6. Agenda
+
+- [ ] criar;
+- [ ] consultar;
+- [ ] confirmar;
+- [ ] remarcar;
+- [ ] cancelar;
+- [ ] interpretar hoje/amanhã/dia da semana corretamente;
+- [ ] consultar disponibilidade real;
+- [ ] não confundir horário livre com agendamento existente;
+- [ ] não prometer verificação futura inexistente.
+
+---
+
+# 7. Handoff
+
+- [ ] cliente pede humano;
+- [ ] estado muda realmente;
+- [ ] IA para de responder;
+- [ ] humano consegue assumir;
+- [ ] humano consegue devolver para IA;
+- [ ] histórico permanece íntegro;
+- [ ] responsável fica registrado quando aplicável.
+
+---
+
+# 8. CRM atual
+
+- [ ] cliente correto;
+- [ ] nome/telefone corretos;
+- [ ] intenção coerente;
+- [ ] resumo não inventa;
+- [ ] dashboard deriva de dados reais;
+- [ ] funil não ultrapassa 100%;
+- [ ] conversão não é inflada por duplicações.
+
+---
+
+# 9. Abertura controlada
+
+Antes de aquisição em escala:
+
+- [ ] separar `panelAccess`;
+- [ ] separar `whatsappAccess`;
+- [ ] separar `trialStatus`;
+- [ ] separar `subscriptionStatus`;
+- [ ] bloquear conexão também no backend;
+- [ ] preservar clientes já autorizados;
+- [ ] preparar lista de espera;
+- [ ] acompanhar primeiras empresas de perto.
+
+---
+
+# 10. Billing Asaas
+
+Primeira frente estrutural da V2.
+
+- [ ] auditar modelo atual de usuário/estabelecimento;
+- [ ] desenhar `Plan`;
+- [ ] desenhar `Subscription`;
+- [ ] desenhar `Benefit`;
+- [ ] suportar desconto/cortesia sem alterar preço-base;
+- [ ] integrar sandbox Asaas;
+- [ ] checkout/assinatura;
+- [ ] webhooks idempotentes;
+- [ ] pagamento aprovado libera acesso;
+- [ ] inadimplência suspende dentro da Lívia;
+- [ ] reativação restaura acesso;
+- [ ] cancelamento preserva dados;
+- [ ] nunca desconectar Meta/WhatsApp por cobrança.
+
+---
+
+# 11. IA V2
+
+Não trocar modelo diretamente em produção sem benchmark.
+
+- [ ] localizar todas as chamadas atuais de IA;
+- [ ] centralizar configuração em um AI Gateway;
+- [ ] preservar tools/contracts;
+- [ ] criar suíte de conversas reais;
+- [ ] comparar modelo atual x candidato;
+- [ ] medir custo por conversa;
+- [ ] medir latência;
+- [ ] validar agenda;
+- [ ] validar handoff;
+- [ ] validar conhecimento;
+- [ ] validar multimodal futuramente;
+- [ ] liberar por rollout controlado.
+
+Candidato inicial para benchmark: **GPT-5.6 Terra**.
+
+Escalonamento futuro de casos complexos pode usar **GPT-5.6 Sol**.
+
+---
+
+# 12. Fundação CRM V2
+
+Preparar sem criar estrutura vazia desnecessária.
+
+- [ ] timeline de eventos;
+- [ ] oportunidades;
+- [ ] pedidos;
+- [ ] pagamentos;
+- [ ] campanhas;
+- [ ] responsáveis;
+- [ ] equipes;
+- [ ] canais/números;
+- [ ] auditoria de mudanças críticas.
+
+As entidades devem surgir conforme cada OT entra.
+
+---
+
+# 13. Equipes e múltiplos números
+
+Dois conceitos independentes:
+
+## Vários números oficiais
+
+- [ ] estabelecimento pode possuir vários `WhatsappChannel`;
+- [ ] cada canal tem `phoneNumberId` próprio;
+- [ ] webhook roteia por número;
+- [ ] CRM pode permanecer compartilhado;
+- [ ] isolamento de credenciais por canal.
+
+## Um número oficial + vários contatos internos
+
+- [ ] diretório `TeamMember`;
+- [ ] corretor/vendedor/técnico/gerente;
+- [ ] papel;
+- [ ] telefone;
+- [ ] especialidade;
+- [ ] região/unidade;
+- [ ] disponibilidade/estado quando necessário;
+- [ ] responsável pela oportunidade;
+- [ ] handoff/encaminhamento;
+- [ ] logs de roteamento.
+
+Não misturar funcionário com cliente.
+
+---
+
+# 14. Multimídia
+
+- [ ] áudio recebido;
+- [ ] download seguro;
+- [ ] transcrição;
+- [ ] associação com mensagem original;
+- [ ] interpretação pela IA;
+- [ ] imagem recebida;
+- [ ] análise multimodal;
+- [ ] limites de tamanho/tipo;
+- [ ] armazenamento/expiração seguros;
+- [ ] não transformar interpretação visual em verdade operacional sem validação.
+
+---
+
+# 15. Campanhas
+
+Só implementar depois da fundação necessária.
+
+- [ ] templates Meta;
+- [ ] audiência;
+- [ ] segmentação;
+- [ ] elegibilidade;
+- [ ] consentimento/opt-out;
+- [ ] fila;
+- [ ] workers;
+- [ ] status por destinatário;
+- [ ] webhook de status;
+- [ ] resposta volta para conversa normal;
+- [ ] CRM registra origem da campanha;
+- [ ] campanha pode gerar oportunidade.
+
+---
+
+# 16. Vendas e pagamentos no WhatsApp
+
+- [ ] intenção comercial;
+- [ ] oportunidade;
+- [ ] produto/serviço real;
+- [ ] valor vindo de fonte oficial;
+- [ ] order;
+- [ ] cobrança;
+- [ ] link/PIX quando permitido;
+- [ ] webhook Asaas;
+- [ ] confirmação de pagamento pelo backend;
+- [ ] CRM atualizado;
+- [ ] venda concluída.
+
+A IA nunca confirma pagamento por texto ou comprovante enviado pelo cliente.
+
+---
+
+# 17. Ordem de implementação
+
+Ordem padrão:
+
+```text
+V1 estável
+→ controle de acesso
+→ billing Asaas
+→ AI Gateway + benchmark
+→ fundação CRM V2
+→ multimídia
+→ equipes e roteamento
+→ campanhas
+→ pagamentos de clientes finais
+→ múltiplos números oficiais
+→ automações
+```
+
+A ordem pode mudar por necessidade comprovada de cliente, mas nunca por entusiasmo com feature.
+
+---
+
+# 18. Regra para bugs
 
 ```text
 Mensagem real
-+ estado real dos dados
++ estado real
 + comportamento errado
         ↓
 reprodução
@@ -184,45 +324,48 @@ teste de regressão
 teste real
 ```
 
-Não resolver problema crítico apenas acrescentando instruções ao prompt se o backend puder garantir a ação.
-
 ---
 
-# Não fazer agora
+# 19. Regra para Claude/Codex
 
-A menos que se torne requisito para um cliente pagante:
+Cada OT deve ter uma única fronteira clara.
 
-- modo restaurante completo;
-- áudio;
-- integrações extras;
-- campanhas avançadas;
-- reativação avançada;
-- redesign grande;
-- novos canais;
-- features experimentais.
+Claude pode auditar arquitetura e preparar a Ordem de Trabalho.
 
----
+Codex pode implementar, testar, abrir PR e validar checks.
 
-# Indicadores desta fase
+Ambos devem:
 
-Acompanhar:
-
-```text
-Estabelecimentos ativados
-Conversas reais atendidas
-Agendamentos/tarefas concluídos
-Resolução sem humano
-Erros reais
-Trials ativos
-Trials convertidos
-Assinantes pagos
-MRR
-```
+- trabalhar em branch isolada;
+- partir da `main` atualizada;
+- não mudar contratos fora do escopo;
+- não alterar Meta/Coexistência sem necessidade explícita;
+- não fazer merge com checks vermelhos;
+- parar em incompatibilidade real;
+- não usar produção para experimentos.
 
 ---
 
 # Resultado esperado
 
-A fase termina quando a Lívia não estiver apenas “pronta no código”, mas **trabalhando diariamente para estabelecimentos reais e recebendo assinaturas**.
+A Lívia evolui sem perder o serviço atual:
 
-> Produto agora é atendimento funcionando + cliente usando + cobrança acontecendo.
+```text
+Atendimento confiável
++
+Cobrança
++
+IA mais capaz
++
+CRM central
++
+Equipes
++
+Marketing
++
+Vendas
++
+Pagamentos
+```
+
+O produto deve crescer sobre a V1, não substituí-la.
