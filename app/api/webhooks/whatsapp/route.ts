@@ -33,6 +33,7 @@ import {
 import { sendText, markAsRead } from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
+import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
 import { deriveTaskState } from "@/lib/ai/taskState";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
@@ -339,7 +340,7 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
   // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
   // assim "sim"/"ok" no meio de outra conversa não é confundido.
-  const intent = confirmCancelIntent(customerText);
+  const intent = confirmCancelReminderIntent(customerText);
   if (intent) {
     const next = await findNextAppointment(est.id, normalizePhone(contactPhone));
     if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
@@ -520,22 +521,6 @@ async function processMessage(value: WebhookValue, msg: WebhookMessage): Promise
     });
     if (summary) await setConversationSummary(est.id, conversation.id, summary);
   }
-}
-
-// Detecta intenção de confirmar/cancelar em respostas curtas ao lembrete.
-function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
-  const t = text.trim().toLowerCase();
-  if (t.length > 30) return null; // resposta longa: deixa a IA tratar
-
-  // Pedido explícito de cancelamento em resposta ao lembrete — inalterado.
-  const cancel = ["cancelar", "cancela", "cancelado", "nao vou", "não vou", "desmarcar", "desmarca", "nao poderei", "não poderei"];
-  if (cancel.some((w) => t.includes(w))) return "cancel";
-
-  // A confirmação de presença passa a usar o matcher seguro. A versão
-  // anterior fazia `t.includes("isso")`, então "não é isso" era lido como
-  // CONFIRMAÇÃO — uma negação confirmando presença. Só "yes" inequívoco age;
-  // "no" e "unclear" devolvem null e a IA trata normalmente.
-  return readConfirmation(t) === "yes" ? "confirm" : null;
 }
 
 async function replyAndLog(
