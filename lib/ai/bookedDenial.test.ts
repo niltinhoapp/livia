@@ -193,12 +193,12 @@ describe("reserva criada + texto negando", () => {
     expect(result.reply).not.toMatch(/fora do nosso expediente/i);
   });
 
-  it("uma confirmação correta do modelo é preservada como está", async () => {
+  it("uma confirmação correta do modelo também é fechada pela resposta canônica", async () => {
     respostas = ["Prontinho, Rejane! Canal marcado para 07/09 às 15:30. Até lá! 😊"];
 
     const result = await clienteEscolhe("As 15:30");
 
     expect(result.booked).toBe(true);
-    expect(result.reply).toMatch(/Prontinho, Rejane/);
+    expect(result.reply).toBe("Prontinho! Seu horário de Canal está reservado para 07/09 às 15:30.");
   });
 });
