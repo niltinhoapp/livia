@@ -4,53 +4,52 @@
 //   "não é isso"    -> confirm
 //   "não, isso não" -> confirm
 //
-// Este arquivo replica a função do webhook (mesma forma, agora apoiada em
-// readConfirmation) para travar o comportamento sem precisar levantar todo o
-// handler HTTP. O fluxo de lembrete em si não mudou: pedido explícito de
-// cancelamento continua sendo detectado do mesmo jeito, e reminderSentAt não
-// foi tocado.
 import { describe, expect, it } from "vitest";
-import { readConfirmation } from "./confirmation";
-
-// Cópia fiel de confirmCancelIntent em app/api/webhooks/whatsapp/route.ts.
-function confirmCancelIntent(text: string): "confirm" | "cancel" | null {
-  const t = text.trim().toLowerCase();
-  if (t.length > 30) return null;
-  const cancel = ["cancelar", "cancela", "cancelado", "nao vou", "não vou", "desmarcar", "desmarca", "nao poderei", "não poderei"];
-  if (cancel.some((w) => t.includes(w))) return "cancel";
-  return readConfirmation(t) === "yes" ? "confirm" : null;
-}
+import { confirmCancelReminderIntent } from "./reminderConfirmation";
 
 describe("atalho de lembrete: negação nunca vira confirmação de presença", () => {
   it.each(["não é isso", "nao e isso", "não, isso não", "deixa pra lá"])("'%s' não confirma", (texto) => {
-    expect(confirmCancelIntent(texto)).not.toBe("confirm");
+    expect(confirmCancelReminderIntent(texto)).not.toBe("confirm");
   });
 
   it("ambíguo também não confirma presença sozinho", () => {
-    expect(confirmCancelIntent("acho que sim")).toBeNull();
-    expect(confirmCancelIntent("talvez")).toBeNull();
-    expect(confirmCancelIntent("isso")).toBeNull();
+    expect(confirmCancelReminderIntent("acho que sim")).toBeNull();
+    expect(confirmCancelReminderIntent("talvez")).toBeNull();
+    expect(confirmCancelReminderIntent("isso")).toBeNull();
   });
 });
 
 describe("atalho de lembrete: comportamento preservado", () => {
   it("confirmações inequívocas seguem confirmando", () => {
     for (const texto of ["sim", "confirmo", "pode confirmar", "isso mesmo", "ok"]) {
-      expect(confirmCancelIntent(texto), texto).toBe("confirm");
+      expect(confirmCancelReminderIntent(texto), texto).toBe("confirm");
     }
   });
 
   it("pedido explícito de cancelamento continua sendo cancelamento", () => {
     for (const texto of ["cancelar", "cancela esse", "desmarca", "não vou poder ir"]) {
-      expect(confirmCancelIntent(texto), texto).toBe("cancel");
+      expect(confirmCancelReminderIntent(texto), texto).toBe("cancel");
     }
   });
 
   it("cancelamento tem prioridade sobre confirmação, como antes", () => {
-    expect(confirmCancelIntent("sim, pode cancelar")).toBe("cancel");
+    expect(confirmCancelReminderIntent("sim, pode cancelar")).toBe("cancel");
   });
 
   it("resposta longa continua sendo deixada para a IA", () => {
-    expect(confirmCancelIntent("sim eu confirmo minha presença na consulta de amanhã cedo obrigado")).toBeNull();
+    expect(confirmCancelReminderIntent("sim eu confirmo minha presença na consulta de amanhã cedo obrigado")).toBeNull();
   });
+});
+
+describe("atalho de lembrete: cancelamento só com intenção positiva e inequívoca", () => {
+  it.each(["cancelar", "pode cancelar", "quero cancelar", "não vou conseguir ir, pode cancelar"])("'%s' cancela", (texto) => {
+    expect(confirmCancelReminderIntent(texto)).toBe("cancel");
+  });
+
+  it.each(["não precisa cancelar", "não quero cancelar", "não cancele", "pode deixar marcado", "vou comparecer", "ainda não sei se vou cancelar"])(
+    "'%s' não cancela",
+    (texto) => {
+      expect(confirmCancelReminderIntent(texto)).not.toBe("cancel");
+    },
+  );
 });

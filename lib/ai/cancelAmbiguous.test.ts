@@ -31,14 +31,14 @@ vi.mock("@/lib/scheduling", () => ({
 
 // Os 8 agendamentos reais da conversa que motivou este teste.
 const AGENDA = [
-  { id: "a1", serviceName: "Canal", day: "hoje", date: "2026-09-08", time: "14:00" },
-  { id: "a2", serviceName: "Avaliação", day: "hoje", date: "2026-09-08", time: "16:00" },
-  { id: "a3", serviceName: "Avaliação", day: "amanhã", date: "2026-09-09", time: "09:00" },
-  { id: "a4", serviceName: "Radiografias odontológicas", day: "amanhã", date: "2026-09-09", time: "10:00" },
-  { id: "a5", serviceName: "Limpeza", day: null, date: "2026-09-09", time: "13:00" },
-  { id: "a6", serviceName: "Limpeza", day: null, date: "2026-09-09", time: "15:00" },
-  { id: "a7", serviceName: "Avaliação", day: null, date: "2026-09-09", time: "16:00" },
-  { id: "a8", serviceName: "Canal", day: null, date: "2026-09-14", time: "15:00" },
+  { id: "a1", serviceName: "Canal", day: "hoje", date: "08/09/2026", time: "14:00" },
+  { id: "a2", serviceName: "Avaliação", day: "hoje", date: "08/09/2026", time: "16:00" },
+  { id: "a3", serviceName: "Avaliação", day: "amanhã", date: "09/09/2026", time: "09:00" },
+  { id: "a4", serviceName: "Radiografias odontológicas", day: "amanhã", date: "09/09/2026", time: "10:00" },
+  { id: "a5", serviceName: "Limpeza", day: null, date: "09/09/2026", time: "13:00" },
+  { id: "a6", serviceName: "Limpeza", day: null, date: "09/09/2026", time: "15:00" },
+  { id: "a7", serviceName: "Avaliação", day: null, date: "09/09/2026", time: "16:00" },
+  { id: "a8", serviceName: "Canal", day: null, date: "14/09/2026", time: "15:00" },
 ];
 
 const runTool = vi.fn(async (name: string, _args?: Record<string, unknown>, _ctx?: unknown) => {
@@ -122,6 +122,13 @@ describe("o caso real: 'o das 10 hrs' resolve na hora, sem precisar de retry", (
     await clienteDiz("mas tenho agendamento para amanha as 10");
     const prompt = (create.mock.calls[0]![0] as unknown as { messages: { content: string }[] }).messages[0]!.content;
     expect(prompt).toContain("Radiografias odontológicas");
+    expect(prompt).not.toContain("MAIS DE UM agendamento ativo");
+  });
+
+  it("compara a data DD/MM/AAAA produzida pela tool com a seleção ISO interna", async () => {
+    await clienteDiz("cancela a avaliação de hoje");
+    const prompt = (create.mock.calls[0]![0] as unknown as { messages: { content: string }[] }).messages[0]!.content;
+    expect(prompt).toContain("Agendamento identificado: Avaliação hoje às 16:00");
     expect(prompt).not.toContain("MAIS DE UM agendamento ativo");
   });
 });

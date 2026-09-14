@@ -395,6 +395,14 @@ function appointmentLabel(a: { serviceName?: string; day?: string; date?: string
   return `${a.serviceName ?? "atendimento"} ${quando} às ${a.time}`;
 }
 
+// get_customer_appointments expõe a data ao modelo como DD/MM/AAAA para
+// leitura humana. A seleção determinística usa ISO (YYYY-MM-DD); convertemos
+// aqui, na fronteira do consumidor, sem mudar a resposta exibida ao cliente.
+function canonicalAppointmentDate(date: string | undefined): string | undefined {
+  const match = date?.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : date;
+}
+
 // Tenta achar, dentro da lista de agendamentos ativos, o único que bate com
 // o que o cliente acabou de escrever ("o das 10 hrs", "a Limpeza", "o de
 // amanhã") — sem depender do modelo ter um ID em mãos.
@@ -428,7 +436,7 @@ function matchCancelTarget(
 
   const dataDita = parseDateSelection(text, today);
   if (dataDita) {
-    candidatos = candidatos.filter((a) => a.date === dataDita);
+    candidatos = candidatos.filter((a) => canonicalAppointmentDate(a.date) === dataDita);
   }
 
   const normalizado = text
