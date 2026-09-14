@@ -42,6 +42,7 @@ import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
+import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
@@ -409,6 +410,11 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       ? storedProfile
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
   const existingTask: ConversationTask | null = conversation.task ?? null;
+
+  if (isSilentAcknowledgement(customerText, detectedIntent, existingTask, history)) {
+    logStage("silent acknowledgement, no reply", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
+    return;
+  }
 
   logStage("invoking AI", { msgId: msg.id, estId: est.id, conversationId: conversation.id, intent: detectedIntent.type });
   let brainResult: Awaited<ReturnType<typeof think>>;
