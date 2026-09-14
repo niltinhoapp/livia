@@ -3,6 +3,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const resolveEstablishmentId = vi.fn();
+const getEstablishment = vi.fn();
+const getWhatsappBetaEligibility = vi.fn();
 const claimWhatsappConnection = vi.fn();
 const finalizeWhatsappConnection = vi.fn();
 const releaseWhatsappConnectionAttempt = vi.fn();
@@ -15,7 +17,8 @@ vi.mock("@/lib/auth/session", () => ({
   resolveEstablishmentId: (...a: unknown[]) => resolveEstablishmentId(...a),
 }));
 vi.mock("@/lib/repo", () => ({
-  getEstablishment: vi.fn(),
+  getEstablishment: (...a: unknown[]) => getEstablishment(...a),
+  getWhatsappBetaEligibility: (...a: unknown[]) => getWhatsappBetaEligibility(...a),
   claimWhatsappConnection: (...a: unknown[]) => claimWhatsappConnection(...a),
   finalizeWhatsappConnection: (...a: unknown[]) => finalizeWhatsappConnection(...a),
   releaseWhatsappConnectionAttempt: (...a: unknown[]) => releaseWhatsappConnectionAttempt(...a),
@@ -30,7 +33,7 @@ vi.mock("@/lib/whatsapp/embedded", () => ({
 vi.mock("@/lib/whatsapp/tokenCrypto", () => ({
   encryptToken: (token: string) => ({ ciphertext: `encrypted:${token}`, iv: "iv", authTag: "tag" }),
 }));
-const { POST } = await import("@/app/api/whatsapp/connect/route");
+const { GET, POST } = await import("@/app/api/whatsapp/connect/route");
 
 const ESTABLISHMENT_ID = "est_1";
 const WABA_ID = "123456";
@@ -50,13 +53,34 @@ function request(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   resolveEstablishmentId.mockResolvedValue(ESTABLISHMENT_ID);
+  getEstablishment.mockResolvedValue({ whatsapp: { status: "disconnected" } });
+  getWhatsappBetaEligibility.mockResolvedValue("available");
   claimWhatsappConnection.mockResolvedValue({ outcome: "claimed", pin: PIN, attemptId: ATTEMPT_ID });
   exchangeCodeForToken.mockResolvedValue(TOKEN);
   getWabaPhoneNumbers.mockResolvedValue([PHONE_NUMBER_ID]);
   subscribeAppToWaba.mockResolvedValue(undefined);
   registerPhoneNumber.mockResolvedValue({ registered: true });
-  finalizeWhatsappConnection.mockResolvedValue({ ok: true });
+  finalizeWhatsappConnection.mockResolvedValue({ ok: true, betaOutcome: "claimed" });
   releaseWhatsappConnectionAttempt.mockResolvedValue(undefined);
+});
+
+describe("GET /api/whatsapp/connect — beta fechado", () => {
+  it("informa beta cheio para tenant sem vaga antes de abrir a Meta", async () => {
+    getWhatsappBetaEligibility.mockResolvedValueOnce("cohort_full");
+
+    const response = await GET(new Request("https://livia.test/api/whatsapp/connect") as never);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connected: false, betaFull: true });
+  });
+
+  it("não bloqueia participante desconectado quando a rodada está cheia", async () => {
+    getWhatsappBetaEligibility.mockResolvedValueOnce("already_participant");
+
+    const response = await GET(new Request("https://livia.test/api/whatsapp/connect") as never);
+
+    expect(await response.json()).toEqual({ connected: false, betaFull: false });
+  });
 });
 
 describe("POST /api/whatsapp/connect — Cloud API", () => {
@@ -139,6 +163,40 @@ describe("POST /api/whatsapp/connect — Coexistence", () => {
 });
 
 describe("POST /api/whatsapp/connect — ownership, lease e abort", () => {
+  it("beta cheio bloqueia antes de OAuth, claim ou qualquer chamada à Meta", async () => {
+    getWhatsappBetaEligibility.mockResolvedValueOnce("cohort_full");
+
+    const response = await POST(request() as never);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "BETA_COHORT_FULL" });
+    expect(claimWhatsappConnection).not.toHaveBeenCalled();
+    expect(exchangeCodeForToken).not.toHaveBeenCalled();
+    expect(subscribeAppToWaba).not.toHaveBeenCalled();
+    expect(registerPhoneNumber).not.toHaveBeenCalled();
+  });
+
+  it("corrida pela última vaga é recusada no finalize e libera a lease", async () => {
+    finalizeWhatsappConnection.mockResolvedValueOnce({ ok: false, reason: "cohort_full" });
+
+    const response = await POST(request() as never);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "BETA_COHORT_FULL" });
+    expect(finalizeWhatsappConnection).toHaveBeenCalledTimes(1);
+    expect(releaseWhatsappConnectionAttempt).toHaveBeenCalledWith(ESTABLISHMENT_ID, ATTEMPT_ID);
+  });
+
+  it("participante existente continua avançando normalmente", async () => {
+    getWhatsappBetaEligibility.mockResolvedValueOnce("already_participant");
+    finalizeWhatsappConnection.mockResolvedValueOnce({ ok: true, betaOutcome: "already_participant" });
+
+    const response = await POST(request({ connectionMode: "coexistence" }) as never);
+
+    expect(response.status).toBe(200);
+    expect(finalizeWhatsappConnection).toHaveBeenCalledTimes(1);
+  });
+
   it("rejeita phoneNumberId fora da WABA e libera a claim sem conectar", async () => {
     const silentError = vi.spyOn(console, "error").mockImplementation(() => {});
     getWabaPhoneNumbers.mockResolvedValueOnce(["outro-numero"]);

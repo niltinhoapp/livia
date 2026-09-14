@@ -77,6 +77,39 @@ export async function upsertEstablishmentConfig(
 // Centralizado aqui — se precisar ajustar, é o único lugar.
 export const WHATSAPP_CONNECT_LEASE_TTL_MS = 8 * 60 * 1000;
 
+export const WHATSAPP_BETA_LIMIT = 10;
+const WHATSAPP_BETA_COHORT_ID = "whatsapp-validation-v1";
+
+interface WhatsappBetaCohort {
+  limit: number;
+  claimed: number;
+  initializedAt: number;
+  updatedAt: number;
+}
+
+function whatsappBetaCohortRef() {
+  return db.collection("_system").doc(WHATSAPP_BETA_COHORT_ID);
+}
+
+export type WhatsappBetaEligibility = "available" | "already_participant" | "cohort_full";
+
+// Pré-checagem para evitar iniciar OAuth/Meta quando a rodada já está cheia.
+// É apenas uma otimização: a decisão autoritativa acontece novamente, de
+// forma transacional, junto da finalização da conexão.
+export async function getWhatsappBetaEligibility(id: string): Promise<WhatsappBetaEligibility> {
+  const [tenantSnap, cohortSnap] = await Promise.all([
+    establishmentRef(id).get(),
+    whatsappBetaCohortRef().get(),
+  ]);
+  const tenant = tenantSnap.exists ? (tenantSnap.data() as Establishment) : null;
+  if (tenant?.whatsappBeta?.participant) return "already_participant";
+  if (!cohortSnap.exists) return "available";
+  const cohort = cohortSnap.data() as WhatsappBetaCohort;
+  return Number.isFinite(cohort.claimed) && cohort.claimed >= WHATSAPP_BETA_LIMIT
+    ? "cohort_full"
+    : "available";
+}
+
 // Quantos documentos inspecionar ao procurar estabelecimentos que
 // compartilham um phone_number_id ou uma WABA. Um mesmo número pode aparecer
 // em mais de um documento — tipicamente porque tentativas de conexão
@@ -329,17 +362,72 @@ export async function finalizeWhatsappConnection(
     connectionMode: WhatsappConnectionMode;
     registeredAt?: number;
   },
-): Promise<{ ok: boolean }> {
+): Promise<
+  | { ok: true; betaOutcome: "claimed" | "already_participant" }
+  | { ok: false; reason: "stale_attempt" | "cohort_full" }
+> {
   const ref = establishmentRef(id);
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+    const tenant = snap.exists ? (snap.data() as Establishment) : undefined;
+    const existing = tenant?.whatsapp;
 
     if (!existing || existing.status !== "connecting" || existing.attemptId !== attemptId) {
-      return { ok: false };
+      return { ok: false, reason: "stale_attempt" as const };
     }
 
     const now = Date.now();
+    const cohortRef = whatsappBetaCohortRef();
+    const cohortSnap = await tx.get(cohortRef);
+    const alreadyParticipant = tenant?.whatsappBeta?.participant === true;
+    let claimed = 0;
+    let initializedAt = now;
+    let legacyParticipants: Array<{ id: string; joinedAt: number }> = [];
+
+    if (cohortSnap.exists) {
+      const cohort = cohortSnap.data() as WhatsappBetaCohort;
+      claimed = Number.isFinite(cohort.claimed) ? Math.max(0, cohort.claimed) : 0;
+      initializedAt = cohort.initializedAt || now;
+    } else {
+      // Bootstrap compatível: incorpora quem já está conectado quando esta
+      // versão entra em operação. A leitura integral ocorre somente ao criar
+      // o singleton; depois todas as aquisições disputam apenas esse doc.
+      const establishments = await tx.get(db.collection("establishments"));
+      legacyParticipants = establishments.docs
+        .filter((doc) => {
+          const data = doc.data() as Establishment;
+          return data.whatsappBeta?.participant === true || data.whatsapp?.status === "connected";
+        })
+        .map((doc) => {
+          const data = doc.data() as Establishment;
+          return { id: doc.id, joinedAt: data.whatsappBeta?.joinedAt ?? data.whatsapp?.connectedAt ?? now };
+        });
+      claimed = legacyParticipants.length;
+    }
+
+    if (!alreadyParticipant && claimed >= WHATSAPP_BETA_LIMIT) {
+      if (!cohortSnap.exists) {
+        for (const participant of legacyParticipants) {
+          tx.update(establishmentRef(participant.id), {
+            whatsappBeta: { participant: true, joinedAt: participant.joinedAt },
+          });
+        }
+        tx.set(cohortRef, { limit: WHATSAPP_BETA_LIMIT, claimed, initializedAt, updatedAt: now });
+      }
+      return { ok: false, reason: "cohort_full" as const };
+    }
+
+    const betaOutcome = alreadyParticipant ? "already_participant" as const : "claimed" as const;
+    if (!alreadyParticipant) claimed += 1;
+
+    if (!cohortSnap.exists) {
+      for (const participant of legacyParticipants) {
+        tx.update(establishmentRef(participant.id), {
+          whatsappBeta: { participant: true, joinedAt: participant.joinedAt },
+        });
+      }
+    }
+    tx.set(cohortRef, { limit: WHATSAPP_BETA_LIMIT, claimed, initializedAt, updatedAt: now }, { merge: true });
     tx.update(ref, {
       "whatsapp.wabaId": data.wabaId,
       "whatsapp.phoneNumberId": data.phoneNumberId,
@@ -350,9 +438,10 @@ export async function finalizeWhatsappConnection(
       "whatsapp.tokenRefreshedAt": now,
       "whatsapp.attemptId": FieldValue.delete(),
       "whatsapp.leaseExpiresAt": FieldValue.delete(),
+      ...(!alreadyParticipant ? { whatsappBeta: { participant: true, joinedAt: now } } : {}),
       ...(data.registeredAt !== undefined ? { "whatsapp.registeredAt": data.registeredAt } : {}),
     });
-    return { ok: true };
+    return { ok: true, betaOutcome };
   });
 }
 
