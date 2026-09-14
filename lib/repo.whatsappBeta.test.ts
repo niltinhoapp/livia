@@ -18,7 +18,10 @@ const token: EncryptedToken = { ciphertext: "encrypted", iv: "iv", authTag: "tag
 
 function establishment(
   id: string,
-  options: { status?: "connecting" | "connected" | "disconnected"; participant?: boolean } = {},
+  options: {
+    status?: "connecting" | "connected" | "disconnected";
+    access?: "participant" | "grandfathered";
+  } = {},
 ): Establishment {
   const status = options.status ?? "connecting";
   return {
@@ -42,7 +45,7 @@ function establishment(
       ...(status === "connecting" ? { attemptId: `attempt-${id}`, leaseExpiresAt: Date.now() + 60_000 } : {}),
       ...(status === "connected" ? { accessToken: token, connectedAt: 100 } : {}),
     },
-    ...(options.participant ? { whatsappBeta: { participant: true, joinedAt: 50 } } : {}),
+    ...(options.access ? { whatsappBeta: { access: options.access, joinedAt: 50 } } : {}),
   };
 }
 
@@ -54,7 +57,7 @@ function seedCohort(claimed: number): void {
   fakeDb.col("_system").set("whatsapp-validation-v1", {
     limit: WHATSAPP_BETA_LIMIT,
     claimed,
-    initializedAt: 1,
+    activatedAt: 1,
     updatedAt: 1,
   });
 }
@@ -65,6 +68,19 @@ function tenant(id: string): Establishment {
 
 function claimed(): number | undefined {
   return fakeDb.col("_system").get("whatsapp-validation-v1")?.claimed as number | undefined;
+}
+
+function prepareAttempt(id: string): void {
+  const current = tenant(id);
+  fakeDb.col("establishments").set(id, {
+    ...current,
+    whatsapp: {
+      ...current.whatsapp,
+      status: "connecting",
+      attemptId: `attempt-${id}`,
+      leaseExpiresAt: Date.now() + 60_000,
+    },
+  } as unknown as Record<string, unknown>);
 }
 
 function finalize(id: string) {
@@ -86,11 +102,11 @@ describe("beta fechado de WhatsApp", () => {
     seedTenant("tenant-a");
 
     expect(await getWhatsappBetaEligibility("tenant-a")).toBe("available");
-    expect(claimed()).toBeUndefined();
+    expect(claimed()).toBe(0);
 
     await expect(finalize("tenant-a")).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
     expect(claimed()).toBe(1);
-    expect(tenant("tenant-a").whatsappBeta?.participant).toBe(true);
+    expect(tenant("tenant-a").whatsappBeta?.access).toBe("participant");
     expect(tenant("tenant-a").whatsapp?.status).toBe("connected");
   });
 
@@ -110,7 +126,7 @@ describe("beta fechado de WhatsApp", () => {
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect(results.filter((result) => !result.ok && result.reason === "stale_attempt")).toHaveLength(1);
     expect(claimed()).toBe(1);
-    expect(tenant("tenant-a").whatsappBeta?.participant).toBe(true);
+    expect(tenant("tenant-a").whatsappBeta?.access).toBe("participant");
   });
 
   it("9 participantes: a décima empresa é aceita", async () => {
@@ -119,7 +135,7 @@ describe("beta fechado de WhatsApp", () => {
 
     await expect(finalize("tenant-j")).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
     expect(claimed()).toBe(10);
-    expect(tenant("tenant-j").whatsappBeta?.participant).toBe(true);
+    expect(tenant("tenant-j").whatsappBeta?.access).toBe("participant");
   });
 
   it("10 participantes: a décima primeira empresa é recusada sem ficar conectada", async () => {
@@ -134,7 +150,7 @@ describe("beta fechado de WhatsApp", () => {
 
   it("participante reconecta mesmo quando as 10 vagas estão ocupadas", async () => {
     seedCohort(10);
-    seedTenant("tenant-a", { participant: true });
+    seedTenant("tenant-a", { access: "participant" });
 
     expect(await getWhatsappBetaEligibility("tenant-a")).toBe("already_participant");
     await expect(finalize("tenant-a")).resolves.toMatchObject({ ok: true, betaOutcome: "already_participant" });
@@ -146,18 +162,28 @@ describe("beta fechado de WhatsApp", () => {
     seedTenant("tenant-a", { status: "disconnected" });
 
     expect(await getWhatsappBetaEligibility("tenant-a")).toBe("available");
-    expect(claimed()).toBeUndefined();
+    expect(claimed()).toBe(0);
     expect(tenant("tenant-a").whatsappBeta).toBeUndefined();
   });
 
   it("desconectar não devolve a vaga adquirida", async () => {
     seedCohort(1);
-    seedTenant("tenant-a", { status: "connected", participant: true });
+    seedTenant("tenant-a", { status: "connected", access: "participant" });
 
     await expect(disconnectWhatsapp("tenant-a")).resolves.toEqual({ outcome: "disconnected" });
     expect(claimed()).toBe(1);
-    expect(tenant("tenant-a").whatsappBeta?.participant).toBe(true);
+    expect(tenant("tenant-a").whatsappBeta?.access).toBe("participant");
     expect(tenant("tenant-a").whatsapp?.status).toBe("disconnected");
+  });
+
+  it("desconexão direta preserva acesso de conexão legada ainda não classificada", async () => {
+    seedTenant("legacy", { status: "connected" });
+
+    await disconnectWhatsapp("legacy");
+
+    expect(tenant("legacy").whatsappBeta?.access).toBe("grandfathered");
+    expect(await getWhatsappBetaEligibility("legacy")).toBe("grandfathered");
+    expect(claimed()).toBe(0);
   });
 
   it("concorrência pela décima vaga aceita somente um tenant", async () => {
@@ -170,18 +196,66 @@ describe("beta fechado de WhatsApp", () => {
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect(results.filter((result) => !result.ok && result.reason === "cohort_full")).toHaveLength(1);
     expect(claimed()).toBe(10);
-    expect([tenant("tenant-j"), tenant("tenant-k")].filter((item) => item.whatsappBeta?.participant)).toHaveLength(1);
+    expect(
+      [tenant("tenant-j"), tenant("tenant-k")].filter((item) => item.whatsappBeta?.access === "participant"),
+    ).toHaveLength(1);
   });
 
-  it("bootstrap incorpora conexões existentes antes de aceitar uma nova", async () => {
+  it("tenant pré-existente conectado vira grandfathered e o cohort inicia em zero", async () => {
     seedTenant("legacy", { status: "connected" });
     seedTenant("tenant-a");
 
+    expect(await getWhatsappBetaEligibility("tenant-a")).toBe("available");
+    expect(claimed()).toBe(0);
+    expect(tenant("legacy").whatsappBeta?.access).toBe("grandfathered");
+    expect(tenant("legacy").whatsappBeta?.joinedAt).toBe(100);
+  });
+
+  it("conexão pré-existente não consome vaga quando a primeira empresa nova conecta", async () => {
+    seedTenant("legacy", { status: "connected" });
+    seedTenant("tenant-a");
+
+    await getWhatsappBetaEligibility("tenant-a");
     await expect(finalize("tenant-a")).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
 
-    expect(claimed()).toBe(2);
-    expect(tenant("legacy").whatsappBeta?.participant).toBe(true);
-    expect(tenant("legacy").whatsappBeta?.joinedAt).toBe(100);
-    expect(tenant("tenant-a").whatsappBeta?.participant).toBe(true);
+    expect(claimed()).toBe(1);
+    expect(tenant("legacy").whatsappBeta?.access).toBe("grandfathered");
+    expect(tenant("tenant-a").whatsappBeta?.access).toBe("participant");
+  });
+
+  it("tenant pré-existente reconecta quando as 10 novas vagas estão ocupadas", async () => {
+    seedTenant("legacy", { status: "connected" });
+
+    expect(await getWhatsappBetaEligibility("legacy")).toBe("grandfathered");
+    await disconnectWhatsapp("legacy");
+    seedCohort(10);
+    prepareAttempt("legacy");
+
+    await expect(finalize("legacy")).resolves.toEqual({ ok: true, betaOutcome: "grandfathered" });
+    expect(claimed()).toBe(10);
+    expect(tenant("legacy").whatsapp?.status).toBe("connected");
+  });
+
+  it("mantém disponíveis exatamente 10 vagas para empresas novas", async () => {
+    seedTenant("legacy", { status: "connected" });
+    await getWhatsappBetaEligibility("legacy");
+
+    for (let index = 1; index <= WHATSAPP_BETA_LIMIT; index += 1) {
+      const id = `new-${index}`;
+      seedTenant(id);
+      await expect(finalize(id)).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
+    }
+
+    expect(claimed()).toBe(10);
+    expect(tenant("legacy").whatsappBeta?.access).toBe("grandfathered");
+    expect(
+      [...fakeDb.col("establishments").values()].filter(
+        (item) => (item.whatsappBeta as { access?: string } | undefined)?.access === "participant",
+      ),
+    ).toHaveLength(10);
+
+    seedTenant("new-11");
+    await expect(finalize("new-11")).resolves.toEqual({ ok: false, reason: "cohort_full" });
+    expect(claimed()).toBe(10);
   });
 });

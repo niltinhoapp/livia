@@ -83,7 +83,7 @@ const WHATSAPP_BETA_COHORT_ID = "whatsapp-validation-v1";
 interface WhatsappBetaCohort {
   limit: number;
   claimed: number;
-  initializedAt: number;
+  activatedAt: number;
   updatedAt: number;
 }
 
@@ -91,23 +91,79 @@ function whatsappBetaCohortRef() {
   return db.collection("_system").doc(WHATSAPP_BETA_COHORT_ID);
 }
 
-export type WhatsappBetaEligibility = "available" | "already_participant" | "cohort_full";
+export type WhatsappBetaEligibility =
+  | "available"
+  | "already_participant"
+  | "grandfathered"
+  | "cohort_full";
+
+function betaEligibilityOf(tenant: Establishment | null): Exclude<WhatsappBetaEligibility, "cohort_full"> {
+  if (tenant?.whatsappBeta?.access === "participant") return "already_participant";
+  if (tenant?.whatsappBeta?.access === "grandfathered") return "grandfathered";
+  return "available";
+}
+
+function hadSuccessfulWhatsappConnection(tenant: Establishment): boolean {
+  const whatsapp = tenant.whatsapp;
+  if (whatsapp?.status === "connected") return true;
+  if (whatsapp?.status !== "disconnected") return false;
+  // Uma lease abandonada também pode terminar como "disconnected". Para
+  // não grandfather uma tentativa que nunca conectou, exigimos um campo que
+  // só é gravado no finalize bem-sucedido e preservado pelo disconnect.
+  return whatsapp.connectionMode !== undefined || typeof whatsapp.registeredAt === "number";
+}
 
 // Pré-checagem para evitar iniciar OAuth/Meta quando a rodada já está cheia.
 // É apenas uma otimização: a decisão autoritativa acontece novamente, de
 // forma transacional, junto da finalização da conexão.
 export async function getWhatsappBetaEligibility(id: string): Promise<WhatsappBetaEligibility> {
-  const [tenantSnap, cohortSnap] = await Promise.all([
-    establishmentRef(id).get(),
-    whatsappBetaCohortRef().get(),
-  ]);
-  const tenant = tenantSnap.exists ? (tenantSnap.data() as Establishment) : null;
-  if (tenant?.whatsappBeta?.participant) return "already_participant";
-  if (!cohortSnap.exists) return "available";
-  const cohort = cohortSnap.data() as WhatsappBetaCohort;
-  return Number.isFinite(cohort.claimed) && cohort.claimed >= WHATSAPP_BETA_LIMIT
-    ? "cohort_full"
-    : "available";
+  return db.runTransaction(async (tx) => {
+    const tenantRef = establishmentRef(id);
+    const tenantSnap = await tx.get(tenantRef);
+    const cohortRef = whatsappBetaCohortRef();
+    const cohortSnap = await tx.get(cohortRef);
+    let tenant = tenantSnap.exists ? (tenantSnap.data() as Establishment) : null;
+    let claimed = 0;
+
+    if (cohortSnap.exists) {
+      const cohort = cohortSnap.data() as WhatsappBetaCohort;
+      claimed = Number.isFinite(cohort.claimed) ? Math.max(0, cohort.claimed) : 0;
+      if (tenant && !tenant.whatsappBeta && hadSuccessfulWhatsappConnection(tenant)) {
+        const joinedAt = tenant.whatsapp?.connectedAt ?? tenant.whatsapp?.disconnectedAt ?? Date.now();
+        tx.update(tenantRef, { whatsappBeta: { access: "grandfathered", joinedAt } });
+        tenant = { ...tenant, whatsappBeta: { access: "grandfathered", joinedAt } };
+      }
+    } else {
+      const now = Date.now();
+      const establishments = await tx.get(db.collection("establishments"));
+      const grandfathered = establishments.docs
+        .map((doc) => ({ id: doc.id, data: doc.data() as Establishment }))
+        .filter(({ data }) => !data.whatsappBeta && hadSuccessfulWhatsappConnection(data));
+      claimed = establishments.docs.filter(
+        (doc) => (doc.data() as Establishment).whatsappBeta?.access === "participant",
+      ).length;
+
+      for (const legacy of grandfathered) {
+        const joinedAt = legacy.data.whatsapp?.connectedAt ?? legacy.data.whatsapp?.disconnectedAt ?? now;
+        tx.update(establishmentRef(legacy.id), {
+          whatsappBeta: { access: "grandfathered", joinedAt },
+        });
+        if (legacy.id === id && tenant) {
+          tenant = { ...tenant, whatsappBeta: { access: "grandfathered", joinedAt } };
+        }
+      }
+      tx.set(cohortRef, {
+        limit: WHATSAPP_BETA_LIMIT,
+        claimed,
+        activatedAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const eligibility = betaEligibilityOf(tenant);
+    if (eligibility !== "available") return eligibility;
+    return claimed >= WHATSAPP_BETA_LIMIT ? "cohort_full" : "available";
+  });
 }
 
 // Quantos documentos inspecionar ao procurar estabelecimentos que
@@ -363,7 +419,7 @@ export async function finalizeWhatsappConnection(
     registeredAt?: number;
   },
 ): Promise<
-  | { ok: true; betaOutcome: "claimed" | "already_participant" }
+  | { ok: true; betaOutcome: "claimed" | "already_participant" | "grandfathered" }
   | { ok: false; reason: "stale_attempt" | "cohort_full" }
 > {
   const ref = establishmentRef(id);
@@ -379,55 +435,50 @@ export async function finalizeWhatsappConnection(
     const now = Date.now();
     const cohortRef = whatsappBetaCohortRef();
     const cohortSnap = await tx.get(cohortRef);
-    const alreadyParticipant = tenant?.whatsappBeta?.participant === true;
+    const existingBetaAccess = tenant?.whatsappBeta?.access;
+    const alreadyEligible = existingBetaAccess === "participant" || existingBetaAccess === "grandfathered";
     let claimed = 0;
-    let initializedAt = now;
-    let legacyParticipants: Array<{ id: string; joinedAt: number }> = [];
+    let activatedAt = now;
+    let legacyConnections: Array<{ id: string; joinedAt: number }> = [];
 
     if (cohortSnap.exists) {
       const cohort = cohortSnap.data() as WhatsappBetaCohort;
       claimed = Number.isFinite(cohort.claimed) ? Math.max(0, cohort.claimed) : 0;
-      initializedAt = cohort.initializedAt || now;
+      activatedAt = cohort.activatedAt || now;
     } else {
-      // Bootstrap compatível: incorpora quem já está conectado quando esta
-      // versão entra em operação. A leitura integral ocorre somente ao criar
-      // o singleton; depois todas as aquisições disputam apenas esse doc.
+      // Fallback defensivo para chamadores internos que não fizeram a
+      // pré-checagem da rota. Em produção, getWhatsappBetaEligibility cria
+      // o cohort e classifica legados antes de claimWhatsappConnection.
       const establishments = await tx.get(db.collection("establishments"));
-      legacyParticipants = establishments.docs
-        .filter((doc) => {
-          const data = doc.data() as Establishment;
-          return data.whatsappBeta?.participant === true || data.whatsapp?.status === "connected";
-        })
-        .map((doc) => {
-          const data = doc.data() as Establishment;
-          return { id: doc.id, joinedAt: data.whatsappBeta?.joinedAt ?? data.whatsapp?.connectedAt ?? now };
-        });
-      claimed = legacyParticipants.length;
+      claimed = establishments.docs.filter(
+        (doc) => (doc.data() as Establishment).whatsappBeta?.access === "participant",
+      ).length;
+      legacyConnections = establishments.docs
+        .map((doc) => ({ id: doc.id, data: doc.data() as Establishment }))
+        .filter(({ data }) => !data.whatsappBeta && hadSuccessfulWhatsappConnection(data))
+        .map(({ id: legacyId, data }) => ({
+          id: legacyId,
+          joinedAt: data.whatsapp?.connectedAt ?? data.whatsapp?.disconnectedAt ?? now,
+        }));
     }
 
-    if (!alreadyParticipant && claimed >= WHATSAPP_BETA_LIMIT) {
-      if (!cohortSnap.exists) {
-        for (const participant of legacyParticipants) {
-          tx.update(establishmentRef(participant.id), {
-            whatsappBeta: { participant: true, joinedAt: participant.joinedAt },
-          });
-        }
-        tx.set(cohortRef, { limit: WHATSAPP_BETA_LIMIT, claimed, initializedAt, updatedAt: now });
-      }
+    if (!alreadyEligible && claimed >= WHATSAPP_BETA_LIMIT) {
       return { ok: false, reason: "cohort_full" as const };
     }
 
-    const betaOutcome = alreadyParticipant ? "already_participant" as const : "claimed" as const;
-    if (!alreadyParticipant) claimed += 1;
+    const betaOutcome = existingBetaAccess === "participant"
+      ? "already_participant" as const
+      : existingBetaAccess === "grandfathered"
+        ? "grandfathered" as const
+        : "claimed" as const;
+    if (!alreadyEligible) claimed += 1;
 
-    if (!cohortSnap.exists) {
-      for (const participant of legacyParticipants) {
-        tx.update(establishmentRef(participant.id), {
-          whatsappBeta: { participant: true, joinedAt: participant.joinedAt },
-        });
-      }
+    for (const legacy of legacyConnections) {
+      tx.update(establishmentRef(legacy.id), {
+        whatsappBeta: { access: "grandfathered", joinedAt: legacy.joinedAt },
+      });
     }
-    tx.set(cohortRef, { limit: WHATSAPP_BETA_LIMIT, claimed, initializedAt, updatedAt: now }, { merge: true });
+    tx.set(cohortRef, { limit: WHATSAPP_BETA_LIMIT, claimed, activatedAt, updatedAt: now }, { merge: true });
     tx.update(ref, {
       "whatsapp.wabaId": data.wabaId,
       "whatsapp.phoneNumberId": data.phoneNumberId,
@@ -438,7 +489,7 @@ export async function finalizeWhatsappConnection(
       "whatsapp.tokenRefreshedAt": now,
       "whatsapp.attemptId": FieldValue.delete(),
       "whatsapp.leaseExpiresAt": FieldValue.delete(),
-      ...(!alreadyParticipant ? { whatsappBeta: { participant: true, joinedAt: now } } : {}),
+      ...(!alreadyEligible ? { whatsappBeta: { access: "participant", joinedAt: now } } : {}),
       ...(data.registeredAt !== undefined ? { "whatsapp.registeredAt": data.registeredAt } : {}),
     });
     return { ok: true, betaOutcome };
@@ -528,7 +579,8 @@ export async function disconnectWhatsapp(id: string): Promise<DisconnectWhatsapp
   const ref = establishmentRef(id);
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const existing = snap.exists ? (snap.data() as Establishment).whatsapp : undefined;
+    const tenant = snap.exists ? (snap.data() as Establishment) : undefined;
+    const existing = tenant?.whatsapp;
 
     if (!existing || existing.status === "disconnected") {
       return { outcome: "already_disconnected" as const };
@@ -550,6 +602,9 @@ export async function disconnectWhatsapp(id: string): Promise<DisconnectWhatsapp
       "whatsapp.tokenRefreshedAt": FieldValue.delete(),
       "whatsapp.attemptId": FieldValue.delete(),
       "whatsapp.leaseExpiresAt": FieldValue.delete(),
+      ...(existing.status === "connected" && !tenant?.whatsappBeta
+        ? { whatsappBeta: { access: "grandfathered", joinedAt: existing.connectedAt ?? Date.now() } }
+        : {}),
     });
     return { outcome: "disconnected" as const };
   });

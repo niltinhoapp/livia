@@ -189,7 +189,9 @@ export async function POST(req: NextRequest) {
   console.info(
     finalized.betaOutcome === "claimed"
       ? "[whatsapp beta] vaga adquirida."
-      : "[whatsapp beta] empresa participante reconectada.",
+      : finalized.betaOutcome === "grandfathered"
+        ? "[whatsapp beta] empresa pré-existente reconectada."
+        : "[whatsapp beta] empresa participante reconectada.",
   );
 
   return NextResponse.json({ connected: true, phoneNumberId, wabaId, connectionMode });
