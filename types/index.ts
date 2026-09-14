@@ -416,6 +416,38 @@ export interface Opportunity {
 
 export type MessageRole = "customer" | "bot" | "agent";
 
+// Contrato V2 de mensagens. Todos os campos novos são opcionais para que
+// documentos já persistidos (que só têm `text`) continuem válidos como texto.
+export type MessageKind =
+  | "text"
+  | "audio"
+  | "image"
+  | "document"
+  | "video"
+  | "sticker"
+  | "location"
+  | "interactive"
+  | "unsupported";
+
+export interface MessageMedia {
+  metaMediaId?: string;
+  mimeType?: string;
+  sha256?: string;
+  fileSizeBytes?: number;
+  voice?: boolean;
+  storageRef?: string;
+}
+
+export interface MessageTranscription {
+  status: "pending" | "completed" | "failed" | "skipped";
+  text?: string;
+  language?: string;
+  provider?: string;
+  model?: string;
+  errorCode?: string;
+  updatedAt?: number;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -423,4 +455,9 @@ export interface Message {
   at: number;
   // ID da mensagem na Meta (pra dedupe de webhook e status de entrega).
   waMessageId?: string;
+  // Ausente em documentos V1: trate como `text` para compatibilidade.
+  kind?: MessageKind;
+  phoneNumberId?: string;
+  media?: MessageMedia;
+  transcription?: MessageTranscription;
 }

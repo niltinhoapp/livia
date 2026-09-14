@@ -843,7 +843,8 @@ export async function appendMessage(
   role: MessageRole,
   text: string,
   waMessageId?: string,
-): Promise<void> {
+  metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "transcription">,
+): Promise<{ id: string; at: number }> {
   const convRef = sub(establishmentId, "conversations").doc(conversationId);
   const msgRef = convRef.collection("messages").doc();
   const msg: Message = {
@@ -852,9 +853,14 @@ export async function appendMessage(
     text,
     at: Date.now(),
     ...(waMessageId ? { waMessageId } : {}),
+    ...(metadata?.kind ? { kind: metadata.kind } : {}),
+    ...(metadata?.phoneNumberId ? { phoneNumberId: metadata.phoneNumberId } : {}),
+    ...(metadata?.media ? { media: metadata.media } : {}),
+    ...(metadata?.transcription ? { transcription: metadata.transcription } : {}),
   };
   await msgRef.set(msg);
   await convRef.update({ lastMessageAt: msg.at });
+  return { id: msg.id, at: msg.at };
 }
 
 export async function setConversationStatus(

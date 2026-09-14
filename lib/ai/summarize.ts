@@ -7,6 +7,7 @@
 // usar um mais caro aqui).
 import OpenAI from "openai";
 import type { Message } from "@/types";
+import { contentForAI } from "@/lib/ai/messageContent";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -33,7 +34,7 @@ export async function summarizeConversation(
   if (recent.length === 0) return "";
 
   const transcript = recent
-    .map((m) => `${m.role === "customer" ? "Cliente" : m.role === "agent" ? "Atendente" : "Livia"}: ${m.text}`)
+    .map((m) => `${m.role === "customer" ? "Cliente" : m.role === "agent" ? "Atendente" : "Livia"}: ${contentForAI(m)}`)
     .join("\n");
 
   const instruction =

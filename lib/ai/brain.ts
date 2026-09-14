@@ -12,6 +12,7 @@ import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
+import { contentForAI } from "@/lib/ai/messageContent";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -893,7 +894,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
-      content: m.text,
+      content: contentForAI(m),
     })),
   ];
 
