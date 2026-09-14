@@ -7,6 +7,7 @@ import type { Establishment, KnowledgeBase, Message, CustomerProfile, Conversati
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
+import { parseServiceSelection } from "@/lib/ai/serviceSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
@@ -658,8 +659,14 @@ async function resolveTimeSelection(
   if (!escolhido || !date) return null;
 
   const startAt = localToEpoch(date, escolhido.hour * 60 + escolhido.minute, config.utcOffsetMinutes);
+  // O serviço DITO pelo cliente agora vence o que estava preso na tarefa —
+  // mesma precedência que `dataDita` tem sobre a data coletada. Sem isto, um
+  // serviceName de um fluxo anterior ("Tratamento de Canal") era reusado
+  // mesmo quando o cliente já havia nomeado outro serviço ("avaliação"),
+  // criando o agendamento do serviço errado (OT-02G).
+  const servicoDito = parseServiceSelection(ultima.text, input.kb?.services);
   const serviceName =
-    typeof task.collectedData.serviceName === "string" ? task.collectedData.serviceName : undefined;
+    servicoDito ?? (typeof task.collectedData.serviceName === "string" ? task.collectedData.serviceName : undefined);
 
   // REMARCAÇÃO usa a ferramenta de remarcação. Antes disto, este caminho
   // chamava create_appointment para os dois tipos de tarefa: numa remarcação
@@ -797,6 +804,12 @@ export interface BrainResult {
   // "as 16" seco, sem repetir o dia — usar a data certa. Antes, a data da
   // tarefa vinha só do argumento que o MODELO passou a alguma ferramenta.
   statedDate: string | null;
+  // Serviço que o CLIENTE citou nesta mensagem (nome canônico da base), ou
+  // null. Mesmo papel do statedDate, para o serviço: impede que um
+  // `serviceName` preso de um fluxo anterior seja reutilizado quando o cliente
+  // já nomeou outro serviço (OT-02G). Resolvido por código
+  // (lib/ai/serviceSelection.ts).
+  statedService: string | null;
 }
 
 // Uma alteração de agenda é um fato consumado do turno. O modelo pode seguir
@@ -887,6 +900,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
   const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
+  // Serviço citado pelo cliente nesta mensagem (nome canônico da base). Mesmo
+  // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
+  const statedService = ultimaDoCliente ? parseServiceSelection(ultimaDoCliente.text, kb?.services) : null;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
 
   // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
@@ -1098,6 +1114,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         toolCalls,
         pendingCancelAppointmentId,
         statedDate,
+        statedService,
       };
     }
 
@@ -1283,7 +1300,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
+    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
   }
 
   // Estouro do loop de ferramentas sem resposta final. Se a consulta de
@@ -1292,7 +1309,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (appointmentLookup?.ok) {
     const composed = composeAppointmentReply(appointmentLookup.data);
     if (composed) {
-      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
+      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
     }
   }
 
@@ -1308,7 +1325,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // A ordem abaixo vai do fato mais forte ao mais fraco. Os dois primeiros
   // são os mais graves: a operação ACONTECEU, e sair daqui sem contar isso
   // repete o pior bug da noite — o cliente com horário reservado sem saber.
-  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
+  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
 
   if (agendaMutation) {
     return {
