@@ -18,10 +18,27 @@ function normalize(text: string): string {
     .replace(/[̀-ͯ]/g, "");
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// O nome do serviço aparece no texto como uma unidade lexical inteira?
+// Fronteira de palavra sobre o texto JÁ normalizado (minúsculo, sem acento):
+// o nome não pode estar colado a outra letra/dígito antes ou depois. Assim
+// "Ana" não casa dentro de "banana", "Corte" não casa em "recorte" e "Gel"
+// não casa em "gelado" — mas o nome completo, cercado por espaço/pontuação/
+// início/fim, casa normalmente. Nomes com várias palavras ("Tratamento de
+// Canal") são tratados como a mesma unidade.
+function mentionsService(normalizedText: string, normalizedName: string): boolean {
+  if (!normalizedName) return false;
+  const re = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(normalizedName)}(?:[^a-z0-9]|$)`);
+  return re.test(normalizedText);
+}
+
 // Devolve o NOME CANÔNICO (como cadastrado na base) do único serviço citado
 // no texto, ou null. Conservador de propósito:
-//   - só considera o nome COMPLETO do serviço como substring da mensagem
-//     (normalizado, sem acento) — não faz match por palavra solta;
+//   - o nome COMPLETO do serviço precisa aparecer como unidade lexical
+//     (fronteira de palavra) — nunca como pedaço de outra palavra;
 //   - se mais de um serviço distinto casar, devolve null (não escolhe);
 //   - quando um nome é substring de outro (ex.: "Avaliação" e "Avaliação de
 //     Canal") e ambos aparecem, isso conta como ambíguo -> null.
@@ -38,7 +55,7 @@ export function parseServiceSelection(
   const hits = services
     .map((s) => s.name)
     .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
-    .filter((name) => t.includes(normalize(name)));
+    .filter((name) => mentionsService(t, normalize(name)));
 
   // Nomes canônicos distintos citados (case/acento-insensível).
   const distinct = [...new Set(hits.map((name) => normalize(name)))];
