@@ -79,9 +79,8 @@ function hasAdditionalContent(normalized: string): boolean {
   return false;
 }
 
-function hasPendingDecision(task: ConversationTask | null): boolean {
-  if (!task) return false;
-  return task.state === "confirm" || task.state === "offer_options";
+function hasActiveTask(task: ConversationTask | null): boolean {
+  return task !== null;
 }
 
 function lastBotAskedQuestion(history: Message[]): boolean {
@@ -105,7 +104,7 @@ export function isSilentAcknowledgement(
 
   if (!isPassiveText(normalized)) return false;
 
-  if (hasPendingDecision(task)) return false;
+  if (hasActiveTask(task)) return false;
 
   if (lastBotAskedQuestion(history)) return false;
 

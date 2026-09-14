@@ -143,8 +143,55 @@ describe("C — resposta a ação pendente", () => {
     expect(isSilentAcknowledgement("10h", general, offerTask, offerHistory)).toBe(false);
   });
 
-  it("'ok' com collect_date task (não confirm/offer) + statement bot → silêncio", () => {
-    expect(isSilentAcknowledgement("ok", general, collectTask, resolvedHistory)).toBe(true);
+  it("'ok' com collect_date task + statement bot → NÃO silenciar (task ativa)", () => {
+    expect(isSilentAcknowledgement("ok", general, collectTask, resolvedHistory)).toBe(false);
+  });
+
+  it("'ok' com collect_service task + statement bot → NÃO silenciar (task ativa)", () => {
+    const collectServiceTask: ConversationTask = {
+      type: "schedule_appointment",
+      state: "collect_service",
+      collectedData: {},
+      missingData: ["serviceName"],
+      updatedAt: 0,
+    };
+    expect(isSilentAcknowledgement("ok", general, collectServiceTask, resolvedHistory)).toBe(false);
+  });
+
+  it("'beleza' com reschedule task em collect_date → NÃO silenciar", () => {
+    const rescheduleCollect: ConversationTask = {
+      type: "reschedule_appointment",
+      state: "collect_date",
+      collectedData: { serviceName: "Avaliação" },
+      missingData: ["date"],
+      updatedAt: 0,
+    };
+    expect(isSilentAcknowledgement("beleza", general, rescheduleCollect, resolvedHistory)).toBe(false);
+  });
+
+  it("'👍' com cancel task em confirm + statement bot → NÃO silenciar", () => {
+    expect(isSilentAcknowledgement("👍", general, confirmTask, resolvedHistory)).toBe(false);
+  });
+
+  it("QUALQUER task ativa impede silêncio, mesmo com statement bot", () => {
+    const states: ConversationTask["state"][] = [
+      "collect_service",
+      "collect_date",
+      "check_availability",
+      "offer_options",
+      "confirm",
+      "create_appointment",
+    ];
+    for (const state of states) {
+      const task: ConversationTask = {
+        type: "schedule_appointment",
+        state,
+        collectedData: {},
+        missingData: [],
+        updatedAt: 0,
+      };
+      expect(isSilentAcknowledgement("ok", general, task, resolvedHistory)).toBe(false);
+    }
   });
 });
 
