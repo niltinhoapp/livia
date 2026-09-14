@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import {
   getEstablishment,
+  getWhatsappBetaEligibility,
   claimWhatsappConnection,
   finalizeWhatsappConnection,
   releaseWhatsappConnectionAttempt,
@@ -52,10 +53,13 @@ export async function GET(req: NextRequest) {
   const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "não autenticado" }, { status: 401 });
 
-  const est = await getEstablishment(id);
+  const [est, eligibility] = await Promise.all([
+    getEstablishment(id),
+    getWhatsappBetaEligibility(id),
+  ]);
   const wa = est?.whatsapp;
   if (!wa || wa.status !== "connected") {
-    return NextResponse.json({ connected: false });
+    return NextResponse.json({ connected: false, betaFull: eligibility === "cohort_full" });
   }
 
   return NextResponse.json({
@@ -92,6 +96,17 @@ export async function POST(req: NextRequest) {
     !ID_PATTERN.test(phoneNumberId)
   ) {
     return NextResponse.json({ error: "INVALID_PAYLOAD" }, { status: 400 });
+  }
+
+  try {
+    const eligibility = await getWhatsappBetaEligibility(id);
+    if (eligibility === "cohort_full") {
+      console.info("[whatsapp beta] vagas preenchidas; nova conexão recusada.");
+      return NextResponse.json({ error: "BETA_COHORT_FULL" }, { status: 409 });
+    }
+  } catch (err) {
+    logFailure("beta eligibility", id, err);
+    return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
   }
 
   let claim: Awaited<ReturnType<typeof claimWhatsappConnection>>;
@@ -148,7 +163,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  let finalized: { ok: boolean };
+  let finalized: Awaited<ReturnType<typeof finalizeWhatsappConnection>>;
   try {
     finalized = await finalizeWhatsappConnection(id, attemptId, {
       wabaId,
@@ -162,9 +177,22 @@ export async function POST(req: NextRequest) {
   }
 
   if (!finalized.ok) {
+    if (finalized.reason === "cohort_full") {
+      console.info("[whatsapp beta] última vaga adquirida por outra empresa durante a conexão.");
+      await releaseWhatsappConnectionAttempt(id, attemptId).catch(() => {});
+      return NextResponse.json({ error: "BETA_COHORT_FULL" }, { status: 409 });
+    }
     logFailure("finalize (lease perdida para outra tentativa)", id);
     return NextResponse.json({ error: "STALE_ATTEMPT" }, { status: 409 });
   }
+
+  console.info(
+    finalized.betaOutcome === "claimed"
+      ? "[whatsapp beta] vaga adquirida."
+      : finalized.betaOutcome === "grandfathered"
+        ? "[whatsapp beta] empresa pré-existente reconectada."
+        : "[whatsapp beta] empresa participante reconectada.",
+  );
 
   return NextResponse.json({ connected: true, phoneNumberId, wabaId, connectionMode });
 }

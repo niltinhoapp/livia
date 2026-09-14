@@ -22,8 +22,17 @@ export interface Establishment {
   // Conta de WhatsApp própria (conectada via Embedded Signup — mesmo fluxo
   // do Nuvem Rush). A Meta cobra as conversas direto do estabelecimento.
   whatsapp?: EstablishmentWhatsapp;
+  // Acesso permanente à rodada fechada do WhatsApp: participante novo ou
+  // conexão anterior preservada (grandfathered). Não acompanha o status da
+  // conexão: desconectar não devolve nem revoga o acesso.
+  whatsappBeta?: WhatsappBetaParticipation;
   // Configuração do bot (persona + regras).
   bot: BotConfig;
+}
+
+export interface WhatsappBetaParticipation {
+  access: "participant" | "grandfathered";
+  joinedAt: number;
 }
 
 // "connecting" existe para uma garantia específica: o PIN de registro é

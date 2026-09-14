@@ -24,6 +24,7 @@ const ES_CONFIG_ID = process.env.NEXT_PUBLIC_WHATSAPP_ES_CONFIG_ID ?? "";
 interface ConnectStatus {
   connected: boolean;
   connectedAt?: number;
+  betaFull?: boolean;
 }
 
 export default function WhatsAppPage() {
@@ -38,8 +39,8 @@ export default function WhatsAppPage() {
     fetch("/api/whatsapp/connect")
       .then((r) => r.json())
       .then((j) => {
-        setStatus({ connected: Boolean(j.connected), connectedAt: j.connectedAt });
-        setPhase(j.connected ? "connected" : "idle");
+        setStatus({ connected: Boolean(j.connected), connectedAt: j.connectedAt, betaFull: Boolean(j.betaFull) });
+        setPhase(j.connected ? "connected" : j.betaFull ? "beta-full" : "idle");
       })
       .catch(() => setError(true));
   }, []);
@@ -157,6 +158,7 @@ function DevPhaseSwitcher({ phase, onChange }: { phase: WhatsAppPhase; onChange:
     "error-recoverable",
     "error-attention",
     "error-number-in-use",
+    "beta-full",
   ];
   return (
     <div className="mt-6 rounded-control border border-dashed border-line p-3">

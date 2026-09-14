@@ -5,6 +5,7 @@
 import type { WhatsAppPhase } from "./WhatsAppConnectionCard";
 
 export function mapErrorToPhase(code: string): WhatsAppPhase {
+  if (code === "BETA_COHORT_FULL") return "beta-full";
   if (code === "CONNECTION_IN_PROGRESS" || code === "ALREADY_CONNECTED") return "in-progress";
   // O número pertence a outra conta da Livia — nada a "tentar de novo" aqui,
   // a saída é desconectar lá ou escolher outro número.

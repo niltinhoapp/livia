@@ -4,7 +4,7 @@
 // isso é responsabilidade de quem usa este componente (hoje,
 // app/painel/whatsapp/page.tsx + components/whatsapp/useEmbeddedSignup.ts).
 // `onConnectClick` é só o gatilho; a fase (`phase`) é controlada de fora.
-import { CheckCircle2, Loader2, MessageCircle, AlertTriangle, Clock, ShieldAlert } from "lucide-react";
+import { CheckCircle2, Loader2, MessageCircle, AlertTriangle, Clock, ShieldAlert, UsersRound } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
@@ -18,7 +18,8 @@ export type WhatsAppPhase =
   | "in-progress"
   | "error-recoverable"
   | "error-attention"
-  | "error-number-in-use";
+  | "error-number-in-use"
+  | "beta-full";
 
 interface WhatsAppConnectionCardProps {
   phase: WhatsAppPhase;
@@ -62,6 +63,22 @@ export function WhatsAppConnectionCard({
             <p className="font-semibold text-ink-900">Esse número já está em uso</p>
             <p className="mt-1 text-sm text-ink-500">O número escolhido já está conectado em outra conta da Livia. Desconecte-o por lá antes de conectá-lo aqui, ou escolha outro número.</p>
             <Button size="sm" variant="secondary" className="mt-3" onClick={onRetry}>Tentar novamente</Button>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  if (phase === "beta-full") {
+    return (
+      <Card className="border-primary/25 bg-primary-light/40">
+        <div className="flex items-start gap-4">
+          <div className="rounded-full bg-primary-light p-2.5 text-primary"><UsersRound className="h-6 w-6" /></div>
+          <div className="flex-1">
+            <p className="font-semibold text-ink-900">Vagas de validação preenchidas</p>
+            <p className="mt-1 text-sm text-ink-500">
+              As 10 vagas desta etapa de testes da Lívia já foram preenchidas. Novas conexões com WhatsApp serão liberadas em uma próxima etapa.
+            </p>
           </div>
         </div>
       </Card>
