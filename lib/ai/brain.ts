@@ -799,6 +799,56 @@ export interface BrainResult {
   statedDate: string | null;
 }
 
+// Uma alteração de agenda é um fato consumado do turno. O modelo pode seguir
+// consultando dados, mas não pode substituir esse fato por uma segunda escrita
+// antes de a próxima mensagem do cliente chegar.
+type AgendaMutation =
+  | { kind: "created"; when?: string; serviceName?: string }
+  | { kind: "rescheduled"; when?: string; serviceName?: string }
+  | { kind: "cancelled"; label?: string };
+
+const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
+  "create_appointment",
+  "reschedule_appointment",
+  "cancel_appointment",
+]);
+
+function agendaMutationReply(mutation: AgendaMutation): string {
+  if (mutation.kind === "created") {
+    if (mutation.when && mutation.serviceName) {
+      return `Prontinho! Seu horário de ${mutation.serviceName} está reservado para ${mutation.when}.`;
+    }
+    if (mutation.when) return `Prontinho! Seu agendamento está reservado para ${mutation.when}.`;
+    return "Prontinho! Seu agendamento foi confirmado.";
+  }
+  if (mutation.kind === "rescheduled") {
+    if (mutation.when) {
+      const service = mutation.serviceName ? `de ${mutation.serviceName} ` : "";
+      return `Prontinho! Seu horário ${service}foi remarcado para ${mutation.when}.`;
+    }
+    return "Prontinho! Seu agendamento foi remarcado.";
+  }
+  if (mutation.label) return `Pronto, cancelei ${mutation.label}. Se quiser remarcar, é só me chamar.`;
+  return "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
+}
+
+function replyReflectsAgendaMutation(reply: string, mutation: AgendaMutation): boolean {
+  const normalized = reply.toLocaleLowerCase("pt-BR");
+  if (mutation.kind === "created") {
+    if (!mutation.when) return false;
+    return /reservad|agendad|marcad|confirmad/.test(normalized)
+      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
+  }
+  if (mutation.kind === "rescheduled") {
+    if (!mutation.when) return false;
+    return /remarcad|reagendad/.test(normalized)
+      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
+  }
+  if (!mutation.label) return false;
+  return /cancel/.test(normalized)
+    && normalized.includes(mutation.label.toLocaleLowerCase("pt-BR"));
+}
+
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
   const booking = est.bot.bookingEnabled;
@@ -836,6 +886,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Última consulta de disponibilidade bem-sucedida do turno.
   let ultimaDisponibilidade: { date?: string; slots: { time: string }[] } | null = null;
   let cancelled = false;
+  // Compartilhado pela resolução determinística pré-loop e pelo loop do
+  // modelo. Só uma escrita BEM-SUCEDIDA consome o turno; falhas continuam
+  // permitindo que o modelo faça uma tentativa válida.
+  let agendaMutation: AgendaMutation | null = null;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -870,15 +924,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (bookingOutcome?.kind === "created") {
     booked = true;
     bookedInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
+    agendaMutation = { kind: "created", when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
   }
   if (bookingOutcome?.kind === "rescheduled") {
     rescheduled = true;
     rescheduledInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
+    agendaMutation = { kind: "rescheduled", when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
   }
 
   // Cancelamento: alvo resolvido e confirmação exigida pelo backend.
   const cancelOutcome = booking ? await resolveCancellation(input, toolCtx, toolCalls) : null;
-  if (cancelOutcome?.kind === "cancelled") cancelled = true;
+  if (cancelOutcome?.kind === "cancelled") {
+    cancelled = true;
+    agendaMutation = { kind: "cancelled", label: cancelOutcome.label };
+  }
   // Alvo que fica aguardando confirmação até a próxima mensagem — o webhook
   // guarda isto na tarefa da conversa (collectedData.appointmentId).
   const pendingCancelAppointmentId =
@@ -920,6 +979,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         } catch {
           // args malformado — segue com {} e deixa a ferramenta validar.
         }
+
+        // A primeira escrita bem-sucedida já determinou o fato operacional
+        // deste turno. Não executa a segunda escrita do modelo, mas devolve
+        // um resultado interno para que o protocolo de tool calls permaneça
+        // válido e consultas posteriores continuem possíveis.
+        if (AGENDA_MUTATION_TOOLS.has(name) && agendaMutation) {
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({ ok: true, data: { ignored: true, reason: "agenda mutation already completed this turn" } }),
+          });
+          continue;
+        }
+
         toolCalls.push({ name, args });
 
         const result = await runTool(name, args, toolCtx);
@@ -927,14 +1000,27 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           if (name === "create_appointment") {
             booked = true;
             const data = result.data as { when?: string; serviceName?: string } | undefined;
-            if (data?.when && data.serviceName) bookedInfo = { when: data.when, serviceName: data.serviceName };
+            agendaMutation = { kind: "created", when: data?.when, serviceName: data?.serviceName };
+            if (data?.when && data.serviceName) {
+              bookedInfo = { when: data.when, serviceName: data.serviceName };
+            }
           }
           if (name === "reschedule_appointment") {
             rescheduled = true;
             const data = result.data as { when?: string; serviceName?: string } | undefined;
-            if (data?.when) rescheduledInfo = { when: data.when, serviceName: data.serviceName ?? "" };
+            agendaMutation = { kind: "rescheduled", when: data?.when, serviceName: data?.serviceName };
+            if (data?.when) {
+              rescheduledInfo = { when: data.when, serviceName: data.serviceName ?? "" };
+            }
           }
-          if (name === "cancel_appointment") cancelled = true;
+          if (name === "cancel_appointment") {
+            cancelled = true;
+            const data = result.data as { serviceName?: string; when?: string } | undefined;
+            agendaMutation = {
+              kind: "cancelled",
+              label: data?.serviceName && data.when ? `${data.serviceName} de ${data.when}` : undefined,
+            };
+          }
           if (name === "request_human_handoff") handoffRequested = true;
           // Guardado para o caso de o loop estourar sem resposta final: os
           // horários livres já foram consultados de verdade e são uma
@@ -1010,6 +1096,14 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           handoff = false;
         }
       }
+    }
+
+    // A operação bem-sucedida é a fonte de verdade. Mesmo que o modelo tente
+    // mencionar outro horário depois de uma tool call bloqueada, o cliente só
+    // recebe a confirmação do resultado efetivamente persistido.
+    if (agendaMutation && !replyReflectsAgendaMutation(reply, agendaMutation)) {
+      reply = agendaMutationReply(agendaMutation);
+      handoff = false;
     }
 
     // ---- Trava de incapacidade inventada ----
@@ -1172,6 +1266,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // são os mais graves: a operação ACONTECEU, e sair daqui sem contar isso
   // repete o pior bug da noite — o cliente com horário reservado sem saber.
   const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
+
+  if (agendaMutation) {
+    return { ...base, reply: agendaMutationReply(agendaMutation), handoff: false };
+  }
 
   if (booked && bookedInfo) {
     return {
