@@ -15,6 +15,9 @@ import { evaluateTrust } from "@/lib/ai/trustPolicy";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
+// gpt-5.4-mini rejeita max_tokens (400 unsupported_parameter) e exige
+// max_completion_tokens. Demais modelos mantêm exatamente o parâmetro atual.
+const USES_MAX_COMPLETION_TOKENS = MODEL === "gpt-5.4-mini";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -903,7 +906,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       model: MODEL,
       messages,
       temperature: 0.4,
-      max_tokens: 500,
+      ...(USES_MAX_COMPLETION_TOKENS ? { max_completion_tokens: 500 } : { max_tokens: 500 }),
       ...(tools.length > 0 ? { tools } : {}),
     });
     const msg = completion.choices[0]?.message;

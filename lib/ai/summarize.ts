@@ -10,6 +10,8 @@ import type { Message } from "@/types";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
+// Mesmo motivo de lib/ai/brain.ts: gpt-5.4-mini exige max_completion_tokens.
+const USES_MAX_COMPLETION_TOKENS = MODEL === "gpt-5.4-mini";
 
 // Quantas mensagens recentes entram no resumo. Não é "o histórico inteiro"
 // de propósito — o resumo é sobre o desfecho da interação atual, não um
@@ -59,7 +61,7 @@ export async function summarizeConversation(
       model: MODEL,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.2,
-      max_tokens: 200,
+      ...(USES_MAX_COMPLETION_TOKENS ? { max_completion_tokens: 200 } : { max_tokens: 200 }),
     });
     return completion.choices[0]?.message?.content?.trim() ?? "";
   } catch (err) {
