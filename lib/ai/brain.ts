@@ -815,57 +815,61 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
   "confirm_appointment",
 ]);
 
-function agendaMutationReply(mutation: AgendaMutation): string {
+function agendaMutationTool(mutation: AgendaMutation): ToolName {
+  if (mutation.kind === "created") return "create_appointment";
+  if (mutation.kind === "rescheduled") return "reschedule_appointment";
+  if (mutation.kind === "cancelled") return "cancel_appointment";
+  return "confirm_appointment";
+}
+
+function blockedAgendaMutationContinuation(completed: AgendaMutation, blocked: ToolName | null): string {
+  if (!blocked || blocked === agendaMutationTool(completed)) return "";
+  if (blocked === "create_appointment") {
+    return " O outro agendamento não foi criado; envie esse pedido em uma nova mensagem para continuarmos.";
+  }
+  if (blocked === "reschedule_appointment") {
+    return " A outra remarcação não foi feita; envie esse pedido em uma nova mensagem para continuarmos.";
+  }
+  if (blocked === "cancel_appointment") {
+    return " O outro cancelamento não foi feito; envie esse pedido em uma nova mensagem para continuarmos.";
+  }
+  if (blocked === "confirm_appointment") {
+    return " A confirmação de presença adicional não foi feita; envie esse pedido em uma nova mensagem para continuarmos.";
+  }
+  return "";
+}
+
+function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null = null): string {
+  let reply: string;
   if (mutation.kind === "created") {
     if (mutation.when && mutation.serviceName) {
-      return `Prontinho! Seu horário de ${mutation.serviceName} está reservado para ${mutation.when}.`;
+      reply = `Prontinho! Seu horário de ${mutation.serviceName} está reservado para ${mutation.when}.`;
+    } else if (mutation.when) {
+      reply = `Prontinho! Seu agendamento está reservado para ${mutation.when}.`;
+    } else {
+      reply = "Prontinho! Seu agendamento foi confirmado.";
     }
-    if (mutation.when) return `Prontinho! Seu agendamento está reservado para ${mutation.when}.`;
-    return "Prontinho! Seu agendamento foi confirmado.";
-  }
-  if (mutation.kind === "rescheduled") {
+  } else if (mutation.kind === "rescheduled") {
     if (mutation.when) {
       const service = mutation.serviceName ? `de ${mutation.serviceName} ` : "";
-      return `Prontinho! Seu horário ${service}foi remarcado para ${mutation.when}.`;
+      reply = `Prontinho! Seu horário ${service}foi remarcado para ${mutation.when}.`;
+    } else {
+      reply = "Prontinho! Seu agendamento foi remarcado.";
     }
-    return "Prontinho! Seu agendamento foi remarcado.";
-  }
-  if (mutation.kind === "confirmed") {
+  } else if (mutation.kind === "confirmed") {
     if (mutation.when && mutation.serviceName) {
-      return `Prontinho! Sua presença para ${mutation.serviceName} em ${mutation.when} está confirmada.`;
+      reply = `Prontinho! Sua presença para ${mutation.serviceName} em ${mutation.when} está confirmada.`;
+    } else if (mutation.when) {
+      reply = `Prontinho! Sua presença está confirmada para ${mutation.when}.`;
+    } else {
+      reply = "Prontinho! Sua presença está confirmada.";
     }
-    if (mutation.when) return `Prontinho! Sua presença está confirmada para ${mutation.when}.`;
-    return "Prontinho! Sua presença está confirmada.";
+  } else if (mutation.label) {
+    reply = `Pronto, cancelei ${mutation.label}. Se quiser remarcar, é só me chamar.`;
+  } else {
+    reply = "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
   }
-  if (mutation.label) return `Pronto, cancelei ${mutation.label}. Se quiser remarcar, é só me chamar.`;
-  return "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
-}
-
-function negatesAgendaMutation(reply: string): boolean {
-  return /\b(n[aã]o|nem)\b[^.?!]{0,60}\b(reserv|agend|marc|confirm|remarc|reagend|cancel)\w*/i.test(reply);
-}
-
-function replyReflectsAgendaMutation(reply: string, mutation: AgendaMutation): boolean {
-  if (negatesAgendaMutation(reply)) return false;
-  const normalized = reply.toLocaleLowerCase("pt-BR");
-  if (mutation.kind === "created") {
-    if (!mutation.when) return false;
-    return /reservad|agendad|marcad|confirmad/.test(normalized)
-      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
-  }
-  if (mutation.kind === "rescheduled") {
-    if (!mutation.when) return false;
-    return /remarcad|reagendad/.test(normalized)
-      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
-  }
-  if (mutation.kind === "confirmed") {
-    if (!mutation.when) return false;
-    return /confirmad/.test(normalized)
-      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
-  }
-  if (!mutation.label) return false;
-  return /cancel/.test(normalized)
-    && normalized.includes(mutation.label.toLocaleLowerCase("pt-BR"));
+  return reply + blockedAgendaMutationContinuation(mutation, blocked);
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
@@ -909,7 +913,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // modelo. Só uma escrita BEM-SUCEDIDA consome o turno; falhas continuam
   // permitindo que o modelo faça uma tentativa válida.
   let agendaMutation: AgendaMutation | null = null;
-  let agendaMutationBlocked = false;
+  let blockedAgendaMutation: ToolName | null = null;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -1005,7 +1009,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         // um resultado interno para que o protocolo de tool calls permaneça
         // válido e consultas posteriores continuem possíveis.
         if (AGENDA_MUTATION_TOOLS.has(name) && agendaMutation) {
-          agendaMutationBlocked = true;
+          blockedAgendaMutation ??= name;
           messages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -1080,6 +1084,23 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     let handoff = (handoffRequested || reply.includes(HANDOFF_TOKEN)) && !clienteRecusouHumano;
     if (reply.includes(HANDOFF_TOKEN)) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
 
+    // Uma escrita concluída é um fato mais forte que qualquer texto livre.
+    // Encerra a resposta aqui para que guards posteriores de incapacidade,
+    // stalling ou transferência não apaguem nem contradigam a agenda real.
+    // Handoff pedido explicitamente por tool/token continua preservado.
+    if (agendaMutation) {
+      return {
+        reply: agendaMutationReply(agendaMutation, blockedAgendaMutation),
+        handoff,
+        booked,
+        rescheduled,
+        cancelled,
+        toolCalls,
+        pendingCancelAppointmentId,
+        statedDate,
+      };
+    }
+
     // Trava determinística do fluxo de consulta de agenda: se a consulta deu
     // certo, os dados JÁ estão disponíveis — enrolar ("vou verificar", "um
     // momento") ou transferir é sempre errado aqui. Substitui por uma
@@ -1126,14 +1147,6 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           handoff = false;
         }
       }
-    }
-
-    // A operação bem-sucedida é a fonte de verdade. Mesmo que o modelo tente
-    // mencionar outro horário depois de uma tool call bloqueada, o cliente só
-    // recebe a confirmação do resultado efetivamente persistido.
-    if (agendaMutation && (agendaMutationBlocked || !replyReflectsAgendaMutation(reply, agendaMutation))) {
-      reply = agendaMutationReply(agendaMutation);
-      handoff = false;
     }
 
     // ---- Trava de incapacidade inventada ----
@@ -1298,7 +1311,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate };
 
   if (agendaMutation) {
-    return { ...base, reply: agendaMutationReply(agendaMutation), handoff: false };
+    return {
+      ...base,
+      reply: agendaMutationReply(agendaMutation, blockedAgendaMutation),
+      handoff: handoffRequested && !clienteRecusouHumano,
+    };
   }
 
   if (booked && bookedInfo) {

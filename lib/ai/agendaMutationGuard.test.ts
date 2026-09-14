@@ -88,7 +88,7 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
 
     expect(runTool.mock.calls.filter(([name]) => name === "reschedule_appointment")).toHaveLength(1);
     expect(finalTime).toBe("15:00");
-    expect(result.reply).toContain("15:00");
+    expect(result.reply).toBe("Prontinho! Seu horário de Limpeza foi remarcado para 09/09 às 15:00.");
     expect(result.reply).not.toContain("09:20");
   });
 
@@ -108,7 +108,7 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
 
     expect(runTool.mock.calls.filter(([name]) => name === "cancel_appointment")).toHaveLength(1);
     expect(status).toBe("cancelled");
-    expect(result.reply).toMatch(/cancelei/i);
+    expect(result.reply).toBe("Pronto, cancelei Limpeza de 10/09 às 10:00. Se quiser remarcar, é só me chamar.");
     expect(result.reply).not.toMatch(/já estava/i);
   });
 
@@ -127,7 +127,7 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
 
     expect(runTool.mock.calls.filter(([name]) => name === "create_appointment")).toHaveLength(1);
     expect(created).toEqual(["10:00"]);
-    expect(result.reply).toContain("10:00");
+    expect(result.reply).toBe("Prontinho! Seu horário de Limpeza está reservado para 09/09 às 10:00.");
     expect(result.reply).not.toContain("11:00");
   });
 
@@ -207,6 +207,57 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     expect(JSON.parse(blocked.content)).toMatchObject({ ok: false, ignored: true });
   });
 
+  it("REPRODUÇÃO OT-02F: não pode inventar segunda operação sem nova tool call", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "reschedule_appointment") {
+        return { ok: true, data: { when: "09/09 às 15:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+    modelMessages = [{ content: "Pronto! Foi remarcado para 09/09 às 15:00 e também agendei sua Avaliação para 09/09 às 11:00." }];
+
+    const result = await run("Para quarta às 15h", task("reschedule_appointment"));
+
+    expect(result.reply).toContain("15:00");
+    expect(result.reply).not.toContain("11:00");
+    expect(result.reply).not.toMatch(/avaliação/i);
+  });
+
+  it.each([
+    "Seu horário jamais foi remarcado para 09/09 às 15:00.",
+    "Foi remarcado para 09/09 às 15:00, mas sem sucesso na verdade.",
+  ])("REPRODUÇÃO OT-02F: canonicaliza negação alternativa: %s", async (modelReply) => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "reschedule_appointment") {
+        return { ok: true, data: { when: "09/09 às 15:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+    modelMessages = [{ content: modelReply }];
+
+    const result = await run("Para quarta às 15h", task("reschedule_appointment"));
+
+    expect(result.reply).toBe("Prontinho! Seu horário de Limpeza foi remarcado para 09/09 às 15:00.");
+  });
+
+  it("REPRODUÇÃO OT-02F: stalling posterior não pode ocultar a remarcação em handoff", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "reschedule_appointment") {
+        return { ok: true, data: { when: "09/09 às 15:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+    modelMessages = [
+      { content: "Remarcado para 09/09 às 15:00, um momento." },
+      { content: "Remarcado para 09/09 às 15:00, um momento." },
+    ];
+
+    const result = await run("Para quarta às 15h", task("reschedule_appointment"));
+
+    expect(result.reply).toBe("Prontinho! Seu horário de Limpeza foi remarcado para 09/09 às 15:00.");
+    expect(result.handoff).toBe(false);
+  });
+
   it("REPRODUÇÃO: não pode aceitar negação da operação real apenas porque contém a data correta", async () => {
     runTool.mockImplementation(async (name: string) => {
       if (name === "reschedule_appointment") {
@@ -281,12 +332,13 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     ];
     const cancelTask = { ...task("cancel_appointment", { appointmentId: "appt-1" }), state: "confirm" as const };
 
-    const result = await run("Sim", cancelTask);
+    const result = await run("Sim, e marque outro às 14h", cancelTask);
 
     expect(status).toBe("cancelled");
     expect(runTool.mock.calls.filter(([name]) => name === "create_appointment")).toHaveLength(0);
     expect(result.reply).toMatch(/cancelei/i);
     expect(result.reply).not.toMatch(/criei/i);
+    expect(result.reply).toMatch(/outro agendamento não foi criado/i);
   });
 
   it("bloqueia duas mutações na mesma resposta do modelo após a primeira bem-sucedida", async () => {
@@ -352,5 +404,48 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     expect(runTool.mock.calls.filter(([name]) => name === "create_appointment")).toHaveLength(0);
     expect(result.reply).toMatch(/presença.*confirmada/i);
     expect(result.reply).not.toMatch(/avaliação/i);
+  });
+
+  it("fecha uma confirmação bem-sucedida com os dados reais da tool", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "confirm_appointment") {
+        return { ok: true, data: { when: "10/09 às 10:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+    modelMessages = [
+      tool("confirm_appointment", { appointmentId: "appt-1" }),
+      { content: "Tudo certo com seu horário." },
+    ];
+
+    const result = await run("Confirmo minha presença", null);
+
+    expect(result.reply).toBe("Prontinho! Sua presença para Limpeza em 10/09 às 10:00 está confirmada.");
+  });
+
+  it("preserva handoff explícito sem ocultar o fato já persistido", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "reschedule_appointment") {
+        return { ok: true, data: { when: "09/09 às 15:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+    modelMessages = [{ content: "Vou chamar a equipe. [[HANDOFF]]" }];
+
+    const result = await run("Para quarta às 15h", task("reschedule_appointment"));
+
+    expect(result.reply).toBe("Prontinho! Seu horário de Limpeza foi remarcado para 09/09 às 15:00.");
+    expect(result.handoff).toBe(true);
+  });
+
+  it("mantém resposta natural do modelo quando nenhuma mutação ocorreu", async () => {
+    modelMessages = [{ content: "Claro! Como posso ajudar você hoje?" }];
+
+    const result = await run("Oi", null);
+
+    expect(result.reply).toBe("Claro! Como posso ajudar você hoje?");
+    expect(result.booked).toBe(false);
+    expect(result.rescheduled).toBe(false);
+    expect(result.cancelled).toBe(false);
   });
 });
