@@ -40,11 +40,16 @@ export interface DeriveTaskStateInput {
   // pessoa disse. Em Production a diferença entre as duas agendou uma
   // cliente na segunda quando ela pediu terça.
   statedDate?: string | null;
+  // Serviço que o CLIENTE citou nesta mensagem (nome canônico da base), já
+  // resolvido por código (lib/ai/serviceSelection.ts). Mesma precedência do
+  // statedDate: vence um serviceName preso de um fluxo anterior, para a
+  // próxima mensagem ("as 17") não herdar o serviço errado (OT-02G).
+  statedService?: string | null;
 }
 
 // null = nenhuma tarefa ativa (limpa o campo no Firestore).
 export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask | null {
-  const { existingTask, intent, toolCalls, booked, statedDate } = input;
+  const { existingTask, intent, toolCalls, booked, statedDate, statedService } = input;
   const now = Date.now();
 
   // Agendamento concluído agora: a tarefa terminou, independente de qual era
@@ -61,7 +66,7 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     return {
       type: intent.type as ConversationTask["type"],
       state: nextStateFromTools(toolCalls, "collect_service"),
-      collectedData: collectFromTools(toolCalls, {}, statedDate),
+      collectedData: collectFromTools(toolCalls, {}, statedDate, statedService),
       missingData: [],
       updatedAt: now,
     };
@@ -75,7 +80,7 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     return {
       ...existingTask,
       state: nextStateFromTools(toolCalls, existingTask.state),
-      collectedData: collectFromTools(toolCalls, existingTask.collectedData, statedDate),
+      collectedData: collectFromTools(toolCalls, existingTask.collectedData, statedDate, statedService),
       updatedAt: now,
     };
   }
@@ -106,7 +111,7 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     return {
       type: "schedule_appointment",
       state: nextStateFromTools(toolCalls, "collect_date"),
-      collectedData: collectFromTools(toolCalls, {}, statedDate),
+      collectedData: collectFromTools(toolCalls, {}, statedDate, statedService),
       missingData: [],
       updatedAt: now,
     };
@@ -138,6 +143,7 @@ function collectFromTools(
   toolCalls: ToolCallRecord[],
   base: Record<string, string | number>,
   statedDate?: string | null,
+  statedService?: string | null,
 ): Record<string, string | number> {
   const data = { ...base };
   for (const call of toolCalls) {
@@ -148,5 +154,9 @@ function collectFromTools(
   // letras vale mais do que o dia que o modelo escolheu passar para uma
   // ferramenta.
   if (statedDate) data.date = statedDate;
+  // Mesma regra para o serviço: o que o cliente nomeou agora vence o
+  // serviceName preso de um fluxo anterior (OT-02G). Só sobrescreve quando há
+  // um serviço dito — nunca apaga o que já estava por ausência de menção.
+  if (statedService) data.serviceName = statedService;
   return data;
 }

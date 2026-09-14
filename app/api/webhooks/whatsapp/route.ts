@@ -435,7 +435,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     });
     throw err;
   }
-  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate } =
+  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService } =
     brainResult;
   logStage("AI responded", {
     msgId: msg.id,
@@ -482,6 +482,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     // que faz a PRÓXIMA mensagem ("as 16", sem repetir o dia) usar a data
     // certa, em vez de herdar a que o modelo escolheu numa chamada anterior.
     statedDate,
+    // O serviço que o cliente nomeou nesta mensagem — pelo mesmo motivo, para
+    // a próxima mensagem ("as 17") não herdar um serviço preso de antes (OT-02G).
+    statedService,
   });
   await setConversationIntent(est.id, conversation.id, detectedIntent.type);
   // Guarda o agendamento que está aguardando confirmação de cancelamento, pra
