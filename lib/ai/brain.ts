@@ -828,6 +828,11 @@ export interface BrainResult {
   booked: boolean;
   rescheduled: boolean;
   cancelled: boolean;
+  // Prova genérica de que alguma mutação de agenda realmente terminou com
+  // sucesso neste turno. Inclui confirm_appointment, que altera o estado da
+  // agenda mas não cabe nos três flags legados acima. O webhook usa este
+  // fato — nunca o texto do modelo — para encerrar ConversationTask.
+  agendaMutationCompleted: boolean;
   // Agendamento aguardando confirmação de cancelamento. O webhook guarda
   // isto em ConversationTask.collectedData.appointmentId para a próxima
   // mensagem — é o que permite cancelar pelo ID EXATO depois do "sim", em vez
@@ -1150,6 +1155,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         booked,
         rescheduled,
         cancelled,
+        agendaMutationCompleted: true,
         toolCalls,
         pendingCancelAppointmentId,
         statedDate,
@@ -1339,7 +1345,18 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
-    return { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
+    return {
+      reply,
+      handoff,
+      booked,
+      rescheduled,
+      cancelled,
+      agendaMutationCompleted: false,
+      toolCalls,
+      pendingCancelAppointmentId,
+      statedDate,
+      statedService,
+    };
   }
 
   // Estouro do loop de ferramentas sem resposta final. Se a consulta de
@@ -1348,7 +1365,18 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (appointmentLookup?.ok) {
     const composed = composeAppointmentReply(appointmentLookup.data);
     if (composed) {
-      return { reply: composed, handoff: false, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
+      return {
+        reply: composed,
+        handoff: false,
+        booked,
+        rescheduled,
+        cancelled,
+        agendaMutationCompleted: agendaMutation !== null,
+        toolCalls,
+        pendingCancelAppointmentId,
+        statedDate,
+        statedService,
+      };
     }
   }
 
@@ -1364,7 +1392,16 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // A ordem abaixo vai do fato mais forte ao mais fraco. Os dois primeiros
   // são os mais graves: a operação ACONTECEU, e sair daqui sem contar isso
   // repete o pior bug da noite — o cliente com horário reservado sem saber.
-  const base = { booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
+  const base = {
+    booked,
+    rescheduled,
+    cancelled,
+    agendaMutationCompleted: agendaMutation !== null,
+    toolCalls,
+    pendingCancelAppointmentId,
+    statedDate,
+    statedService,
+  };
 
   if (agendaMutation) {
     return {

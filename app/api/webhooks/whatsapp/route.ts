@@ -369,9 +369,16 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
       if (intent === "confirm") {
         await setStatus(est.id, next.id, "confirmed");
-        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
       } else {
         await setStatus(est.id, next.id, "cancelled");
+      }
+      // A alteração da agenda já aconteceu. ConversationTask representa um
+      // trabalho ainda em andamento e não pode sobreviver a esse fato — nem
+      // mesmo se uma etapa posterior (como o envio da resposta) falhar.
+      await setConversationTask(est.id, conversation.id, null);
+      if (intent === "confirm") {
+        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
+      } else {
         await replyAndLog(wa, est.id, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
       }
       // Confirmar/cancelar o lembrete resolve qualquer pendência que essa
@@ -441,8 +448,18 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     });
     throw err;
   }
-  const { reply, handoff, booked, rescheduled, cancelled, toolCalls, pendingCancelAppointmentId, statedDate, statedService } =
-    brainResult;
+  const {
+    reply,
+    handoff,
+    booked,
+    rescheduled,
+    cancelled,
+    agendaMutationCompleted,
+    toolCalls,
+    pendingCancelAppointmentId,
+    statedDate,
+    statedService,
+  } = brainResult;
   logStage("AI responded", {
     msgId: msg.id,
     estId: est.id,
@@ -450,6 +467,18 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     replyLength: reply.length,
     handoff,
   });
+
+  // Inclui confirm_appointment. Os flags legados continuam no fallback para
+  // manter compatibilidade com dublês/testes e com qualquer chamador antigo
+  // de BrainResult, mas a prova autoritativa nova vem da mutação real.
+  const operationCompleted = Boolean(agendaMutationCompleted || booked || rescheduled || cancelled);
+
+  // A agenda foi alterada dentro de think(), antes do envio ao WhatsApp.
+  // Limpa a task assim que o fato é conhecido: uma falha de envio não pode
+  // ressuscitar um fluxo que já terminou nem bloquear o próximo "ok".
+  if (operationCompleted) {
+    await setConversationTask(est.id, conversation.id, null);
+  }
 
   let sent: { waMessageId?: string };
   try {
@@ -470,12 +499,6 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   }
   logStage("WhatsApp send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
   await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
-
-  // Passo 6: só uma operação com retorno positivo da FERRAMENTA conta como
-  // concluída — nunca o texto da resposta. `booked`/`rescheduled`/`cancelled`
-  // só chegam true a partir do resultado real de create/reschedule/cancel
-  // (ver lib/ai/tools.ts + lib/ai/brain.ts).
-  const operationCompleted = booked || rescheduled || cancelled;
 
   // Fase 4: deriva e persiste o próximo estado da tarefa a partir do que a
   // IA realmente fez nesta rodada — nunca do que ela disse que faria.
@@ -499,7 +522,11 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     nextTask && pendingCancelAppointmentId
       ? { ...nextTask, collectedData: { ...nextTask.collectedData, appointmentId: pendingCancelAppointmentId } }
       : nextTask;
-  await setConversationTask(est.id, conversation.id, taskToPersist);
+  // Quando a operação concluiu, a task já foi limpa antes do envio. Evita um
+  // segundo update e, sobretudo, não deixa o lifecycle depender do WhatsApp.
+  if (!operationCompleted) {
+    await setConversationTask(est.id, conversation.id, taskToPersist);
+  }
 
   // Fase 1: só campos determinísticos — nome do cartão de contato do
   // WhatsApp, intenção do classificador, e o serviço de um agendamento
