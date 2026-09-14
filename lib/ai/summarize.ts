@@ -8,6 +8,7 @@
 import OpenAI from "openai";
 import type { Message } from "@/types";
 import { contentForAI } from "@/lib/ai/messageContent";
+import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -60,7 +61,7 @@ export async function summarizeConversation(
       model: MODEL,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.2,
-      max_tokens: 200,
+      ...chatCompletionCompatibilityParams(MODEL, 200),
     });
     return completion.choices[0]?.message?.content?.trim() ?? "";
   } catch (err) {
