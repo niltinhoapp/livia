@@ -805,12 +805,14 @@ export interface BrainResult {
 type AgendaMutation =
   | { kind: "created"; when?: string; serviceName?: string }
   | { kind: "rescheduled"; when?: string; serviceName?: string }
-  | { kind: "cancelled"; label?: string };
+  | { kind: "cancelled"; label?: string }
+  | { kind: "confirmed"; when?: string; serviceName?: string };
 
 const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
   "create_appointment",
   "reschedule_appointment",
   "cancel_appointment",
+  "confirm_appointment",
 ]);
 
 function agendaMutationReply(mutation: AgendaMutation): string {
@@ -828,11 +830,23 @@ function agendaMutationReply(mutation: AgendaMutation): string {
     }
     return "Prontinho! Seu agendamento foi remarcado.";
   }
+  if (mutation.kind === "confirmed") {
+    if (mutation.when && mutation.serviceName) {
+      return `Prontinho! Sua presença para ${mutation.serviceName} em ${mutation.when} está confirmada.`;
+    }
+    if (mutation.when) return `Prontinho! Sua presença está confirmada para ${mutation.when}.`;
+    return "Prontinho! Sua presença está confirmada.";
+  }
   if (mutation.label) return `Pronto, cancelei ${mutation.label}. Se quiser remarcar, é só me chamar.`;
   return "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
 }
 
+function negatesAgendaMutation(reply: string): boolean {
+  return /\b(n[aã]o|nem)\b[^.?!]{0,60}\b(reserv|agend|marc|confirm|remarc|reagend|cancel)\w*/i.test(reply);
+}
+
 function replyReflectsAgendaMutation(reply: string, mutation: AgendaMutation): boolean {
+  if (negatesAgendaMutation(reply)) return false;
   const normalized = reply.toLocaleLowerCase("pt-BR");
   if (mutation.kind === "created") {
     if (!mutation.when) return false;
@@ -842,6 +856,11 @@ function replyReflectsAgendaMutation(reply: string, mutation: AgendaMutation): b
   if (mutation.kind === "rescheduled") {
     if (!mutation.when) return false;
     return /remarcad|reagendad/.test(normalized)
+      && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
+  }
+  if (mutation.kind === "confirmed") {
+    if (!mutation.when) return false;
+    return /confirmad/.test(normalized)
       && normalized.includes(mutation.when.toLocaleLowerCase("pt-BR"));
   }
   if (!mutation.label) return false;
@@ -890,6 +909,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // modelo. Só uma escrita BEM-SUCEDIDA consome o turno; falhas continuam
   // permitindo que o modelo faça uma tentativa válida.
   let agendaMutation: AgendaMutation | null = null;
+  let agendaMutationBlocked = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -985,10 +1005,16 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         // um resultado interno para que o protocolo de tool calls permaneça
         // válido e consultas posteriores continuem possíveis.
         if (AGENDA_MUTATION_TOOLS.has(name) && agendaMutation) {
+          agendaMutationBlocked = true;
           messages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: JSON.stringify({ ok: true, data: { ignored: true, reason: "agenda mutation already completed this turn" } }),
+            content: JSON.stringify({
+              ok: false,
+              ignored: true,
+              error: "agenda mutation already completed this turn",
+              data: { completedMutation: agendaMutation },
+            }),
           });
           continue;
         }
@@ -1020,6 +1046,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
               kind: "cancelled",
               label: data?.serviceName && data.when ? `${data.serviceName} de ${data.when}` : undefined,
             };
+          }
+          if (name === "confirm_appointment") {
+            const data = result.data as { when?: string; serviceName?: string } | undefined;
+            agendaMutation = { kind: "confirmed", when: data?.when, serviceName: data?.serviceName };
           }
           if (name === "request_human_handoff") handoffRequested = true;
           // Guardado para o caso de o loop estourar sem resposta final: os
@@ -1101,7 +1131,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // A operação bem-sucedida é a fonte de verdade. Mesmo que o modelo tente
     // mencionar outro horário depois de uma tool call bloqueada, o cliente só
     // recebe a confirmação do resultado efetivamente persistido.
-    if (agendaMutation && !replyReflectsAgendaMutation(reply, agendaMutation)) {
+    if (agendaMutation && (agendaMutationBlocked || !replyReflectsAgendaMutation(reply, agendaMutation))) {
       reply = agendaMutationReply(agendaMutation);
       handoff = false;
     }
