@@ -63,12 +63,25 @@ const RULES: Rule[] = [
     type: "reschedule_appointment",
     confidence: 0.85,
     keywords: [
-      "remarcar",
-      "reagendar",
+      // Formas verbais reais, não só o infinitivo — o cliente escreve
+      // "Remarca pra amanhã", "remarque meu horário", igual ao que já foi
+      // feito em cancelar/agendar. "remarca" cobre remarca/remarcar/
+      // remarcação/remarcando; "remarqu" cobre remarque/remarquei; "reagend"
+      // cobre reagendar/reagenda/reagende/reagendamento. Nenhum é substring
+      // de palavra inocente comum em PT-BR.
+      "remarca",
+      "remarqu",
+      "reagend",
+      // Frases com contexto explícito de agenda (nunca "mudar"/"trocar"
+      // soltos, que são genéricos demais). Cobre o artigo e o possessivo.
       "mudar o horario",
       "mudar o horário",
+      "mudar meu horario",
+      "mudar meu horário",
       "trocar o horario",
       "trocar o horário",
+      "trocar meu horario",
+      "trocar meu horário",
       "trocar a data",
       "mudar a data",
     ],

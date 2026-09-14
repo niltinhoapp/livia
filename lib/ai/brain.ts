@@ -11,7 +11,7 @@ import { parseServiceSelection } from "@/lib/ai/serviceSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
-import { toolsFor, runTool, type ToolContext } from "@/lib/ai/tools";
+import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 
@@ -603,6 +603,29 @@ export type BookingOutcome =
   | { kind: "conflict"; reason: string; alternatives: { time: string }[] }
   | { kind: "free_needs_service"; time: string };
 
+// Chave de comparação de serviço: minúsculo, sem acento. Igual à normalização
+// de lib/ai/serviceSelection.ts, para casar o serviço da tarefa com o do
+// agendamento independentemente de acento/caixa.
+function serviceKey(name: string): string {
+  return name.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+// Quando a remarcação sem alvo é ambígua (vários ativos), a própria ferramenta
+// devolve a lista de candidatos. Se exatamente UM bate com o serviço que a
+// conversa trata, é ele o alvo. Zero ou mais de um → undefined (segue
+// ambíguo, a ferramenta pede o id — preserva a desambiguação exigida).
+function pickRescheduleTargetFromAmbiguity(
+  result: ToolResult,
+  serviceName: string | undefined,
+): string | undefined {
+  if (result.ok || !serviceName) return undefined;
+  const cands = (result.data as { appointments?: { id: string; serviceName?: string }[] } | undefined)?.appointments;
+  if (!Array.isArray(cands)) return undefined;
+  const alvo = serviceKey(serviceName);
+  const matches = cands.filter((a) => typeof a.serviceName === "string" && serviceKey(a.serviceName) === alvo);
+  return matches.length === 1 ? matches[0]!.id : undefined;
+}
+
 // Resolve deterministicamente uma escolha de horário do cliente: converte o
 // horário para instante concreto usando a data JÁ coletada na tarefa e o fuso
 // do estabelecimento, e executa a reserva pelo backend. Devolve `null` quando
@@ -679,8 +702,23 @@ async function resolveTimeSelection(
   // (pelo próprio Appointment, ver lib/ai/tools.ts) — por isso não exige
   // `serviceName` coletado e é decidida antes da checagem abaixo.
   if (task.type === "reschedule_appointment") {
-    const result = await runTool("reschedule_appointment", { newStartAt: startAt }, toolCtx);
+    // Primeiro tenta sem alvo explícito — mantém o comportamento anterior
+    // (um único ativo é remarcado pela própria ferramenta).
+    let result = await runTool("reschedule_appointment", { newStartAt: startAt }, toolCtx);
     toolCalls.push({ name: "reschedule_appointment", args: { newStartAt: startAt } });
+
+    // Ambíguo (vários ativos): sem isto, o cliente que pediu "remarca a
+    // avaliação" ficava sem remarcação nenhuma (ou o alvo era decidido às
+    // cegas). Escolhe o único ativo cujo serviço bate com o da conversa e
+    // remarca ESSE — dois do mesmo serviço continuam ambíguos de propósito
+    // (OT-02H). Não altera a guarda de uma mutação por turno: a 1ª chamada
+    // falhou (ok:false), então só a 2ª, bem-sucedida, conta como escrita.
+    const alvo = pickRescheduleTargetFromAmbiguity(result, serviceName);
+    if (alvo) {
+      const args = { newStartAt: startAt, appointmentId: alvo };
+      result = await runTool("reschedule_appointment", args, toolCtx);
+      toolCalls.push({ name: "reschedule_appointment", args });
+    }
 
     if (result.ok) {
       const data = result.data as { when?: string; serviceName?: string } | undefined;
