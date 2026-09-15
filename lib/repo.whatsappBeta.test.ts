@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Establishment, EncryptedToken } from "@/types";
 
+// A coorte não depende da implementação criptográfica. Este dublê evita
+// inserir uma chave de ambiente sintética numa suíte que valida somente
+// transação, lease e contagem de vagas.
+vi.mock("@/lib/whatsapp/tokenCrypto", () => ({
+  generateRandomPin: () => "123456",
+  encryptPin: (pin: string): EncryptedToken => ({ ciphertext: pin, iv: "iv", authTag: "tag" }),
+  decryptPin: (encrypted: EncryptedToken) => encrypted.ciphertext,
+}));
+
 vi.mock("@/lib/firebase/admin", async () => {
   const fake = await import("@/lib/__testing__/firestoreFake");
   return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb };
@@ -8,9 +17,11 @@ vi.mock("@/lib/firebase/admin", async () => {
 
 const {
   WHATSAPP_BETA_LIMIT,
+  claimWhatsappConnection,
   disconnectWhatsapp,
   finalizeWhatsappConnection,
   getWhatsappBetaEligibility,
+  releaseWhatsappConnectionAttempt,
 } = await import("./repo");
 const { fakeDb } = await import("@/lib/__testing__/firestoreFake");
 
@@ -148,6 +159,25 @@ describe("beta fechado de WhatsApp", () => {
     expect(tenant("tenant-k").whatsapp?.status).toBe("connecting");
   });
 
+  it("9 participantes: a décima finaliza e a décima primeira é recusada inclusive sem passar pela UI", async () => {
+    seedCohort(9);
+    seedTenant("tenant-j");
+    seedTenant("tenant-k");
+
+    expect(await getWhatsappBetaEligibility("tenant-j")).toBe("available");
+    await expect(finalize("tenant-j")).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
+    expect(claimed()).toBe(10);
+
+    // Esta é a mesma decisão que o POST /connect toma antes de Meta; o
+    // finalize é repetido aqui para provar que um chamador interno/direto
+    // também não consegue contornar a transação autoritativa.
+    expect(await getWhatsappBetaEligibility("tenant-k")).toBe("cohort_full");
+    await expect(finalize("tenant-k")).resolves.toEqual({ ok: false, reason: "cohort_full" });
+    expect(claimed()).toBe(10);
+    expect(tenant("tenant-k").whatsappBeta).toBeUndefined();
+    expect(tenant("tenant-k").whatsapp?.status).toBe("connecting");
+  });
+
   it("participante reconecta mesmo quando as 10 vagas estão ocupadas", async () => {
     seedCohort(10);
     seedTenant("tenant-a", { access: "participant" });
@@ -164,6 +194,44 @@ describe("beta fechado de WhatsApp", () => {
     expect(await getWhatsappBetaEligibility("tenant-a")).toBe("available");
     expect(claimed()).toBe(0);
     expect(tenant("tenant-a").whatsappBeta).toBeUndefined();
+  });
+
+  it("tentativa apenas connecting não recebe grandfathering", async () => {
+    seedTenant("abandoned", { status: "connecting" });
+
+    expect(await getWhatsappBetaEligibility("abandoned")).toBe("available");
+    expect(claimed()).toBe(0);
+    expect(tenant("abandoned").whatsappBeta).toBeUndefined();
+  });
+
+  it("claim interrompida não consome vaga e o mesmo tenant pode retomar a tentativa", async () => {
+    seedCohort(9);
+    seedTenant("tenant-a", { status: "disconnected" });
+    seedTenant("tenant-b");
+
+    const firstClaim = await claimWhatsappConnection("tenant-a", "waba-tenant-a", "phone-tenant-a");
+    if (firstClaim.outcome !== "claimed") throw new Error(`claim inesperada: ${firstClaim.outcome}`);
+
+    // Uma falha anterior ao finalize libera somente a lease; não concede
+    // whatsappBeta e não incrementa o contador da coorte.
+    await releaseWhatsappConnectionAttempt("tenant-a", firstClaim.attemptId);
+    expect(claimed()).toBe(9);
+    expect(tenant("tenant-a").whatsappBeta).toBeUndefined();
+    expect(await getWhatsappBetaEligibility("tenant-b")).toBe("available");
+
+    const retry = await claimWhatsappConnection("tenant-a", "waba-tenant-a", "phone-tenant-a");
+    if (retry.outcome !== "resumed") throw new Error(`retry inesperado: ${retry.outcome}`);
+
+    await expect(
+      finalizeWhatsappConnection("tenant-a", retry.attemptId, {
+        wabaId: "waba-tenant-a",
+        phoneNumberId: "phone-tenant-a",
+        accessToken: token,
+        connectionMode: "coexistence",
+      }),
+    ).resolves.toMatchObject({ ok: true, betaOutcome: "claimed" });
+    expect(claimed()).toBe(10);
+    expect(tenant("tenant-a").whatsappBeta?.access).toBe("participant");
   });
 
   it("desconectar não devolve a vaga adquirida", async () => {
