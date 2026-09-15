@@ -121,6 +121,12 @@ export function createAsaasClient(config: AsaasClientConfig): AsaasClient {
     findCustomersByExternalReference: (externalReference) =>
       findCustomersByExternalReference(resolved, externalReference),
     createSubscription: (input) => createSubscription(resolved, input),
+    getSubscription: (id) => getSubscription(resolved, id),
+    listSubscriptions: (input) => listSubscriptions(resolved, input),
+    findSubscriptionsForReconciliation: (input) =>
+      findSubscriptionsForReconciliation(resolved, input),
+    listSubscriptionPayments: (subscriptionId) =>
+      listSubscriptionPayments(resolved, subscriptionId),
   };
 }
 
@@ -128,7 +134,26 @@ export interface AsaasClient {
   createCustomer(input: CreateCustomerInput): Promise<AsaasResult<AsaasCustomer>>;
   findCustomersByExternalReference(externalReference: string): Promise<AsaasResult<AsaasCustomer[]>>;
   createSubscription(input: CreateSubscriptionInput): Promise<AsaasResult<AsaasSubscription>>;
+  getSubscription(id: string): Promise<AsaasResult<AsaasSubscription>>;
+  listSubscriptions(input: ListSubscriptionsInput): Promise<AsaasResult<AsaasListPage<AsaasSubscription>>>;
+  findSubscriptionsForReconciliation(
+    input: FindSubscriptionsInput,
+  ): Promise<AsaasResult<AsaasSubscription[]>>;
+  listSubscriptionPayments(subscriptionId: string): Promise<AsaasResult<AsaasPayment[]>>;
 }
+
+export interface AsaasListPage<T> {
+  data: T[];
+  hasMore: boolean;
+  totalCount?: number;
+  limit: number;
+  offset: number;
+}
+
+const LIST_PAGE_SIZE = 100;
+// Defesa contra resposta malformada que mantenha hasMore=true indefinidamente.
+// Não é limite funcional da Asaas; é um teto local de segurança por operação.
+const MAX_LIST_PAGES = 1_000;
 
 // ---- Wrapper HTTP central ----
 //
@@ -278,18 +303,7 @@ async function findCustomersByExternalReference(
   config: ResolvedConfig,
   externalReference: string,
 ): Promise<AsaasResult<AsaasCustomer[]>> {
-  const query = new URLSearchParams({ externalReference }).toString();
-  const result = await request<{ data?: unknown }>(config, "GET", `/customers?${query}`);
-  if (!result.ok) return result;
-
-  const data = result.data.data;
-  if (!Array.isArray(data)) {
-    return {
-      ok: false,
-      error: { kind: "invalid_response", message: "Asaas: resposta de listagem de clientes sem campo 'data'." },
-    };
-  }
-  return { ok: true, data: data as AsaasCustomer[] };
+  return collectAllPages<AsaasCustomer>(config, "/customers", { externalReference }, "clientes");
 }
 
 // ---- Subscriptions ----
@@ -336,10 +350,30 @@ export interface AsaasSubscription {
   value: number;
   nextDueDate: string;
   cycle: AsaasCycle;
+  description?: string;
   externalReference?: string;
   // Status bruto devolvido pela Asaas (ex.: "ACTIVE") — nunca confundir com
   // BillingStatus (types/index.ts), que é o estado canônico interno.
   status?: string;
+}
+
+export interface ListSubscriptionsInput {
+  customer?: string;
+  externalReference?: string;
+  includeDeleted?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export type FindSubscriptionsInput = Omit<ListSubscriptionsInput, "limit" | "offset">;
+
+export interface AsaasPayment {
+  id: string;
+  status?: string;
+  customer?: string;
+  subscription?: string;
+  value?: number;
+  dueDate?: string;
 }
 
 // Sem retry automático nesta função também — mesmo raciocínio de
@@ -359,4 +393,156 @@ async function createSubscription(
     ...(input.externalReference !== undefined ? { externalReference: input.externalReference } : {}),
   };
   return request<AsaasSubscription>(config, "POST", "/subscriptions", body);
+}
+
+async function getSubscription(
+  config: ResolvedConfig,
+  id: string,
+): Promise<AsaasResult<AsaasSubscription>> {
+  const result = await request<unknown>(
+    config,
+    "GET",
+    `/subscriptions/${encodeURIComponent(id)}`,
+  );
+  if (!result.ok) return result;
+  if (!isAsaasSubscription(result.data)) {
+    return invalidResponse("Asaas: resposta de assinatura sem os campos mínimos esperados.");
+  }
+  return { ok: true, data: result.data };
+}
+
+async function listSubscriptions(
+  config: ResolvedConfig,
+  input: ListSubscriptionsInput,
+): Promise<AsaasResult<AsaasListPage<AsaasSubscription>>> {
+  const limit = input.limit ?? LIST_PAGE_SIZE;
+  const offset = input.offset ?? 0;
+  if (!Number.isInteger(limit) || limit < 1 || limit > LIST_PAGE_SIZE || !Number.isInteger(offset) || offset < 0) {
+    return invalidResponse("Asaas: paginação de assinaturas inválida.");
+  }
+
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (input.customer !== undefined) query.set("customer", input.customer);
+  if (input.externalReference !== undefined) query.set("externalReference", input.externalReference);
+  if (input.includeDeleted !== undefined) query.set("includeDeleted", String(input.includeDeleted));
+
+  const result = await request<unknown>(config, "GET", `/subscriptions?${query.toString()}`);
+  if (!result.ok) return result;
+  return parseListPage(result.data, limit, offset, "assinaturas", isAsaasSubscription);
+}
+
+async function findSubscriptionsForReconciliation(
+  config: ResolvedConfig,
+  input: FindSubscriptionsInput,
+): Promise<AsaasResult<AsaasSubscription[]>> {
+  return collectAllPages<AsaasSubscription>(
+    config,
+    "/subscriptions",
+    {
+      ...(input.customer !== undefined ? { customer: input.customer } : {}),
+      ...(input.externalReference !== undefined ? { externalReference: input.externalReference } : {}),
+      ...(input.includeDeleted !== undefined ? { includeDeleted: String(input.includeDeleted) } : {}),
+    },
+    "assinaturas",
+    isAsaasSubscription,
+  );
+}
+
+async function listSubscriptionPayments(
+  config: ResolvedConfig,
+  subscriptionId: string,
+): Promise<AsaasResult<AsaasPayment[]>> {
+  return collectAllPages<AsaasPayment>(
+    config,
+    `/subscriptions/${encodeURIComponent(subscriptionId)}/payments`,
+    {},
+    "cobranças",
+    isAsaasPayment,
+  );
+}
+
+function invalidResponse<T>(message: string): AsaasResult<T> {
+  return { ok: false, error: { kind: "invalid_response", message } };
+}
+
+function parseListPage<T>(
+  payload: unknown,
+  requestedLimit: number,
+  requestedOffset: number,
+  resourceName: string,
+  validateItem?: (item: unknown) => item is T,
+  requirePagination = true,
+): AsaasResult<AsaasListPage<T>> {
+  if (!payload || typeof payload !== "object") {
+    return invalidResponse(`Asaas: resposta de listagem de ${resourceName} inválida.`);
+  }
+  const raw = payload as Record<string, unknown>;
+  if (!Array.isArray(raw.data) || (validateItem && !raw.data.every(validateItem))) {
+    return invalidResponse(`Asaas: resposta de listagem de ${resourceName} sem campo 'data' válido.`);
+  }
+  if (raw.hasMore !== undefined && typeof raw.hasMore !== "boolean") {
+    return invalidResponse(`Asaas: paginação de ${resourceName} com 'hasMore' inválido.`);
+  }
+  if (requirePagination && raw.hasMore === true && raw.data.length === 0) {
+    return invalidResponse(`Asaas: paginação de ${resourceName} não avançou.`);
+  }
+  return {
+    ok: true,
+    data: {
+      data: raw.data as T[],
+      hasMore: raw.hasMore === true,
+      totalCount: typeof raw.totalCount === "number" ? raw.totalCount : undefined,
+      limit: typeof raw.limit === "number" ? raw.limit : requestedLimit,
+      offset: typeof raw.offset === "number" ? raw.offset : requestedOffset,
+    },
+  };
+}
+
+async function collectAllPages<T>(
+  config: ResolvedConfig,
+  path: string,
+  filters: Record<string, string>,
+  resourceName: string,
+  validateItem?: (item: unknown) => item is T,
+): Promise<AsaasResult<T[]>> {
+  const all: T[] = [];
+  for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber += 1) {
+    const offset = pageNumber * LIST_PAGE_SIZE;
+    const query = new URLSearchParams({ ...filters, limit: String(LIST_PAGE_SIZE), offset: String(offset) });
+    const result = await request<unknown>(config, "GET", `${path}?${query.toString()}`);
+    if (!result.ok) return result;
+    const page = parseListPage(result.data, LIST_PAGE_SIZE, offset, resourceName, validateItem);
+    if (!page.ok) return page;
+    all.push(...page.data.data);
+    if (!page.data.hasMore) return { ok: true, data: all };
+  }
+  return invalidResponse(`Asaas: paginação de ${resourceName} excedeu o limite de segurança.`);
+}
+
+const BILLING_TYPES = new Set<AsaasBillingType>(["UNDEFINED", "BOLETO", "CREDIT_CARD", "PIX"]);
+const CYCLES = new Set<AsaasCycle>([
+  "WEEKLY",
+  "BIWEEKLY",
+  "MONTHLY",
+  "BIMONTHLY",
+  "QUARTERLY",
+  "SEMIANNUALLY",
+  "YEARLY",
+]);
+
+function isAsaasSubscription(value: unknown): value is AsaasSubscription {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.id === "string" && item.id.length > 0 &&
+    typeof item.customer === "string" && item.customer.length > 0 &&
+    typeof item.billingType === "string" && BILLING_TYPES.has(item.billingType as AsaasBillingType) &&
+    typeof item.value === "number" && Number.isFinite(item.value) &&
+    typeof item.nextDueDate === "string" &&
+    typeof item.cycle === "string" && CYCLES.has(item.cycle as AsaasCycle)
+  );
+}
+
+function isAsaasPayment(value: unknown): value is AsaasPayment {
+  return Boolean(value && typeof value === "object" && typeof (value as Record<string, unknown>).id === "string");
 }
