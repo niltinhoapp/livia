@@ -1,7 +1,7 @@
 // Cliente HTTP isolado para a API do Asaas (OT-05C — fundação de
-// comunicação, sem integração ao fluxo real da Lívia). Nenhuma rota chama
-// este módulo ainda; nenhuma credencial real está configurada em nenhum
-// ambiente.
+// comunicação, sem integração ao fluxo real da Lívia). Seu único chamador
+// HTTP é o harness administrativo de homologação, restrito ao Preview e ao
+// Sandbox; nenhuma rota de produto ou ambiente Production usa credenciais.
 //
 // Contrato confirmado na documentação oficial (docs.asaas.com) em
 // 2026-09 — nada aqui foi assumido de memória:
@@ -117,6 +117,7 @@ export function createAsaasClient(config: AsaasClientConfig): AsaasClient {
   };
 
   return {
+    checkAuthentication: () => checkAuthentication(resolved),
     createCustomer: (input) => createCustomer(resolved, input),
     findCustomersByExternalReference: (externalReference) =>
       findCustomersByExternalReference(resolved, externalReference),
@@ -131,6 +132,7 @@ export function createAsaasClient(config: AsaasClientConfig): AsaasClient {
 }
 
 export interface AsaasClient {
+  checkAuthentication(): Promise<AsaasResult<{ authenticated: true }>>;
   createCustomer(input: CreateCustomerInput): Promise<AsaasResult<AsaasCustomer>>;
   findCustomersByExternalReference(externalReference: string): Promise<AsaasResult<AsaasCustomer[]>>;
   createSubscription(input: CreateSubscriptionInput): Promise<AsaasResult<AsaasSubscription>>;
@@ -140,6 +142,20 @@ export interface AsaasClient {
     input: FindSubscriptionsInput,
   ): Promise<AsaasResult<AsaasSubscription[]>>;
   listSubscriptionPayments(subscriptionId: string): Promise<AsaasResult<AsaasPayment[]>>;
+}
+
+// Leitura mínima para homologar credencial/conectividade sem criar qualquer
+// recurso. O número da conta devolvido pela Asaas é deliberadamente
+// descartado: o harness só precisa saber que a credencial foi autenticada.
+async function checkAuthentication(
+  config: ResolvedConfig,
+): Promise<AsaasResult<{ authenticated: true }>> {
+  const result = await request<unknown>(config, "GET", "/myAccount/accountNumber");
+  if (!result.ok) return result;
+  if (!result.data || typeof result.data !== "object") {
+    return invalidResponse("Asaas: resposta de autenticação inválida.");
+  }
+  return { ok: true, data: { authenticated: true } };
 }
 
 export interface AsaasListPage<T> {

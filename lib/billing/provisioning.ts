@@ -1,5 +1,6 @@
-// Workflow dormente de provisionamento/reconciliação de assinatura Asaas.
-// Nenhuma rota, webhook ou cron importa este módulo. Firestore coordena a
+// Workflow dormente para o produto de provisionamento/reconciliação Asaas.
+// O único acionamento HTTP atual é o harness administrativo Preview/Sandbox;
+// nenhuma rota de produto, webhook ou cron o utiliza. Firestore coordena a
 // intenção local; chamadas Asaas acontecem SEMPRE fora de transactions.
 import { createHash } from "node:crypto";
 import { db } from "@/lib/firebase/admin";

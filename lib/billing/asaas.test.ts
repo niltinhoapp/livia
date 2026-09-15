@@ -106,6 +106,30 @@ describe("3-5) headers", () => {
   });
 });
 
+describe("auth check read-only", () => {
+  it("usa GET /myAccount/accountNumber e não expõe o número da conta", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { accountNumber: "123456" }));
+    const result = await client({}, fetchImpl).checkAuthentication();
+
+    expect(result).toEqual({ ok: true, data: { authenticated: true } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "https://api-sandbox.asaas.com/v3/myAccount/accountNumber",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1].method).toBe("GET");
+    expect(fetchImpl.mock.calls[0]?.[1].body).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("123456");
+  });
+
+  it("resposta inválida falha sanitizada", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, null));
+    const result = await client({}, fetchImpl).checkAuthentication();
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+    expect(JSON.stringify(result)).not.toContain(SANDBOX_KEY);
+  });
+});
+
 describe("6) API key nunca aparece em erro", () => {
   it("erro HTTP não contém a chave", async () => {
     const fetchImpl = mockFetch(async () => jsonResponse(401, { errors: [{ code: "invalid_access_token" }] }));
