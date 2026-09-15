@@ -31,11 +31,48 @@ export interface Establishment {
   // conexão anterior preservada (grandfathered). Não acompanha o status da
   // conexão: desconectar não devolve nem revoga o acesso.
   whatsappBeta?: WhatsappBetaParticipation;
+  // Estado comercial (trial/assinatura Asaas) — eixo independente de
+  // panelAccess (quem pode abrir o painel) e de status (se a IA responde
+  // agora). A ausência é reservada a estabelecimentos anteriores a esta
+  // camada e é tratada como legado/grandfathered, nunca bloqueado (ver
+  // lib/billing/stateMachine.ts: canUseService). Fundação apenas — nada
+  // aqui ainda é lido ou escrito por nenhuma rota (OT-05B).
+  billing?: EstablishmentBilling;
   // Configuração do bot (persona + regras).
   bot: BotConfig;
 }
 
 export type PanelAccess = "allowed" | "blocked";
+
+// Estado comercial canônico — decidido pela Lívia, nunca o vocabulário bruto
+// do Asaas (isso fica em `subscriptionStatus`, só diagnóstico). Ver
+// lib/billing/stateMachine.ts para a máquina de transições e a decisão de
+// acesso.
+export type BillingStatus = "trial" | "active" | "past_due" | "suspended" | "canceled";
+
+export interface EstablishmentBilling {
+  billingStatus: BillingStatus;
+  // Início e fim do período de teste — persistidos uma única vez no
+  // provisionamento. trialEndsAt é autoritativo quando presente: nunca
+  // recalculado como trialStartAt + N dias (ver stateMachine.ts).
+  trialStartAt?: number;
+  trialEndsAt?: number;
+  // Espelho BRUTO do status da assinatura no Asaas — só para diagnóstico e
+  // suporte. Nunca lido por canUseService(): a decisão de acesso usa
+  // exclusivamente billingStatus, o estado canônico interno.
+  subscriptionStatus?: string;
+  // Próximo vencimento informado pelo Asaas (ISO date), informativo.
+  nextDueDate?: string;
+  suspendedAt?: number;
+  externalCustomerId?: string;
+  externalSubscriptionId?: string;
+  // Timestamp do PRÓPRIO evento do Asaas (não o de recebimento) — usado para
+  // descartar eventos de webhook fora de ordem. Fora de escopo nesta OT
+  // (nenhum webhook existe ainda); o campo já nasce no tipo para não exigir
+  // migração de schema quando o webhook for implementado.
+  lastAsaasEventAt?: number;
+  updatedAt: number;
+}
 
 export interface WhatsappBetaParticipation {
   access: "participant" | "grandfathered";
