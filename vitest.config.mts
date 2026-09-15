@@ -26,6 +26,14 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["node_modules/**", ".next/**"],
+    // .worktrees/** guarda checkouts isolados de OUTRAS branches (usados
+    // para trabalhar em paralelo sem tocar a árvore principal — ver
+    // convenção de OTs anteriores). Sem esta exclusão, `vitest run` aqui
+    // também descobre os *.test.ts de dentro de cada worktree e os roda
+    // contra o node_modules/lockfile DESTA árvore, que pode ter divergido
+    // do estado em que aquele worktree foi criado — produzindo falhas
+    // espúrias sem relação com o código sendo revisado (confirmado na
+    // OT-05B: 39 arquivos falhando, todos dentro de .worktrees/).
+    exclude: ["node_modules/**", ".next/**", ".worktrees/**"],
   },
 });
