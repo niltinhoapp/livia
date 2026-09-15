@@ -19,10 +19,14 @@ export class FakeFirestore {
   // caminho da coleção -> (docId -> dados)
   private store = new Map<string, Map<string, Doc>>();
   private transactionTail: Promise<void> = Promise.resolve();
+  private forcedTransactionRetries = 0;
+  private activeTransactions = 0;
 
   reset(): void {
     this.store.clear();
     this.transactionTail = Promise.resolve();
+    this.forcedTransactionRetries = 0;
+    this.activeTransactions = 0;
   }
 
   col(path: string): Map<string, Doc> {
@@ -42,13 +46,38 @@ export class FakeFirestore {
     return new FakeCollection(this, path);
   }
 
+  retryNextTransaction(times = 1): void {
+    this.forcedTransactionRetries = times;
+  }
+
+  isTransactionActive(): boolean {
+    return this.activeTransactions > 0;
+  }
+
   async runTransaction<T>(callback: (tx: FakeTransaction) => Promise<T>): Promise<T> {
     let release!: () => void;
     const previous = this.transactionTail;
     this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     try {
-      return await callback(new FakeTransaction());
+      const retries = this.forcedTransactionRetries;
+      this.forcedTransactionRetries = 0;
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        const tx = new FakeTransaction();
+        this.activeTransactions += 1;
+        let result: T;
+        try {
+          result = await callback(tx);
+        } finally {
+          this.activeTransactions -= 1;
+        }
+        // Simula retry/rollback do Firestore: efeitos enfileirados na primeira
+        // callback são descartados; só a última tentativa é commitada.
+        if (attempt < retries) continue;
+        await tx.commit();
+        return result;
+      }
+      throw new Error("FakeFirestore: transaction retry loop inválido");
     } finally {
       release();
     }
@@ -215,20 +244,26 @@ class FakeDoc {
 }
 
 class FakeTransaction {
+  private operations: Array<() => Promise<void>> = [];
+
   async get<T extends { get(): Promise<unknown> }>(target: T): Promise<Awaited<ReturnType<T["get"]>>> {
     return target.get() as Promise<Awaited<ReturnType<T["get"]>>>;
   }
 
   set(ref: FakeDoc, data: Doc, options?: { merge?: boolean }): void {
-    void ref.set(data, options);
+    this.operations.push(() => ref.set(data, options));
   }
 
   update(ref: FakeDoc, patch: Doc): void {
-    void ref.update(patch);
+    this.operations.push(() => ref.update(patch));
   }
 
   create(ref: FakeDoc, data: Doc): void {
-    void ref.create(data);
+    this.operations.push(() => ref.create(data));
+  }
+
+  async commit(): Promise<void> {
+    for (const operation of this.operations) await operation();
   }
 }
 
