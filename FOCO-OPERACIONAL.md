@@ -144,6 +144,11 @@ Firebase Authentication identifica a conta; `panelAccess` é a autorização
 server-side do painel; `whatsappBeta` permanece a autorização independente
 para conectar WhatsApp durante a coorte controlada.
 
+Provisionar, conceder ou revogar `panelAccess` exige um platform admin vindo da
+sessão Firebase e presente em `PANEL_ADMIN_UIDS` (server-only). A fronteira fica
+inativa/fail-closed enquanto essa configuração não existir em um ambiente. Ela
+não concede vaga de WhatsApp e uma revogação não altera a conexão existente.
+
 ---
 
 # 10. Billing Asaas
