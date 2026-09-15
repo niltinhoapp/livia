@@ -121,6 +121,10 @@ O usuário pode acessar o painel sem necessariamente possuir uma vaga para conec
 
 A autorização de conexão deve ser aplicada no backend.
 
+O painel também possui autorização server-side própria: Firebase Authentication
+valida a identidade, `panelAccess` permite ou bloqueia o uso do painel e
+`whatsappBeta` controla, separadamente, a coorte de conexão de WhatsApp.
+
 Enquanto cobrança e suporte estão sendo preparados, novos clientes podem entrar por lote controlado e acompanhamento próximo.
 
 ---

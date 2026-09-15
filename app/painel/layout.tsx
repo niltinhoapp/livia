@@ -3,24 +3,14 @@
 import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { getAuth } from "firebase-admin/auth";
-import { firebaseAdminApp } from "@/lib/firebase/admin";
-import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { SESSION_COOKIE_NAME, resolvePanelAccess } from "@/lib/auth/session";
 import { AppShell } from "@/components/layout/AppShell";
 
 export default async function PainelLayout({ children }: { children: ReactNode }) {
   const cookieStore = await cookies();
   const cookie = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  let ok = false;
-  if (cookie) {
-    try {
-      await getAuth(firebaseAdminApp).verifySessionCookie(cookie, true);
-      ok = true;
-    } catch {
-      ok = false;
-    }
-  }
-  if (!ok) redirect("/login");
+  const access = await resolvePanelAccess(cookie);
+  if (access.status !== "allowed") redirect("/login?access=blocked");
 
   return <AppShell>{children}</AppShell>;
 }
