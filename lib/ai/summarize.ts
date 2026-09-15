@@ -3,15 +3,11 @@
 // Chamado SÓ nos momentos que o plano define como relevantes (handoff ou
 // agendamento concluído) — nunca a cada mensagem. É uma chamada de IA
 // separada e deliberadamente pequena: poucas mensagens de contexto, poucos
-// tokens de saída, modelo padrão (mesmo MODEL do brain.ts, sem motivo pra
-// usar um mais caro aqui).
-import OpenAI from "openai";
+// tokens de saída, modelo padrão (o mesmo do atendimento, resolvido em
+// lib/ai/gateway.ts — sem motivo pra usar um mais caro aqui).
 import type { Message } from "@/types";
 import { contentForAI } from "@/lib/ai/messageContent";
-import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
+import { runCompletion } from "@/lib/ai/gateway";
 
 // Quantas mensagens recentes entram no resumo. Não é "o histórico inteiro"
 // de propósito — o resumo é sobre o desfecho da interação atual, não um
@@ -57,13 +53,13 @@ export async function summarizeConversation(
   ].join("\n");
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
+    const message = await runCompletion({
+      purpose: "summary",
       messages: [{ role: "user", content: prompt }],
       temperature: 0.2,
-      ...chatCompletionCompatibilityParams(MODEL, 200),
+      maxOutputTokens: 200,
     });
-    return completion.choices[0]?.message?.content?.trim() ?? "";
+    return message?.content?.trim() ?? "";
   } catch (err) {
     console.error("[livia summarize] falha ao gerar resumo:", err);
     return "";

@@ -2,7 +2,7 @@
 // resposta. Com booking habilitado, a IA ganha "ferramentas" (function calling)
 // para consultar horários livres e criar agendamentos sozinha, durante a
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
@@ -14,11 +14,8 @@ import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
-import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility";
 import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
+import { runCompletion } from "@/lib/ai/gateway";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -1058,14 +1055,13 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
+    const msg = await runCompletion({
+      purpose: "reception",
       messages,
+      tools,
       temperature: 0.4,
-      ...chatCompletionCompatibilityParams(MODEL, 500),
-      ...(tools.length > 0 ? { tools } : {}),
+      maxOutputTokens: 500,
     });
-    const msg = completion.choices[0]?.message;
     if (!msg) break;
 
     if (msg.tool_calls?.length) {
