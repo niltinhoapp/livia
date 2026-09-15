@@ -8,7 +8,7 @@
 // status HTTP da resposta.
 import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { ConversationTask, Establishment, Message } from "@/types";
+import type { Conversation, ConversationTask, Establishment, Message } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
@@ -16,12 +16,19 @@ process.env.META_APP_SECRET = APP_SECRET;
 // ---- dublês ----
 const findEstablishmentByPhoneNumberId = vi.fn();
 const getEstablishment = vi.fn();
+const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationTask = vi.fn();
 const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const closeConversation = vi.fn();
+const tryCloseAutomatedConversation = vi.fn(async (..._a: unknown[]) => true);
+const reopenConversation = vi.fn(async (..._a: unknown[]) => undefined);
+const getPendingTask = vi.fn(
+  async (..._a: unknown[]): Promise<{ status: "open" | "resolved" } | null> => null,
+);
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
@@ -35,10 +42,14 @@ const deriveTaskState = vi.fn(
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
   getEstablishment: (...a: unknown[]) => getEstablishment(...a),
+  getConversation: (...a: unknown[]) => getConversation(...a),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: vi.fn(),
+  closeConversation: (...a: unknown[]) => closeConversation(...a),
+  tryCloseAutomatedConversation: (...a: unknown[]) => tryCloseAutomatedConversation(...a),
+  reopenConversation: (...a: unknown[]) => reopenConversation(...a),
   setConversationIntent: vi.fn(),
   setConversationTask: (...a: unknown[]) => setConversationTask(...a),
   setConversationSummary: vi.fn(),
@@ -46,6 +57,7 @@ vi.mock("@/lib/repo", () => ({
   upsertCustomerProfile: vi.fn(),
   upsertPendingTask: (...a: unknown[]) => upsertPendingTask(...a),
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
+  getPendingTask: (...a: unknown[]) => getPendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
 }));
 
@@ -98,6 +110,7 @@ function conversa(
   status: "bot" | "handoff" | "human" | "closed" = "bot",
   task?: ConversationTask,
   history: Message[] = [],
+  extras: Record<string, unknown> = {},
 ) {
   return {
     conversation: {
@@ -109,6 +122,7 @@ function conversa(
       lastMessageAt: 0,
       createdAt: 0,
       ...(task ? { task } : {}),
+      ...extras,
     },
     history,
   };
@@ -157,10 +171,13 @@ function payloadMensagem(overrides: { type?: string; omitText?: boolean; id?: st
 beforeEach(() => {
   vi.clearAllMocks();
   alreadyProcessed.mockResolvedValue(false);
+  tryCloseAutomatedConversation.mockResolvedValue(true);
+  getPendingTask.mockResolvedValue(null);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
   getEstablishment.mockResolvedValue(establishment());
   loadConversation.mockResolvedValue(conversa("bot"));
+  getConversation.mockResolvedValue(conversa("bot").conversation);
   findNextAppointment.mockResolvedValue(null);
   think.mockResolvedValue({
     reply: "Claro! Posso te ajudar com isso.",
@@ -169,6 +186,126 @@ beforeEach(() => {
     rescheduled: false,
     cancelled: false,
     toolCalls: [],
+  });
+});
+
+describe("OT-03F-R1 — encerramento bot ↔ bot", () => {
+  it("reproduz o loop real: uma despedida e silêncio em todas as mensagens posteriores", async () => {
+    let closed = false;
+    loadConversation.mockImplementation(async () =>
+      conversa(closed ? "closed" : "bot", undefined, [], closed ? { closedReason: "automated_recipient" } : {}),
+    );
+    tryCloseAutomatedConversation.mockImplementation(async () => {
+      if (closed) return false;
+      closed = true;
+      return true;
+    });
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.remote.intro",
+      text: "Oi, Lívia! Sou a assistente virtual do STUDIO E NAILS. Obrigada pelo contato, mas esse canal é exclusivo para atendimento dos nossos clientes. Posso te ajudar com algum agendamento?",
+    }));
+    await enviarPayload(payloadMensagem({ id: "wamid.remote.thanks", text: "Obrigada, Lívia! Qualquer coisa que precisar, é só chamar." }));
+    await enviarPayload(payloadMensagem({ id: "wamid.remote.bye", text: "Até mais!" }));
+    await enviarPayload(payloadMensagem({ id: "wamid.remote.tchau", text: "Tchau!" }));
+
+    expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0]?.[3]).toBe("Entendido! Vou encerrar por aqui. Até mais!");
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("dois webhooks concorrentes de automação produzem no máximo uma despedida", async () => {
+    tryCloseAutomatedConversation.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await Promise.all([
+      enviarPayload(payloadMensagem({ id: "wamid.bot.a", text: "Sou uma assistente virtual." })),
+      enviarPayload(payloadMensagem({ id: "wamid.bot.b", text: "Sou uma assistente virtual." })),
+    ]);
+
+    expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("impede o webhook B desatualizado de chegar à IA após A fechar destinatário automatizado", async () => {
+    let persistedConversation: Conversation = conversa("bot").conversation;
+    let releaseB!: () => void;
+    let bReachedAuthoritativeRead!: () => void;
+    const bMayContinue = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const bAtAuthoritativeRead = new Promise<void>((resolve) => {
+      bReachedAuthoritativeRead = resolve;
+    });
+
+    // Este armazenamento em memória representa o documento compartilhado:
+    // B já leu "bot", A vence a transição atômica e a releitura de B observa
+    // a persistência resultante, não o objeto local antigo.
+    loadConversation.mockResolvedValue({ conversation: persistedConversation, history: [] });
+    tryCloseAutomatedConversation.mockImplementation(async () => {
+      if (persistedConversation.status !== "bot") return false;
+      persistedConversation = {
+        ...persistedConversation,
+        status: "closed",
+        closedReason: "automated_recipient",
+      };
+      return true;
+    });
+    getConversation.mockImplementation(async () => {
+      bReachedAuthoritativeRead();
+      await bMayContinue;
+      return persistedConversation;
+    });
+
+    const webhookB = enviarPayload(payloadMensagem({
+      id: "wamid.concurrent.human-like",
+      text: "Oi! Posso ajudar você com um agendamento?",
+    }));
+    await bAtAuthoritativeRead;
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.concurrent.automated",
+      text: "Sou a assistente virtual do Studio E Nails",
+    }));
+
+    releaseB();
+    await webhookB;
+
+    expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(think).not.toHaveBeenCalled();
+    expect(persistedConversation).toMatchObject({
+      status: "closed",
+      closedReason: "automated_recipient",
+    });
+  });
+
+  it("cliente humano segue para o processamento normal", async () => {
+    await enviarPayload(payloadMensagem({ id: "wamid.human.normal", text: "quero marcar amanhã" }));
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("reabre automated_recipient apenas para uma demanda humana clara", async () => {
+    loadConversation.mockResolvedValue(conversa("closed", undefined, [], { closedReason: "automated_recipient" }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.human", text: "quero marcar um horário amanhã" }));
+
+    expect(reopenConversation).toHaveBeenCalledWith("est_odonto", PHONE);
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("despedida social após resposta conclusiva não chama IA nem WhatsApp", async () => {
+    loadConversation.mockResolvedValue(
+      conversa("bot", undefined, [{ id: "bot.1", role: "bot", text: "Tudo certo. Quando quiser, é só chamar!", at: 1 }]),
+    );
+
+    await enviarPayload(payloadMensagem({ id: "wamid.social", text: "não preciso de nada, obrigada" }));
+
+    expect(closeConversation).toHaveBeenCalledWith("est_odonto", PHONE, "social_farewell");
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
   });
 });
 

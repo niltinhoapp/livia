@@ -181,8 +181,11 @@ export interface Conversation {
   // "bot" = Livia atendendo · "handoff" = Livia identificou que precisa de
   // humano e PAROU de responder automaticamente, mas ainda ninguém assumiu ·
   // "human" = um atendente assumiu a conversa (assumir/devolver no painel) ·
-  // "closed" = reservado para uso futuro.
+  // "closed" = encerrada automaticamente.
   status: "bot" | "handoff" | "human" | "closed";
+  // A automação fica silenciosa até uma demanda humana inequívoca, avaliada
+  // deterministicamente no webhook.
+  closedReason?: "social_farewell" | "automated_recipient";
   lastMessageAt: number;
   createdAt: number;
   // Última intenção detectada na mensagem mais recente do cliente. É
