@@ -69,16 +69,6 @@ function isPassiveText(normalized: string): boolean {
   return false;
 }
 
-function hasAdditionalContent(normalized: string): boolean {
-  for (const token of PASSIVE_TOKENS) {
-    if (normalized.startsWith(token + " ") || normalized.startsWith(token + ",")) {
-      const rest = normalized.slice(token.length).replace(/^[\s,]+/, "");
-      if (rest.length > 0) return true;
-    }
-  }
-  return false;
-}
-
 function hasActiveTask(task: ConversationTask | null): boolean {
   return task !== null;
 }
@@ -99,8 +89,6 @@ export function isSilentAcknowledgement(
 
   const normalized = normalize(customerText);
   if (!normalized) return false;
-
-  if (hasAdditionalContent(normalized)) return false;
 
   if (!isPassiveText(normalized)) return false;
 
