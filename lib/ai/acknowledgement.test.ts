@@ -57,6 +57,8 @@ describe("A — silêncio esperado (sem ação pendente)", () => {
     "kkk",
     "rs",
     "hum",
+    "ah sim",
+    "ah ta",
     "valeu",
     "obg",
     "obrigado",
@@ -83,12 +85,28 @@ describe("A — silêncio esperado (sem ação pendente)", () => {
   it("silêncio com histórico vazio (primeiro contato com emoji)", () => {
     expect(isSilentAcknowledgement("👍", general, noTask, noHistory)).toBe(true);
   });
+
+  it("pergunta factual resolvida → 'ah sim' silencioso → 'ok' também silencioso", () => {
+    const locationHistory: Message[] = [
+      { id: "c1", role: "customer", text: "Onde fica a clínica?", at: 1 },
+      { id: "b1", role: "bot", text: "A clínica fica na Rua das Flores, 100.", at: 2 },
+    ];
+
+    expect(isSilentAcknowledgement("ah sim", general, noTask, locationHistory)).toBe(true);
+
+    const historyAfterSilence: Message[] = [
+      ...locationHistory,
+      { id: "c2", role: "customer", text: "ah sim", at: 3 },
+    ];
+    expect(isSilentAcknowledgement("ok", general, noTask, historyAfterSilence)).toBe(true);
+  });
 });
 
 describe("B — NÃO silenciar intenção real", () => {
   it.each([
     "ok, quero marcar amanhã",
     "blz, pode cancelar",
+    "beleza, pode cancelar",
     "beleza, quero falar com atendente",
     "certo, mas qual o preço?",
     "entendi, e como funciona?",
@@ -141,6 +159,10 @@ describe("C — resposta a ação pendente", () => {
 
   it("'10h' com task em offer_options → NÃO silenciar (não é ack)", () => {
     expect(isSilentAcknowledgement("10h", general, offerTask, offerHistory)).toBe(false);
+  });
+
+  it("'sexta de manhã' durante task ativa → NÃO silenciar", () => {
+    expect(isSilentAcknowledgement("sexta de manhã", general, collectTask, resolvedHistory)).toBe(false);
   });
 
   it("'ok' com collect_date task + statement bot → NÃO silenciar (task ativa)", () => {
