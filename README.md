@@ -125,6 +125,12 @@ O painel também possui autorização server-side própria: Firebase Authenticat
 valida a identidade, `panelAccess` permite ou bloqueia o uso do painel e
 `whatsappBeta` controla, separadamente, a coorte de conexão de WhatsApp.
 
+O provisionamento de `panelAccess` usa uma fronteira administrativa distinta,
+autenticada por sessão Firebase e autorizada pela allowlist server-only
+`PANEL_ADMIN_UIDS`. Um usuário com painel permitido não é platform admin. Sem
+essa configuração, a operação administrativa falha fechada. Conceder acesso ao
+painel não concede `whatsappBeta`; revogar o painel não desconecta o WhatsApp.
+
 Enquanto cobrança e suporte estão sendo preparados, novos clientes podem entrar por lote controlado e acompanhamento próximo.
 
 ---

@@ -226,6 +226,10 @@ class FakeTransaction {
   update(ref: FakeDoc, patch: Doc): void {
     void ref.update(patch);
   }
+
+  create(ref: FakeDoc, data: Doc): void {
+    void ref.create(data);
+  }
 }
 
 export const fakeDb = new FakeFirestore();

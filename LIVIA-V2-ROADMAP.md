@@ -476,6 +476,11 @@ Na V1 atual, Firebase Authentication, `panelAccess` e `whatsappBeta` já são
 camadas distintas: a sessão identifica a conta, o acesso ao painel é decidido
 no servidor e a coorte de WhatsApp continua independente.
 
+O provisionamento controlado é uma quarta fronteira, reservada a UIDs Firebase
+explicitamente configurados em `PANEL_ADMIN_UIDS` no servidor. A configuração
+ausente falha fechada; acesso administrativo não deriva de `panelAccess` e uma
+mudança no painel não concede nem revoga `whatsappBeta` ou conexão WhatsApp.
+
 ---
 
 # 17. Múltiplos números e equipes
