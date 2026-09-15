@@ -219,7 +219,12 @@ describe("15) nenhum I/O — guarda estrutural do módulo", () => {
   // Remove comentários de linha antes de checar: o arquivo DOCUMENTA, em
   // prosa, por que ele não usa Date.now()/process.env/etc — a checagem tem
   // que olhar só código real, senão a própria explicação vira falso-positivo.
-  const rawSource = readFileSync(join(__dirname, "stateMachine.ts"), "utf8");
+  // Normaliza \r\n -> \n antes de tudo: o regex de comentário usa `.`, que
+  // em JS NÃO casa \r — num arquivo com final de linha CRLF (ex.: após um
+  // checkout do Git com autocrlf), `//.*$` nunca batia e nada era
+  // removido, silenciosamente. Sem isto o teste passava a reprovar por um
+  // falso-positivo de line-ending, não por um problema real no código.
+  const rawSource = readFileSync(join(__dirname, "stateMachine.ts"), "utf8").replace(/\r\n/g, "\n");
   const code = rawSource
     .split("\n")
     .map((line) => line.replace(/\/\/.*$/, ""))
