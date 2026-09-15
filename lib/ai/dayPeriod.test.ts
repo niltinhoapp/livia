@@ -124,15 +124,42 @@ describe("FASE 6 — incidente real: ~23:59 local, cliente diz 'Boa noite'", () 
     expect(line).not.toContain('use "bom dia"');
   });
 
-  it("a orientação honra a saudação explícita do cliente", () => {
-    expect(line).toContain('"boa noite"');
-    expect(line.toLowerCase()).toContain("nunca a contradiga");
+  it("compatível (relógio e cliente = 'boa noite') → usa a saudação, não vai para o neutro", () => {
+    expect(line).toContain('use "boa noite"');
+    expect(line).not.toContain("NÃO use nenhuma saudação temporal");
   });
 
   it("virada da meia-noite (00:00 local) também não recomenda 'bom dia'", () => {
     const meiaNoite = greetingGuidanceLine(atUtc(0, 0), 0, "Boa noite");
     expect(meiaNoite).toContain('use "boa noite"');
     expect(meiaNoite).not.toContain('use "bom dia"');
+  });
+});
+
+describe("Precedência — relógio vs saudação do cliente (sem instruções contraditórias)", () => {
+  it("09:00 + 'boa noite' (divergente) → orienta resposta neutra, sem 'bom dia' nem 'boa noite'", () => {
+    const line = greetingGuidanceLine(atUtc(9, 0), 0, "boa noite");
+    expect(line).toContain("NÃO use nenhuma saudação temporal");
+    expect(line).not.toContain('use "bom dia"');
+    expect(line).not.toContain('use "boa noite"');
+  });
+
+  it("09:00 + 'bom dia' (compatível) → usa 'bom dia'", () => {
+    const line = greetingGuidanceLine(atUtc(9, 0), 0, "bom dia");
+    expect(line).toContain('use "bom dia"');
+    expect(line).not.toContain("NÃO use nenhuma saudação temporal");
+  });
+
+  it("18:00 + 'boa tarde' (divergente por 1 min na virada) → neutro, sem contradição", () => {
+    const line = greetingGuidanceLine(atUtc(18, 0), 0, "boa tarde");
+    expect(line).toContain("NÃO use nenhuma saudação temporal");
+    expect(line).not.toContain('use "boa noite"');
+  });
+
+  it("sem saudação do cliente → segue o relógio", () => {
+    const line = greetingGuidanceLine(atUtc(15, 0), 0, null);
+    expect(line).toContain('use "boa tarde"');
+    expect(line).not.toContain("NÃO use nenhuma saudação temporal");
   });
 });
 

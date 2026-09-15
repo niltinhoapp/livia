@@ -86,26 +86,33 @@ export function detectUserTemporalGreeting(text: string): TemporalGreeting | nul
 // Determinística e testável: dado o instante, o offset e (opcional) o texto do
 // cliente, devolve a instrução de saudação. Não decide a resposta — orienta o
 // modelo a ser coerente com o relógio e com a saudação da pessoa.
+// Precedência (OT-03G-R1): o RELÓGIO define a saudação temporal. Se a mensagem
+// atual traz uma saudação explícita INCOMPATÍVEL com o período (ex.: 09:00 e a
+// pessoa diz "boa noite"), NÃO se emitem duas instruções contraditórias ao
+// modelo — orienta-se resposta neutra, sem saudação temporal e sem corrigir a
+// pessoa. Quando a saudação da pessoa coincide com o relógio (ex.: 23:59 +
+// "boa noite"), ou quando não há saudação, usa-se a do relógio normalmente.
 export function greetingGuidanceLine(
   nowMs: number,
   offsetMin: number,
   userText?: string | null,
 ): string {
   const period = dayPeriodFromLocal(nowMs, offsetMin);
-  const greeting = temporalGreeting(period);
+  const clockGreeting = temporalGreeting(period);
   const userGreeting = userText ? detectUserTemporalGreeting(userText) : null;
+  const base = `Período do dia agora (horário local): ${PERIOD_LABEL[period]}.`;
 
-  const parts = [
-    `Período do dia agora (horário local): ${PERIOD_LABEL[period]}.`,
-    `Se usar uma saudação temporal, use "${greeting}", coerente com o período — nunca uma saudação de outro período (jamais "bom dia" à noite ou de madrugada).`,
-  ];
-  if (userGreeting) {
-    parts.push(
-      `A pessoa cumprimentou com "${userGreeting}"; acompanhe essa saudação e nunca a contradiga.`,
-    );
+  if (userGreeting && userGreeting !== clockGreeting) {
+    return [
+      base,
+      `A pessoa cumprimentou com "${userGreeting}", incompatível com o horário atual.`,
+      `Para não contradizê-la nem corrigi-la, NÃO use nenhuma saudação temporal ("bom dia"/"boa tarde"/"boa noite") — responda de forma neutra (ex.: "Como posso ajudar?", "Até mais!").`,
+    ].join(" ");
   }
-  parts.push(
+
+  return [
+    base,
+    `Se usar uma saudação temporal, use "${clockGreeting}", coerente com o período — nunca uma de outro período.`,
     `Não force saudação em toda resposta. Em despedidas, uma saudação neutra ("até mais", "até logo") também é adequada e evita incoerência na virada do dia.`,
-  );
-  return parts.join(" ");
+  ].join(" ");
 }

@@ -934,11 +934,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
   const booking = est.bot.bookingEnabled;
 
-  // Offset (para contexto de data e para as ferramentas). Sem booking, evita
-  // o custo de ler a config — as ferramentas que precisam dela e não a
-  // recebem carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
-  const config = booking ? await getScheduleConfig(est.id) : null;
-  const offset = config?.utcOffsetMinutes ?? -180;
+  // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
+  // (getScheduleConfig devolve o default quando não há doc), inclusive sem
+  // booking: a data do prompt e a saudação temporal precisam do fuso certo
+  // mesmo sem agenda. Antes o offset caía em -180 quando booking estava
+  // desligado, ignorando o fuso configurado (OT-03G-R1).
+  const scheduleConfig = await getScheduleConfig(est.id);
+  const offset = scheduleConfig.utcOffsetMinutes;
+  // O toolCtx segue recebendo a config só quando há booking — comportamento de
+  // agenda inalterado; as ferramentas sem booking que precisam dela já a
+  // carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
+  const config = booking ? scheduleConfig : null;
   // Um único instante para todo o turno — o mesmo alimenta a data do prompt e
   // a saudação temporal, sem risco de cruzar um limite de período entre duas
   // leituras de relógio.
