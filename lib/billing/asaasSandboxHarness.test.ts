@@ -222,6 +222,27 @@ describe("customer reconciliation", () => {
     expect(result.ok && result.action === "customer" && result.outcome).toBe("reused");
   });
 
+  it("sinaliza falha transitória de verificação sem perder customer conhecido", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.provisionCustomer).mockResolvedValue({
+      ok: true,
+      phase: "succeeded",
+      outcome: "verification_failed",
+      intent: customerIntent(),
+      verificationError: { kind: "timeout" },
+    });
+    const result = await executeAsaasSandboxHarness(command, deps);
+    expect(result).toEqual({
+      ok: true,
+      action: "customer",
+      outcome: "verification_failed",
+      customer: {
+        id: CUSTOMER_ID,
+        externalReference: sandboxCustomerExternalReference(TEST_RUN_ID),
+      },
+    });
+  });
+
   it("mapeia conflito durável sem executar POST diretamente", async () => {
     const deps = dependencies();
     vi.mocked(deps.provisionCustomer).mockResolvedValue({ ok: false, phase: "conflict", reason: "multiple_customers" });

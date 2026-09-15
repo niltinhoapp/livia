@@ -52,8 +52,9 @@ export type SandboxCustomerResult =
   | {
       ok: true;
       phase: "succeeded";
-      outcome: "created" | "reconciled" | "verified";
+      outcome: "created" | "reconciled" | "verified" | "verification_failed";
       intent: SandboxCustomerIntent;
+      verificationError?: SanitizedCustomerError;
     }
   | {
       ok: true;
@@ -245,7 +246,11 @@ async function markReconciling(
   error: AsaasError | null,
 ): Promise<SandboxCustomerIntent | null> {
   return updateIntent(seed, (current) => {
-    if (current.phase === "conflict" || current.phase === "failed_terminal") {
+    if (
+      current.phase === "conflict" ||
+      current.phase === "failed_terminal" ||
+      current.phase === "succeeded"
+    ) {
       return null;
     }
     return {
@@ -300,10 +305,20 @@ export async function provisionSandboxCustomer(
 
   const lookup = await deps.asaas.findCustomersByExternalReference(seed.externalReference);
   if (!lookup.ok) {
+    if (reservation.intent.phase === "succeeded") {
+      // Uma leitura transitória não desfaz um sucesso durável conhecido.
+      // Sinalizamos a falha sanitizada sem qualquer escrita e sem POST.
+      return {
+        ok: true,
+        phase: "succeeded",
+        outcome: "verification_failed",
+        intent: reservation.intent,
+        verificationError: sanitizedError(lookup.error),
+      };
+    }
     if (
       reservation.intent.phase === "creating" ||
-      reservation.intent.phase === "reconciling" ||
-      reservation.intent.phase === "succeeded"
+      reservation.intent.phase === "reconciling"
     ) {
       const intent = await markReconciling(seed, deps.now(), lookup.error);
       return intent

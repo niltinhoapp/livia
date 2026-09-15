@@ -162,6 +162,55 @@ describe("ambiguidade e replay", () => {
     expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "verified" });
     expect(replay.createCustomer).not.toHaveBeenCalled();
   });
+
+  it.each(["timeout", "network"] as const)(
+    "succeeded + falha transitória %s preserva sucesso e externalCustomerId",
+    async (kind) => {
+      await provisionSandboxCustomer(INPUT, dependencies(client()));
+      const before = await getSandboxCustomerIntent(INPUT.testRunId);
+      const replay = client({
+        findCustomersByExternalReference: vi.fn(async () => failure(kind)),
+      });
+
+      const result = await provisionSandboxCustomer(INPUT, dependencies(replay));
+      const after = await getSandboxCustomerIntent(INPUT.testRunId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        phase: "succeeded",
+        outcome: "verification_failed",
+        verificationError: { kind },
+      });
+      expect(after).toEqual(before);
+      expect(after).toMatchObject({ phase: "succeeded", externalCustomerId: CUSTOMER.id });
+      expect(replay.createCustomer).not.toHaveBeenCalled();
+    },
+  );
+
+  it("succeeded + customer diferente vira conflict sem POST", async () => {
+    await provisionSandboxCustomer(INPUT, dependencies(client()));
+    const replay = client({
+      findCustomersByExternalReference: vi.fn(async () => ({
+        ok: true as const,
+        data: [{ ...CUSTOMER, id: "cus_other" }],
+      })),
+    });
+
+    const result = await provisionSandboxCustomer(INPUT, dependencies(replay));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "customer_id_changed" });
+    expect(await getSandboxCustomerIntent(INPUT.testRunId)).toMatchObject({ phase: "conflict" });
+    expect(replay.createCustomer).not.toHaveBeenCalled();
+  });
+
+  it("succeeded + lookup vazio mantém fail-closed e executa zero POST", async () => {
+    await provisionSandboxCustomer(INPUT, dependencies(client()));
+    const replay = client();
+
+    const result = await provisionSandboxCustomer(INPUT, dependencies(replay));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "known_customer_missing" });
+    expect(await getSandboxCustomerIntent(INPUT.testRunId)).toMatchObject({ phase: "conflict" });
+    expect(replay.createCustomer).not.toHaveBeenCalled();
+  });
 });
 
 describe("concorrência e transactions", () => {

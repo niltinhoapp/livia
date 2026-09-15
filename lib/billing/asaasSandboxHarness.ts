@@ -67,7 +67,7 @@ export type SandboxHarnessResult =
   | {
       ok: true;
       action: "customer";
-      outcome: "created" | "reused" | "reconciled" | "reconciling";
+      outcome: "created" | "reused" | "reconciled" | "reconciling" | "verification_failed";
       customer: { id: string | null; externalReference: string };
     }
   | {
