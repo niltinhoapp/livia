@@ -8,7 +8,7 @@
 // status HTTP da resposta.
 import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { Establishment } from "@/types";
+import type { ConversationTask, Establishment, Message } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
@@ -18,11 +18,19 @@ const findEstablishmentByPhoneNumberId = vi.fn();
 const getEstablishment = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
+const setConversationTask = vi.fn();
 const upsertPendingTask = vi.fn();
+const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
+const findNextAppointment = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
+const setStatus = vi.fn();
+const deriveTaskState = vi.fn(
+  (input: { existingTask?: ConversationTask | null; booked: boolean }) =>
+    input.booked ? null : (input.existingTask ?? null),
+);
 
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
@@ -32,12 +40,12 @@ vi.mock("@/lib/repo", () => ({
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: vi.fn(),
   setConversationIntent: vi.fn(),
-  setConversationTask: vi.fn(),
+  setConversationTask: (...a: unknown[]) => setConversationTask(...a),
   setConversationSummary: vi.fn(),
   getCustomerProfile: vi.fn(async () => null),
   upsertCustomerProfile: vi.fn(),
   upsertPendingTask: (...a: unknown[]) => upsertPendingTask(...a),
-  resolvePendingTask: vi.fn(),
+  resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
 }));
 
@@ -48,13 +56,18 @@ vi.mock("@/lib/whatsapp/client", () => ({
 }));
 
 vi.mock("@/lib/ai/brain", () => ({ think: (...a: unknown[]) => think(...a) }));
-vi.mock("@/lib/ai/intent", () => ({ detectIntent: () => ({ type: "other" }) }));
-vi.mock("@/lib/ai/taskState", () => ({ deriveTaskState: () => null }));
+vi.mock("@/lib/ai/intent", () => ({
+  detectIntent: () => ({ type: "general_question", confidence: 0.2, entities: {} }),
+}));
+vi.mock("@/lib/ai/taskState", () => ({
+  deriveTaskState: (input: { existingTask?: ConversationTask | null; booked: boolean }) => deriveTaskState(input),
+}));
 vi.mock("@/lib/ai/pendingTask", () => ({ derivePendingTask: () => null }));
 vi.mock("@/lib/ai/summarize", () => ({ summarizeConversation: vi.fn(async () => null) }));
 vi.mock("@/lib/scheduling", () => ({
-  findNextAppointment: vi.fn(async () => null),
-  setStatus: vi.fn(),
+  findNextAppointment: (...a: unknown[]) => findNextAppointment(...a),
+  setStatus: (...a: unknown[]) => setStatus(...a),
+  findCustomerNameFromAppointments: vi.fn(async () => null),
 }));
 
 const { POST } = await import("@/app/api/webhooks/whatsapp/route");
@@ -81,10 +94,23 @@ function establishment(over: Partial<Establishment> = {}): Establishment {
   } as unknown as Establishment;
 }
 
-function conversa(status: "bot" | "handoff" | "human" | "closed" = "bot") {
+function conversa(
+  status: "bot" | "handoff" | "human" | "closed" = "bot",
+  task?: ConversationTask,
+  history: Message[] = [],
+) {
   return {
-    conversation: { id: PHONE, establishmentId: "est_odonto", contactPhone: PHONE, contactName: "Ana", status, lastMessageAt: 0, createdAt: 0 },
-    history: [],
+    conversation: {
+      id: PHONE,
+      establishmentId: "est_odonto",
+      contactPhone: PHONE,
+      contactName: "Ana",
+      status,
+      lastMessageAt: 0,
+      createdAt: 0,
+      ...(task ? { task } : {}),
+    },
+    history,
   };
 }
 
@@ -104,13 +130,13 @@ function enviarPayload(body: unknown) {
   return POST(req as never);
 }
 
-function payloadMensagem(overrides: { type?: string; omitText?: boolean; id?: string } = {}) {
+function payloadMensagem(overrides: { type?: string; omitText?: boolean; id?: string; text?: string } = {}) {
   const msg: Record<string, unknown> = {
     id: overrides.id ?? "wamid.1",
     from: PHONE,
     type: overrides.type ?? "text",
   };
-  if (!overrides.omitText) msg.text = { body: "cancela esse" };
+  if (!overrides.omitText) msg.text = { body: overrides.text ?? "cancela esse" };
   return {
     entry: [
       {
@@ -135,6 +161,7 @@ beforeEach(() => {
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
   getEstablishment.mockResolvedValue(establishment());
   loadConversation.mockResolvedValue(conversa("bot"));
+  findNextAppointment.mockResolvedValue(null);
   think.mockResolvedValue({
     reply: "Claro! Posso te ajudar com isso.",
     handoff: false,
@@ -142,6 +169,182 @@ beforeEach(() => {
     rescheduled: false,
     cancelled: false,
     toolCalls: [],
+  });
+});
+
+describe("lifecycle de ConversationTask concluida", () => {
+  const activeTask: ConversationTask = {
+    type: "schedule_appointment",
+    state: "confirm",
+    collectedData: { date: "2026-09-15", serviceName: "Limpeza" },
+    missingData: [],
+    updatedAt: 1,
+  };
+
+  it.each([
+    ["create", { booked: true, rescheduled: false, cancelled: false }],
+    ["reschedule", { booked: false, rescheduled: true, cancelled: false }],
+    ["cancel", { booked: false, rescheduled: false, cancelled: true }],
+    ["confirm", { booked: false, rescheduled: false, cancelled: false }],
+  ])("%s concluido limpa a task persistida", async (_label, outcome) => {
+    loadConversation.mockResolvedValue(conversa("bot", activeTask));
+    think.mockResolvedValueOnce({
+      reply: "Operacao concluida.",
+      handoff: false,
+      ...outcome,
+      agendaMutationCompleted: true,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({ id: `wamid.${_label}` }));
+
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+  });
+
+  it("regressao: confirmacao concluida limpa a task e o proximo ok fica silencioso", async () => {
+    let persistedTask: ConversationTask | null = activeTask;
+    const history: Message[] = [];
+    loadConversation.mockImplementation(async () => conversa("bot", persistedTask ?? undefined, history));
+    setConversationTask.mockImplementation(async (_estId, _conversationId, nextTask) => {
+      persistedTask = nextTask as ConversationTask | null;
+    });
+    appendMessage.mockImplementation(async (_estId, _conversationId, role, text) => {
+      history.push({ id: `m-${history.length}`, role, text, at: history.length + 1 });
+      return { id: `m-${history.length}`, at: history.length };
+    });
+    think.mockResolvedValueOnce({
+      reply: "Prontinho! Sua presenca esta confirmada.",
+      handoff: false,
+      booked: false,
+      rescheduled: false,
+      cancelled: false,
+      agendaMutationCompleted: true,
+      toolCalls: [{ name: "confirm_appointment", args: { appointmentId: "appt-1" } }],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.confirm", text: "confirmo minha presenca" }));
+    await enviarPayload(payloadMensagem({ id: "wamid.ok", text: "ok" }));
+
+    expect(persistedTask).toBeNull();
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["ok", "confirmed"],
+    ["cancelar", "cancelled"],
+  ])("atalho de lembrete (%s) limpa task depois de status %s", async (text, expectedStatus) => {
+    loadConversation.mockResolvedValue(conversa("bot", activeTask));
+    findNextAppointment.mockResolvedValueOnce({
+      id: "appt-1",
+      establishmentId: "est_odonto",
+      contactPhone: PHONE,
+      contactName: "Ana",
+      serviceName: "Limpeza",
+      startAt: Date.now() + 86_400_000,
+      durationMin: 30,
+      status: "pending",
+      source: "bot",
+      note: null,
+      createdAt: 1,
+      confirmedAt: null,
+      reminderSentAt: 1,
+    });
+
+    await enviarPayload(payloadMensagem({ id: `wamid.reminder.${expectedStatus}`, text }));
+
+    expect(setStatus).toHaveBeenCalledWith("est_odonto", "appt-1", expectedStatus);
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("falha real nao encerra a task ativa", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", activeTask));
+    think.mockResolvedValueOnce({
+      reply: "Nao consegui concluir agora.",
+      handoff: false,
+      booked: false,
+      rescheduled: false,
+      cancelled: false,
+      agendaMutationCompleted: false,
+      toolCalls: [{ name: "confirm_appointment", args: { appointmentId: "appt-1" } }],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.failed" }));
+
+    expect(setConversationTask).toHaveBeenCalledWith(
+      "est_odonto",
+      PHONE,
+      expect.objectContaining({ state: "confirm" }),
+    );
+  });
+
+  it("mutacao concluida limpa a task mesmo se o envio da resposta falhar", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    loadConversation.mockResolvedValue(conversa("bot", activeTask));
+    think.mockResolvedValueOnce({
+      reply: "Prontinho! Sua presenca esta confirmada.",
+      handoff: false,
+      booked: false,
+      rescheduled: false,
+      cancelled: false,
+      agendaMutationCompleted: true,
+      toolCalls: [{ name: "confirm_appointment", args: { appointmentId: "appt-1" } }],
+    });
+    sendText.mockRejectedValueOnce(new Error("falha controlada"));
+
+    const response = await enviarPayload(payloadMensagem({ id: "wamid.send-failed", text: "confirmo" }));
+
+    expect(response.status).toBe(200);
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    consoleError.mockRestore();
+  });
+
+  it("assunto novo depois da conclusao nao reativa a task antiga", async () => {
+    let persistedTask: ConversationTask | null = activeTask;
+    loadConversation.mockImplementation(async () => conversa("bot", persistedTask ?? undefined));
+    setConversationTask.mockImplementation(async (_estId, _conversationId, nextTask) => {
+      persistedTask = nextTask as ConversationTask | null;
+    });
+    think
+      .mockResolvedValueOnce({
+        reply: "Prontinho! Seu horario foi remarcado.",
+        handoff: false,
+        booked: false,
+        rescheduled: true,
+        cancelled: false,
+        agendaMutationCompleted: true,
+        toolCalls: [],
+      })
+      .mockResolvedValueOnce({
+        reply: "Ficamos no centro.",
+        handoff: false,
+        booked: false,
+        rescheduled: false,
+        cancelled: false,
+        agendaMutationCompleted: false,
+        toolCalls: [],
+      });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.rescheduled", text: "pode remarcar" }));
+    await enviarPayload(payloadMensagem({ id: "wamid.address", text: "qual e o endereco?" }));
+
+    expect(persistedTask).toBeNull();
+    expect(think).toHaveBeenCalledTimes(2);
+  });
+
+  it("ok durante task realmente ativa continua chegando a IA", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", activeTask));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.active-ok", text: "ok" }));
+
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(setConversationTask).toHaveBeenCalledWith(
+      "est_odonto",
+      PHONE,
+      expect.objectContaining({ state: "confirm" }),
+    );
   });
 });
 

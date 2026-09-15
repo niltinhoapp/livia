@@ -401,6 +401,7 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     const result = await run("Confirmo minha presença", null);
 
     expect(status).toBe("confirmed");
+    expect(result.agendaMutationCompleted).toBe(true);
     expect(runTool.mock.calls.filter(([name]) => name === "create_appointment")).toHaveLength(0);
     expect(result.reply).toMatch(/presença.*confirmada/i);
     expect(result.reply).not.toMatch(/avaliação/i);
@@ -447,5 +448,6 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     expect(result.booked).toBe(false);
     expect(result.rescheduled).toBe(false);
     expect(result.cancelled).toBe(false);
+    expect(result.agendaMutationCompleted).toBe(false);
   });
 });

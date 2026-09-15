@@ -81,7 +81,7 @@ vi.mock("openai", () => ({ default: class { chat = { completions: { create: asyn
 const { fakeDb } = await import("@/lib/__testing__/firestoreFake");
 const { think } = await import("@/lib/ai/brain");
 const { deriveTaskState } = await import("@/lib/ai/taskState");
-const { createAppointment, saveScheduleConfig, defaultScheduleConfig } = await import("@/lib/scheduling");
+const { createAppointment, saveScheduleConfig, defaultScheduleConfig, setStatus } = await import("@/lib/scheduling");
 type A = import("@/types").Appointment; type CT = import("@/types").ConversationTask;
 type Est = import("@/types").Establishment; type KB = import("@/types").KnowledgeBase; type Msg = import("@/types").Message;
 
@@ -101,7 +101,7 @@ async function turn(text: string, history: Msg[], task: CT | null) {
   const intent = detectIntent(text);
   const h = [...history, { id: `c${history.length}`, role: "customer" as const, text, at: NOW }];
   const r = await think({ est: est(), kb: kb(), history: h, contactPhone: PHONE, contactName: "C", customerProfile: null, task, intent });
-  const op = r.booked || r.rescheduled || r.cancelled;
+  const op = r.agendaMutationCompleted || r.booked || r.rescheduled || r.cancelled;
   const next = deriveTaskState({ existingTask: task, intent, toolCalls: r.toolCalls, booked: op, statedDate: r.statedDate, statedService: r.statedService });
   const persisted = next && r.pendingCancelAppointmentId ? { ...next, collectedData: { ...next.collectedData, appointmentId: r.pendingCancelAppointmentId } } : next;
   history.push({ id: `c${history.length}`, role: "customer", text, at: NOW });
@@ -180,6 +180,24 @@ describe("OT-02H — fluxo de remarcação", () => {
     const out = await turn("confirmo presença", [], null);
     expect(appts().find((a) => a.id === id)?.status).toBe("confirmed");
     expect(out.reply).toMatch(/confirmad/i);
+  });
+
+  it("confirmação já realizada conclui o fluxo e limpa a task sem nova escrita", async () => {
+    await seed([{ s: "Avaliação", d: AMANHA, t: "10:00" }]);
+    const id = mine()[0]!.id;
+    await setStatus(EST, id, "confirmed");
+    const confirmedAt = appts().find((a) => a.id === id)!.confirmedAt;
+    vi.setSystemTime(NOW + 60_000);
+    const task: CT = { type: "schedule_appointment", state: "confirm", collectedData: { appointmentId: id }, missingData: [], updatedAt: NOW };
+    modelScript = [toolMsg("confirm_appointment", { appointmentId: id }), { content: "ok" }];
+
+    const out = await turn("confirmo presença", [], task);
+    const appointment = appts().find((a) => a.id === id)!;
+
+    expect(appointment.status).toBe("confirmed");
+    expect(appointment.confirmedAt).toBe(confirmedAt);
+    expect(out.agendaMutationCompleted).toBe(true);
+    expect(out.task).toBeNull();
   });
 
   it("guarda de segunda mutação continua bloqueando", async () => {
