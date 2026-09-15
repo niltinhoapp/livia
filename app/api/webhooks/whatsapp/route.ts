@@ -17,6 +17,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   findEstablishmentByPhoneNumberId,
   getEstablishment,
+  getConversation,
   getKnowledgeBase,
   loadConversation,
   appendMessage,
@@ -433,6 +434,25 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       });
       return;
     }
+  }
+
+  // A conversa carregada no início do webhook pode estar defasada: outro
+  // processamento pode ter identificado um destinatário automatizado e
+  // fechado o contexto enquanto este seguia pelos caminhos normais. Releia
+  // antes de qualquer continuação que possa atender ou responder. Isto não
+  // substitui serialização distribuída, mas impede o fluxo já fechado antes
+  // deste ponto de chegar a lembrete, IA, ferramentas ou sendText.
+  const authoritativeConversation = await getConversation(est.id, conversation.id);
+  if (
+    authoritativeConversation?.status === "closed" &&
+    authoritativeConversation.closedReason === "automated_recipient"
+  ) {
+    logStage("automated recipient closed before continuing, no reply", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+    });
+    return;
   }
 
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe

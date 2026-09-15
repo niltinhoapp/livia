@@ -26,6 +26,7 @@ const findNextAppointment = vi.fn(async (..._a: unknown[]) => null);
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
   getEstablishment: vi.fn(async () => null),
+  getConversation: vi.fn(async () => null),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),

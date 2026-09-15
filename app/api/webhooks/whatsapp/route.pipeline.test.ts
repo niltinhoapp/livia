@@ -8,7 +8,7 @@
 // status HTTP da resposta.
 import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { ConversationTask, Establishment, Message } from "@/types";
+import type { Conversation, ConversationTask, Establishment, Message } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
@@ -16,6 +16,7 @@ process.env.META_APP_SECRET = APP_SECRET;
 // ---- dublês ----
 const findEstablishmentByPhoneNumberId = vi.fn();
 const getEstablishment = vi.fn();
+const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationTask = vi.fn();
@@ -41,6 +42,7 @@ const deriveTaskState = vi.fn(
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
   getEstablishment: (...a: unknown[]) => getEstablishment(...a),
+  getConversation: (...a: unknown[]) => getConversation(...a),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
@@ -175,6 +177,7 @@ beforeEach(() => {
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
   getEstablishment.mockResolvedValue(establishment());
   loadConversation.mockResolvedValue(conversa("bot"));
+  getConversation.mockResolvedValue(conversa("bot").conversation);
   findNextAppointment.mockResolvedValue(null);
   think.mockResolvedValue({
     reply: "Claro! Posso te ajudar com isso.",
@@ -223,6 +226,65 @@ describe("OT-03F-R1 — encerramento bot ↔ bot", () => {
     expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(2);
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(think).not.toHaveBeenCalled();
+  });
+
+  it("impede o webhook B desatualizado de chegar à IA após A fechar destinatário automatizado", async () => {
+    let persistedConversation: Conversation = conversa("bot").conversation;
+    let releaseB!: () => void;
+    let bReachedAuthoritativeRead!: () => void;
+    const bMayContinue = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const bAtAuthoritativeRead = new Promise<void>((resolve) => {
+      bReachedAuthoritativeRead = resolve;
+    });
+
+    // Este armazenamento em memória representa o documento compartilhado:
+    // B já leu "bot", A vence a transição atômica e a releitura de B observa
+    // a persistência resultante, não o objeto local antigo.
+    loadConversation.mockResolvedValue({ conversation: persistedConversation, history: [] });
+    tryCloseAutomatedConversation.mockImplementation(async () => {
+      if (persistedConversation.status !== "bot") return false;
+      persistedConversation = {
+        ...persistedConversation,
+        status: "closed",
+        closedReason: "automated_recipient",
+      };
+      return true;
+    });
+    getConversation.mockImplementation(async () => {
+      bReachedAuthoritativeRead();
+      await bMayContinue;
+      return persistedConversation;
+    });
+
+    const webhookB = enviarPayload(payloadMensagem({
+      id: "wamid.concurrent.human-like",
+      text: "Oi! Posso ajudar você com um agendamento?",
+    }));
+    await bAtAuthoritativeRead;
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.concurrent.automated",
+      text: "Sou a assistente virtual do Studio E Nails",
+    }));
+
+    releaseB();
+    await webhookB;
+
+    expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(think).not.toHaveBeenCalled();
+    expect(persistedConversation).toMatchObject({
+      status: "closed",
+      closedReason: "automated_recipient",
+    });
+  });
+
+  it("cliente humano segue para o processamento normal", async () => {
+    await enviarPayload(payloadMensagem({ id: "wamid.human.normal", text: "quero marcar amanhã" }));
+
+    expect(think).toHaveBeenCalledTimes(1);
   });
 
   it("reabre automated_recipient apenas para uma demanda humana clara", async () => {
