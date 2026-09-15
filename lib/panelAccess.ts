@@ -20,6 +20,8 @@ export interface PanelAccessAuditEvent {
   requestId: string;
 }
 
+type PanelAccessEventIdentity = Omit<PanelAccessAuditEvent, "before" | "createdAt">;
+
 export type PanelAccessFailureReason =
   | "target_user_not_found"
   | "establishment_not_found"
@@ -63,7 +65,7 @@ function stateOf(tenant: Establishment | undefined): PanelAccessState | null {
 
 function eventMatches(
   event: Partial<PanelAccessAuditEvent>,
-  expected: Omit<PanelAccessAuditEvent, "before" | "createdAt">,
+  expected: PanelAccessEventIdentity,
 ): event is PanelAccessAuditEvent {
   return (
     event.action === expected.action &&
@@ -78,7 +80,7 @@ function eventMatches(
 
 function replayResult(
   event: Partial<PanelAccessAuditEvent>,
-  expected: Omit<PanelAccessAuditEvent, "before" | "createdAt">,
+  expected: PanelAccessEventIdentity,
 ): PanelAccessOperationResult {
   if (!eventMatches(event, expected)) return { ok: false, reason: "request_id_conflict" };
   return {
@@ -87,6 +89,35 @@ function replayResult(
     panelAccess: expected.after,
     outcome: "replayed",
   };
+}
+
+function requestIdentity(identity: PanelAccessEventIdentity): string {
+  return JSON.stringify([
+    identity.action,
+    identity.actorUid,
+    identity.establishmentId,
+    identity.ownerUid,
+    identity.after,
+    identity.expected,
+    identity.requestId,
+  ]);
+}
+
+function reservationMatches(
+  reservation: Record<string, unknown> | undefined,
+  identity: PanelAccessEventIdentity,
+): boolean {
+  return reservation?.identity === requestIdentity(identity);
+}
+
+function requestReservationRef(requestId: string) {
+  // Índice global de unicidade do requestId. O evento no tenant continua
+  // sendo a auditoria canônica; ambos são criados na mesma transação.
+  return db
+    .collection("_system")
+    .doc("panel-access-idempotency-v1")
+    .collection("requests")
+    .doc(requestId);
 }
 
 async function firebaseUserExists(uid: string): Promise<boolean> {
@@ -129,7 +160,11 @@ export async function provisionPanelAccess(
 
     const ref = establishmentRef(establishmentId);
     const eventRef = ref.collection("panelAccessEvents").doc(input.requestId);
-    const eventSnap = await tx.get(eventRef);
+    const reservationRef = requestReservationRef(input.requestId);
+    const [eventSnap, reservationSnap] = await Promise.all([
+      tx.get(eventRef),
+      tx.get(reservationRef),
+    ]);
     const eventIdentity = {
       action: "provision" as const,
       actorUid: input.actorUid,
@@ -139,14 +174,36 @@ export async function provisionPanelAccess(
       expected: input.expectedPanelAccess,
       requestId: input.requestId,
     };
-    if (eventSnap.exists) {
+    if (eventSnap.exists || reservationSnap.exists) {
+      if (
+        reservationSnap.exists &&
+        !reservationMatches(reservationSnap.data() as Record<string, unknown>, eventIdentity)
+      ) {
+        return { ok: false, reason: "request_id_conflict" as const };
+      }
+      if (
+        eventSnap.exists &&
+        !eventMatches(eventSnap.data() as Partial<PanelAccessAuditEvent>, eventIdentity)
+      ) {
+        return { ok: false, reason: "request_id_conflict" as const };
+      }
+      if (!eventSnap.exists || !reservationSnap.exists) {
+        return { ok: false, reason: "invalid_persisted_state" as const };
+      }
       return replayResult(eventSnap.data() as Partial<PanelAccessAuditEvent>, eventIdentity);
     }
 
     const before = stateOf(tenant);
     if (before === null) return { ok: false, reason: "invalid_persisted_state" as const };
     if (before !== input.expectedPanelAccess) return { ok: false, reason: "state_conflict" as const };
+    const event: PanelAccessAuditEvent = {
+      ...eventIdentity,
+      before,
+      createdAt: Date.now(),
+    };
     if (before === "allowed") {
+      tx.create(reservationRef, { identity: requestIdentity(eventIdentity) });
+      tx.create(eventRef, event);
       return {
         ok: true,
         establishmentId,
@@ -155,7 +212,7 @@ export async function provisionPanelAccess(
       };
     }
 
-    const now = Date.now();
+    const now = event.createdAt;
     if (!tenant) {
       const created: Establishment = {
         id: establishmentId,
@@ -171,7 +228,8 @@ export async function provisionPanelAccess(
     } else {
       tx.update(ref, { panelAccess: "allowed" });
     }
-    tx.create(eventRef, { ...eventIdentity, before, createdAt: now });
+    tx.create(reservationRef, { identity: requestIdentity(eventIdentity) });
+    tx.create(eventRef, event);
 
     return {
       ok: true,
@@ -194,16 +252,17 @@ export async function changePanelAccess(
   const targetAccess: PanelAccess = input.action === "grant" ? "allowed" : "blocked";
   const ref = establishmentRef(input.establishmentId);
   const eventRef = ref.collection("panelAccessEvents").doc(input.requestId);
+  const reservationRef = requestReservationRef(input.requestId);
 
   return db.runTransaction(async (tx) => {
-    const [tenantSnap, eventSnap] = await Promise.all([tx.get(ref), tx.get(eventRef)]);
+    const [tenantSnap, eventSnap, reservationSnap] = await Promise.all([
+      tx.get(ref),
+      tx.get(eventRef),
+      tx.get(reservationRef),
+    ]);
     if (!tenantSnap.exists) return { ok: false, reason: "establishment_not_found" as const };
 
     const tenant = tenantSnap.data() as Establishment;
-    if (tenant.ownerUid !== input.ownerUid) {
-      return { ok: false, reason: "owner_uid_mismatch" as const };
-    }
-
     const eventIdentity = {
       action: input.action,
       actorUid: input.actorUid,
@@ -213,8 +272,32 @@ export async function changePanelAccess(
       expected: input.expectedPanelAccess,
       requestId: input.requestId,
     };
-    if (eventSnap.exists) {
-      return replayResult(eventSnap.data() as Partial<PanelAccessAuditEvent>, eventIdentity);
+    if (eventSnap.exists || reservationSnap.exists) {
+      if (
+        reservationSnap.exists &&
+        !reservationMatches(reservationSnap.data() as Record<string, unknown>, eventIdentity)
+      ) {
+        return { ok: false, reason: "request_id_conflict" as const };
+      }
+      if (
+        eventSnap.exists &&
+        !eventMatches(eventSnap.data() as Partial<PanelAccessAuditEvent>, eventIdentity)
+      ) {
+        return { ok: false, reason: "request_id_conflict" as const };
+      }
+      if (!eventSnap.exists || !reservationSnap.exists) {
+        return { ok: false, reason: "invalid_persisted_state" as const };
+      }
+      const replay = replayResult(eventSnap.data() as Partial<PanelAccessAuditEvent>, eventIdentity);
+      if (!replay.ok) return replay;
+      if (tenant.ownerUid !== input.ownerUid) {
+        return { ok: false, reason: "owner_uid_mismatch" as const };
+      }
+      return replay;
+    }
+
+    if (tenant.ownerUid !== input.ownerUid) {
+      return { ok: false, reason: "owner_uid_mismatch" as const };
     }
 
     const before = stateOf(tenant);
@@ -222,7 +305,15 @@ export async function changePanelAccess(
       return { ok: false, reason: "invalid_persisted_state" as const };
     }
     if (before !== input.expectedPanelAccess) return { ok: false, reason: "state_conflict" as const };
+
+    const event: PanelAccessAuditEvent = {
+      ...eventIdentity,
+      before,
+      createdAt: Date.now(),
+    };
     if (before === targetAccess) {
+      tx.create(reservationRef, { identity: requestIdentity(eventIdentity) });
+      tx.create(eventRef, event);
       return {
         ok: true,
         establishmentId: input.establishmentId,
@@ -231,12 +322,8 @@ export async function changePanelAccess(
       };
     }
 
-    const event: PanelAccessAuditEvent = {
-      ...eventIdentity,
-      before,
-      createdAt: Date.now(),
-    };
     tx.update(ref, { panelAccess: targetAccess });
+    tx.create(reservationRef, { identity: requestIdentity(eventIdentity) });
     tx.create(eventRef, event);
 
     return {

@@ -51,6 +51,10 @@ function events(id: string): Record<string, unknown>[] {
   return [...fakeDb.col(`establishments/${id}/panelAccessEvents`).values()];
 }
 
+function requestReceipts(): Record<string, unknown>[] {
+  return [...fakeDb.col("_system/panel-access-idempotency-v1/requests").values()];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   fakeDb.reset();
@@ -140,16 +144,92 @@ describe("provisionPanelAccess", () => {
     expect(tenant("legacy-tenant")?.panelAccess).toBe("allowed");
   });
 
-  it("provision repetido já em allowed é no-op sem evento", async () => {
+  it("provision já em allowed cria recibo no primeiro no-op e reconhece replay", async () => {
     seedTenant("tenant-a", "target-uid", "allowed");
 
-    await expect(provisionPanelAccess({
+    const command = {
+      actorUid: "admin-uid",
+      targetUid: "target-uid",
+      expectedPanelAccess: "allowed" as const,
+      requestId: "request-005",
+    };
+
+    await expect(provisionPanelAccess(command)).resolves.toMatchObject({ ok: true, outcome: "unchanged" });
+    await expect(provisionPanelAccess(command)).resolves.toMatchObject({ ok: true, outcome: "replayed" });
+    expect(events("tenant-a")).toEqual([
+      expect.objectContaining({
+        action: "provision",
+        actorUid: "admin-uid",
+        establishmentId: "tenant-a",
+        ownerUid: "target-uid",
+        before: "allowed",
+        after: "allowed",
+        expected: "allowed",
+        requestId: "request-005",
+        createdAt: Date.now(),
+      }),
+    ]);
+    expect(requestReceipts()).toHaveLength(1);
+  });
+
+  it("serializa dois provisions concorrentes para o mesmo UID", async () => {
+    const results = await Promise.all([
+      provisionPanelAccess({
+        actorUid: "admin-uid",
+        targetUid: "target-uid",
+        expectedPanelAccess: "absent",
+        requestId: "request-008",
+      }),
+      provisionPanelAccess({
+        actorUid: "admin-uid",
+        targetUid: "target-uid",
+        expectedPanelAccess: "absent",
+        requestId: "request-009",
+      }),
+    ]);
+
+    expect(results.filter((result) => result.ok && result.outcome === "created")).toHaveLength(1);
+    expect(results.filter((result) => !result.ok && result.reason === "state_conflict")).toHaveLength(1);
+    expect(fakeDb.col("establishments").size).toBe(1);
+    expect(events("target-uid")).toHaveLength(1);
+  });
+
+  it("reutilização concorrente do mesmo requestId no provision cria um único evento", async () => {
+    const command = {
+      actorUid: "admin-uid",
+      targetUid: "target-uid",
+      expectedPanelAccess: "absent" as const,
+      requestId: "request-010",
+    };
+
+    const results = await Promise.all([provisionPanelAccess(command), provisionPanelAccess(command)]);
+
+    expect(results.filter((result) => result.ok && result.outcome === "created")).toHaveLength(1);
+    expect(results.filter((result) => result.ok && result.outcome === "replayed")).toHaveLength(1);
+    expect(fakeDb.col("establishments").size).toBe(1);
+    expect(events("target-uid")).toHaveLength(1);
+  });
+
+  it("bloqueia reutilização do requestId de provision para outro UID", async () => {
+    seedTenant("tenant-a", "target-uid", "allowed");
+    seedTenant("tenant-b", "other-target", "allowed");
+    const requestId = "request-011";
+
+    await provisionPanelAccess({
       actorUid: "admin-uid",
       targetUid: "target-uid",
       expectedPanelAccess: "allowed",
-      requestId: "request-005",
-    })).resolves.toMatchObject({ ok: true, outcome: "unchanged" });
-    expect(events("tenant-a")).toHaveLength(0);
+      requestId,
+    });
+    await expect(provisionPanelAccess({
+      actorUid: "admin-uid",
+      targetUid: "other-target",
+      expectedPanelAccess: "allowed",
+      requestId,
+    })).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(events("tenant-a")).toHaveLength(1);
+    expect(events("tenant-b")).toHaveLength(0);
   });
 
   it("bloqueia mais de um establishment com o mesmo ownerUid", async () => {
@@ -243,23 +323,127 @@ describe("changePanelAccess", () => {
     expect(tenant("tenant-a")?.whatsappBeta).toEqual({ access: "participant", joinedAt: 10 });
   });
 
-  it("allowed + grant é no-op e não duplica auditoria", async () => {
+  it("allowed + grant cria recibo no primeiro no-op e replay não duplica auditoria", async () => {
     seedTenant("tenant-a", "owner-a", "allowed");
-    await expect(changePanelAccess(command({
+    const input = command({
       expectedPanelAccess: "allowed",
       requestId: "request-105",
-    }))).resolves.toMatchObject({ ok: true, outcome: "unchanged" });
-    expect(events("tenant-a")).toHaveLength(0);
+    });
+
+    await expect(changePanelAccess(input)).resolves.toMatchObject({ ok: true, outcome: "unchanged" });
+    await expect(changePanelAccess(input)).resolves.toMatchObject({ ok: true, outcome: "replayed" });
+    expect(tenant("tenant-a")?.panelAccess).toBe("allowed");
+    expect(events("tenant-a")).toEqual([
+      expect.objectContaining({
+        action: "grant",
+        actorUid: "admin-uid",
+        establishmentId: "tenant-a",
+        ownerUid: "owner-a",
+        before: "allowed",
+        after: "allowed",
+        expected: "allowed",
+        requestId: "request-105",
+        createdAt: Date.now(),
+      }),
+    ]);
+    expect(requestReceipts()).toEqual([
+      expect.objectContaining({
+        identity: expect.any(String),
+      }),
+    ]);
   });
 
-  it("blocked + revoke é no-op e não duplica auditoria", async () => {
+  it("blocked + revoke cria recibo no primeiro no-op", async () => {
     seedTenant("tenant-a", "owner-a", "blocked");
     await expect(changePanelAccess(command({
       action: "revoke",
       expectedPanelAccess: "blocked",
       requestId: "request-106",
     }))).resolves.toMatchObject({ ok: true, outcome: "unchanged" });
-    expect(events("tenant-a")).toHaveLength(0);
+    expect(events("tenant-a")).toEqual([
+      expect.objectContaining({
+        action: "revoke",
+        before: "blocked",
+        after: "blocked",
+        expected: "blocked",
+        requestId: "request-106",
+      }),
+    ]);
+  });
+
+  it("bloqueia reutilização do requestId de grant no-op em revoke", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    const requestId = "request-110";
+
+    await changePanelAccess(command({ expectedPanelAccess: "allowed", requestId }));
+    await expect(changePanelAccess(command({
+      action: "revoke",
+      expectedPanelAccess: "allowed",
+      requestId,
+    }))).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(tenant("tenant-a")?.panelAccess).toBe("allowed");
+    expect(events("tenant-a")).toEqual([expect.objectContaining({ action: "grant" })]);
+    expect(requestReceipts()).toHaveLength(1);
+  });
+
+  it("bloqueia reutilização do requestId de no-op com expected state diferente", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    const requestId = "request-111";
+
+    await changePanelAccess(command({ expectedPanelAccess: "allowed", requestId }));
+    await expect(changePanelAccess(command({
+      expectedPanelAccess: "legacy",
+      requestId,
+    }))).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(events("tenant-a")).toHaveLength(1);
+  });
+
+  it("bloqueia reutilização do requestId de no-op com owner diferente", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    const requestId = "request-112";
+
+    await changePanelAccess(command({ expectedPanelAccess: "allowed", requestId }));
+    await expect(changePanelAccess(command({
+      ownerUid: "owner-b",
+      expectedPanelAccess: "allowed",
+      requestId,
+    }))).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(tenant("tenant-a")?.ownerUid).toBe("owner-a");
+    expect(events("tenant-a")).toHaveLength(1);
+  });
+
+  it("bloqueia reutilização do requestId de no-op em outro tenant", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    seedTenant("tenant-b", "owner-b", "allowed");
+    const requestId = "request-113";
+
+    await changePanelAccess(command({ expectedPanelAccess: "allowed", requestId }));
+    await expect(changePanelAccess(command({
+      establishmentId: "tenant-b",
+      ownerUid: "owner-b",
+      expectedPanelAccess: "allowed",
+      requestId,
+    }))).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(events("tenant-a")).toHaveLength(1);
+    expect(events("tenant-b")).toHaveLength(0);
+  });
+
+  it("bloqueia reutilização do requestId de no-op por outro ator", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    const requestId = "request-114";
+
+    await changePanelAccess(command({ expectedPanelAccess: "allowed", requestId }));
+    await expect(changePanelAccess(command({
+      actorUid: "second-admin",
+      expectedPanelAccess: "allowed",
+      requestId,
+    }))).resolves.toEqual({ ok: false, reason: "request_id_conflict" });
+
+    expect(events("tenant-a")).toHaveLength(1);
   });
 
   it("falha fechado para tenant inexistente", async () => {
@@ -309,12 +493,51 @@ describe("changePanelAccess", () => {
     expect(events("tenant-a")).toHaveLength(1);
   });
 
+  it("serializa dois grants concorrentes com a mesma precondição", async () => {
+    seedTenant("tenant-a", "owner-a");
+
+    const results = await Promise.all([
+      changePanelAccess(command({ requestId: "request-115" })),
+      changePanelAccess(command({ requestId: "request-116" })),
+    ]);
+
+    expect(results.filter((result) => result.ok && result.outcome === "updated")).toHaveLength(1);
+    expect(results.filter((result) => !result.ok && result.reason === "state_conflict")).toHaveLength(1);
+    expect(events("tenant-a")).toHaveLength(1);
+  });
+
+  it("reutilização concorrente do mesmo requestId produz um evento e um replay", async () => {
+    seedTenant("tenant-a", "owner-a");
+    const input = command({ requestId: "request-117" });
+
+    const results = await Promise.all([changePanelAccess(input), changePanelAccess(input)]);
+
+    expect(results.filter((result) => result.ok && result.outcome === "updated")).toHaveLength(1);
+    expect(results.filter((result) => result.ok && result.outcome === "replayed")).toHaveLength(1);
+    expect(events("tenant-a")).toHaveLength(1);
+    expect(requestReceipts()).toHaveLength(1);
+  });
+
   it("replay do mesmo requestId não repete evento", async () => {
     seedTenant("tenant-a", "owner-a");
     const input = command({ requestId: "request-109" });
 
     await changePanelAccess(input);
     await expect(changePanelAccess(input)).resolves.toMatchObject({ ok: true, outcome: "replayed" });
+    expect(events("tenant-a")).toHaveLength(1);
+  });
+
+  it("replay de revoke efetivo não repete evento", async () => {
+    seedTenant("tenant-a", "owner-a", "allowed");
+    const input = command({
+      action: "revoke",
+      expectedPanelAccess: "allowed",
+      requestId: "request-118",
+    });
+
+    await expect(changePanelAccess(input)).resolves.toMatchObject({ ok: true, outcome: "updated" });
+    await expect(changePanelAccess(input)).resolves.toMatchObject({ ok: true, outcome: "replayed" });
+    expect(tenant("tenant-a")?.panelAccess).toBe("blocked");
     expect(events("tenant-a")).toHaveLength(1);
   });
 });
