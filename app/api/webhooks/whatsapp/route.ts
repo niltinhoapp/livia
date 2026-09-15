@@ -155,6 +155,40 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
+// Webhook de status (sent/delivered/read/failed) — a Meta entrega isto num
+// change separado dos que carregam messages[], já classificado como "status"
+// por classifyWebhookChange. Antes disto o webhook não olhava value.statuses
+// em lugar nenhum: um POST só com status caía direto em "no incoming message
+// in payload" e qualquer erro real de entrega (ex.: 131047 fora da janela de
+// 24h) ficava sem nenhum rastro — foi exatamente o que aconteceu no
+// incidente de Production que motivou isto: a Graph API aceitou o envio e
+// devolveu um wamid, mas a mensagem nunca chegou, e o status de falha
+// correspondente não deixava vestígio.
+//
+// Só log — não persiste, não muda dedupe, não toca conversation/task, não
+// entra no pipeline de IA. `phoneNumberId`/`msgId` passam pela mesma máscara
+// de identificador já usada no resto do arquivo (IDENTIFIER_LOG_FIELDS);
+// nunca loga o telefone do destinatário (`recipient_id`), token, secret ou
+// texto de mensagem.
+function logStatusUpdates(value: WebhookValue | undefined): void {
+  const statuses = value?.statuses ?? [];
+  if (statuses.length === 0) return;
+
+  const phoneNumberId = value?.metadata?.phone_number_id;
+  logStage("status webhook received", { phoneNumberId, count: statuses.length });
+
+  for (const s of statuses) {
+    const error = s.errors?.[0];
+    logStage("status update", {
+      msgId: s.id,
+      phoneNumberId,
+      status: s.status,
+      ...(error?.code !== undefined ? { errorCode: error.code } : {}),
+      ...(error?.title || error?.message ? { errorTitle: error.title ?? error.message } : {}),
+    });
+  }
+}
+
 async function handleWebhook(body: WebhookBody): Promise<void> {
   // A Meta pode enviar mais de um entry/change/message no mesmo POST (ex.:
   // duas mensagens do cliente em rápida sucessão chegam batched). O código
@@ -168,6 +202,10 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       const kind = classifyWebhookChange(change);
       if (kind === "message_echo" || kind === "history" || kind === "app_state_sync") {
         logStage("coexistence sync event ignored", { kind });
+        continue;
+      }
+      if (kind === "status") {
+        logStatusUpdates(change.value);
         continue;
       }
 
@@ -688,10 +726,21 @@ async function replyAndLog(
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
+interface MetaStatusError {
+  code?: number;
+  title?: string;
+  message?: string;
+}
+interface MetaStatusUpdate {
+  id?: string;
+  status?: string;
+  errors?: MetaStatusError[];
+}
 interface WebhookValue {
   metadata?: { phone_number_id?: string };
   contacts?: { profile?: { name?: string } }[];
   messages?: MetaInboundMessage[];
+  statuses?: MetaStatusUpdate[];
 }
 interface WebhookBody {
   entry?: {
