@@ -57,6 +57,16 @@ const SUBSCRIPTION_INPUT: CreateSubscriptionInput = {
   externalReference: "est_odonto",
 };
 
+const SUBSCRIPTION = {
+  id: "sub_1",
+  customer: "cus_000001",
+  billingType: "PIX" as const,
+  value: 99.9,
+  nextDueDate: "2026-09-22",
+  cycle: "MONTHLY" as const,
+  externalReference: "livia:subscription:est_odonto:1",
+};
+
 describe("1-2) URLs por ambiente", () => {
   it("sandbox usa https://api-sandbox.asaas.com/v3", async () => {
     const fetchImpl = mockFetch(async () => jsonResponse(200, { id: "cus_1" }));
@@ -171,6 +181,27 @@ describe("9) reconciliação por externalReference", () => {
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error.kind).toBe("invalid_response");
   });
+
+  it("percorre todas as páginas de customers com limit=100 e offsets estáveis", async () => {
+    const fetchImpl = mockFetch(async (url) => {
+      const offset = new URL(url).searchParams.get("offset");
+      return offset === "0"
+        ? jsonResponse(200, { data: [{ id: "cus_1" }], hasMore: true })
+        : jsonResponse(200, { data: [{ id: "cus_2" }], hasMore: false });
+    });
+    const result = await client({}, fetchImpl).findCustomersByExternalReference("est_odonto");
+    expect(result.ok && result.data.map((item) => item.id)).toEqual(["cus_1", "cus_2"]);
+    expect(fetchImpl.mock.calls.map(([url]) => new URL(url).searchParams.get("offset"))).toEqual(["0", "100"]);
+    expect(fetchImpl.mock.calls.every(([url]) => new URL(url).searchParams.get("limit") === "100")).toBe(true);
+  });
+
+  it("hasMore=true sem dados falha fechado em vez de entrar em loop", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { data: [], hasMore: true }));
+    const result = await client({}, fetchImpl).findCustomersByExternalReference("est_odonto");
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("10-12) createSubscription", () => {
@@ -200,6 +231,93 @@ describe("10-12) createSubscription", () => {
     await client({}, fetchImpl).createSubscription({ ...SUBSCRIPTION_INPUT, cycle: "MONTHLY" });
     const [, opts] = fetchImpl.mock.calls[0] as FetchCall;
     expect(JSON.parse(opts.body ?? "{}").cycle).toBe("MONTHLY");
+  });
+});
+
+describe("subscription GET e reconciliação paginada", () => {
+  it("busca subscription por ID e valida a resposta mínima", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, SUBSCRIPTION));
+    const result = await client({}, fetchImpl).getSubscription("sub_1");
+    expect(result).toEqual({ ok: true, data: SUBSCRIPTION });
+    expect(fetchImpl.mock.calls[0]?.[0]).toContain("/subscriptions/sub_1");
+    expect(fetchImpl.mock.calls[0]?.[1].method).toBe("GET");
+    expect(fetchImpl.mock.calls[0]?.[1].body).toBeUndefined();
+  });
+
+  it("resposta de subscription incompleta falha fechado", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { id: "sub_1" }));
+    const result = await client({}, fetchImpl).getSubscription("sub_1");
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it.each([
+    ["zero", []],
+    ["uma", [SUBSCRIPTION]],
+    ["múltiplas", [SUBSCRIPTION, { ...SUBSCRIPTION, id: "sub_2" }]],
+  ])("preserva resultado %s sem assumir unicidade", async (_name, subscriptions) => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { data: subscriptions, hasMore: false }));
+    const result = await client({}, fetchImpl).findSubscriptionsForReconciliation({
+      customer: "cus_000001",
+      externalReference: SUBSCRIPTION.externalReference,
+      includeDeleted: true,
+    });
+    expect(result.ok && result.data).toEqual(subscriptions);
+  });
+
+  it("percorre todas as páginas de subscriptions e preserva filtros", async () => {
+    const fetchImpl = mockFetch(async (url) => {
+      const parsed = new URL(url);
+      const offset = parsed.searchParams.get("offset");
+      expect(parsed.searchParams.get("customer")).toBe("cus_000001");
+      expect(parsed.searchParams.get("externalReference")).toBe(SUBSCRIPTION.externalReference);
+      expect(parsed.searchParams.get("includeDeleted")).toBe("true");
+      return offset === "0"
+        ? jsonResponse(200, { data: [SUBSCRIPTION], hasMore: true })
+        : jsonResponse(200, { data: [{ ...SUBSCRIPTION, id: "sub_2" }], hasMore: false });
+    });
+    const result = await client({}, fetchImpl).findSubscriptionsForReconciliation({
+      customer: "cus_000001",
+      externalReference: SUBSCRIPTION.externalReference,
+      includeDeleted: true,
+    });
+    expect(result.ok && result.data).toHaveLength(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("listSubscriptions expõe uma página com limit/offset controlados", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, {
+      data: [SUBSCRIPTION], hasMore: true, totalCount: 3, limit: 1, offset: 1,
+    }));
+    const result = await client({}, fetchImpl).listSubscriptions({
+      customer: "cus_000001", includeDeleted: false, limit: 1, offset: 1,
+    });
+    expect(result.ok && result.data).toEqual({
+      data: [SUBSCRIPTION], hasMore: true, totalCount: 3, limit: 1, offset: 1,
+    });
+  });
+
+  it("consulta payments da subscription sem operação de escrita", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, {
+      data: [{ id: "pay_1", subscription: "sub_1", status: "PENDING" }],
+    }));
+    const result = await client({}, fetchImpl).listSubscriptionPayments("sub_1");
+    expect(result.ok && result.data).toEqual([{ id: "pay_1", subscription: "sub_1", status: "PENDING" }]);
+    expect(fetchImpl.mock.calls[0]?.[0]).toContain("/subscriptions/sub_1/payments");
+    expect(fetchImpl.mock.calls[0]?.[1].method).toBe("GET");
+    expect(fetchImpl.mock.calls[0]?.[1].body).toBeUndefined();
+  });
+
+  it("pagina payments usados na investigação de conflito", async () => {
+    const fetchImpl = mockFetch(async (url) => {
+      const offset = new URL(url).searchParams.get("offset");
+      return offset === "0"
+        ? jsonResponse(200, { data: [{ id: "pay_1" }], hasMore: true })
+        : jsonResponse(200, { data: [{ id: "pay_2" }], hasMore: false });
+    });
+    const result = await client({}, fetchImpl).listSubscriptionPayments("sub_1");
+    expect(result.ok && result.data.map((payment) => payment.id)).toEqual(["pay_1", "pay_2"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
 
