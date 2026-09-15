@@ -21,6 +21,9 @@ import {
   loadConversation,
   appendMessage,
   setConversationStatus,
+  closeConversation,
+  tryCloseAutomatedConversation,
+  reopenConversation,
   setConversationIntent,
   setConversationTask,
   setConversationSummary,
@@ -28,6 +31,7 @@ import {
   upsertCustomerProfile,
   upsertPendingTask,
   resolvePendingTask,
+  getPendingTask,
   alreadyProcessed,
 } from "@/lib/repo";
 import { sendText, markAsRead } from "@/lib/whatsapp/client";
@@ -43,6 +47,7 @@ import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
+import { declaresAutomatedRecipient, isClearClosingReply, isClearHumanDemand, isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
@@ -279,6 +284,33 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     return;
   }
 
+  // Uma conversa fechada por outro bot fica silenciosa até receber uma
+  // demanda humana inequívoca. A classificação é determinística; nunca
+  // chamamos a IA apenas para decidir se o bloqueio deve cair.
+  const closureIntent = detectIntent(customerText);
+  if (conversation.status === "closed") {
+    if (conversation.closedReason === "automated_recipient") {
+      if (declaresAutomatedRecipient(customerText) || !isClearHumanDemand(customerText, closureIntent)) {
+        logStage("closed automated recipient, message only logged", {
+          msgId: msg.id,
+          estId: est.id,
+          conversationId: conversation.id,
+        });
+        return;
+      }
+    } else if (isPureSocialFarewell(customerText)) {
+      logStage("closed social conversation, farewell ignored", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+      return;
+    }
+
+    await reopenConversation(est.id, conversation.id);
+    conversation.status = "bot";
+  }
+
   // Estabelecimento comercialmente inativo (Establishment.status
   // "suspended"). Antes disto o webhook simplesmente retornava e o cliente
   // final ficava no silêncio absoluto — ele não tem relação nenhuma com o
@@ -293,6 +325,29 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     if (!warnedServicePausedRecently(history, Date.now())) {
       await replyAndLog(wa, est.id, conversation.id, contactPhone, SERVICE_PAUSED_REPLY);
     }
+    return;
+  }
+
+  // A transição é atômica. Só o vencedor pode enviar a despedida final; uma
+  // reentrega ou outro webhook concorrente fica silencioso sem tocar a IA.
+  if (declaresAutomatedRecipient(customerText)) {
+    const wonClosure = await tryCloseAutomatedConversation(est.id, conversation.id);
+    if (!wonClosure) {
+      logStage("automated recipient already closed, no reply", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+      return;
+    }
+
+    await resolvePendingTask(est.id, conversation.id);
+    await replyAndLog(wa, est.id, conversation.id, contactPhone, "Entendido! Vou encerrar por aqui. Até mais!");
+    logStage("automated recipient detected, conversation closed", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+    });
     return;
   }
 
@@ -360,6 +415,26 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     return;
   }
 
+  // Não reabre o ciclo para uma despedida que veio depois de uma resposta
+  // conclusiva, desde que não exista task nem pendência aberta.
+  const lastBotMessage = [...history].reverse().find((message) => message.role === "bot");
+  if (
+    !conversation.task &&
+    isPureSocialFarewell(customerText) &&
+    Boolean(lastBotMessage && isClearClosingReply(lastBotMessage.text))
+  ) {
+    const pendingTask = await getPendingTask(est.id, conversation.id);
+    if (!pendingTask || pendingTask.status === "resolved") {
+      await closeConversation(est.id, conversation.id, "social_farewell");
+      logStage("social farewell after clear closure, no reply", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+      return;
+    }
+  }
+
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
   // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
   // assim "sim"/"ok" no meio de outra conversa não é confundido.
@@ -398,7 +473,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // Fase 3 (determinística, sem custo de IA) + Fase 1: carregados ANTES da
   // IA para virarem contexto do prompt (fonte de verdade sobre o cliente e
   // sobre em que etapa da tarefa a conversa está — Fase 4/5).
-  const detectedIntent = detectIntent(customerText);
+  const detectedIntent = closureIntent;
   const storedProfile = await getCustomerProfile(est.id, contactPhone);
   // Identidade: o nome pode já existir no sistema mesmo sem estar no perfil —
   // o contato pode não ter nome público no WhatsApp (contactName null), mas

@@ -1017,6 +1017,51 @@ export async function setConversationStatus(
     .update({ status });
 }
 
+// Fecha uma conversa por um motivo não concorrente (despedida social).
+export async function closeConversation(
+  establishmentId: string,
+  conversationId: string,
+  reason: NonNullable<Conversation["closedReason"]>,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ status: "closed", closedReason: reason });
+}
+
+// Compara e fecha no mesmo commit do Firestore. Só quem muda bot -> closed
+// recebe true e, portanto, ganha o direito de emitir a despedida final.
+export async function tryCloseAutomatedConversation(
+  establishmentId: string,
+  conversationId: string,
+): Promise<boolean> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+
+    const conversation = snap.data() as Conversation;
+    if (conversation.status !== "bot") return false;
+
+    tx.update(ref, {
+      status: "closed",
+      closedReason: "automated_recipient",
+      task: FieldValue.delete(),
+    });
+    return true;
+  });
+}
+
+// Reabertura explícita limpa o motivo antigo para que a conversa volte ao
+// ciclo normal sem parecer bloqueada em leituras futuras.
+export async function reopenConversation(
+  establishmentId: string,
+  conversationId: string,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ status: "bot", closedReason: FieldValue.delete() });
+}
+
 // Grava a intenção detectada (determinística, ver lib/ai/intent.ts) na
 // mensagem mais recente da conversa. Não é uma escrita "importante" o
 // suficiente para uma transação — perder uma atualização por corrida rara
