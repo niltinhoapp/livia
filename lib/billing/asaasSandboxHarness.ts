@@ -11,6 +11,7 @@ import type {
   logicalSubscriptionExternalReference,
   provisionAsaasSubscription,
 } from "./provisioning";
+import type { provisionSandboxCustomer } from "./asaasSandboxCustomer";
 import type { Establishment } from "@/types";
 
 const SANDBOX_KEY_PREFIX = "$aact_hmlg_";
@@ -54,7 +55,6 @@ export type SandboxHarnessFailureCode =
   | "customer_conflict"
   | "customer_lookup_failed"
   | "customer_create_rejected"
-  | "customer_create_inconclusive"
   | "invalid_customer_response"
   | "test_establishment_not_found"
   | "test_establishment_invalid"
@@ -111,6 +111,7 @@ export interface SandboxHarnessDependencies {
   asaas: AsaasClient;
   getEstablishment: (id: string) => Promise<Establishment | null>;
   provisionSubscription: typeof provisionAsaasSubscription;
+  provisionCustomer: typeof provisionSandboxCustomer;
   getProvisioningIntent: typeof getBillingProvisioningIntent;
   logicalSubscriptionExternalReference: typeof logicalSubscriptionExternalReference;
   now: () => number;
@@ -121,14 +122,16 @@ export async function createSandboxHarnessDependencies(apiKey: string): Promise<
   // Imports Firestore/repository only after auth, confirmation and kill switch
   // have all passed in the route. This keeps every blocked request entirely
   // outside both Asaas and Firestore business operations.
-  const [{ getEstablishment }, provisioning] = await Promise.all([
+  const [{ getEstablishment }, provisioning, customerProvisioning] = await Promise.all([
     import("@/lib/repo"),
     import("./provisioning"),
+    import("./asaasSandboxCustomer"),
   ]);
   return {
     asaas: createAsaasClient({ environment: "sandbox", apiKey }),
     getEstablishment,
     provisionSubscription: provisioning.provisionAsaasSubscription,
+    provisionCustomer: customerProvisioning.provisionSandboxCustomer,
     getProvisioningIntent: provisioning.getBillingProvisioningIntent,
     logicalSubscriptionExternalReference: provisioning.logicalSubscriptionExternalReference,
     now: Date.now,
@@ -153,15 +156,6 @@ function sanitizeAsaasError(error: AsaasError): SanitizedAsaasError {
   };
 }
 
-function isInconclusive(error: AsaasError): boolean {
-  return (
-    error.kind === "timeout" ||
-    error.kind === "network" ||
-    error.kind === "invalid_response" ||
-    (error.kind === "http" && (error.status === 408 || error.status === 429 || (error.status ?? 0) >= 500))
-  );
-}
-
 function validCustomerId(value: unknown): value is string {
   return typeof value === "string" && CUSTOMER_ID.test(value);
 }
@@ -184,66 +178,24 @@ async function ensureCustomer(
   deps: SandboxHarnessDependencies,
 ): Promise<SandboxHarnessResult> {
   const externalReference = sandboxCustomerExternalReference(command.testRunId);
-  const before = await deps.asaas.findCustomersByExternalReference(externalReference);
-  if (!before.ok) {
-    return {
-      ok: false,
-      action: "customer",
-      code: "customer_lookup_failed",
-      upstream: sanitizeAsaasError(before.error),
-    };
-  }
-  if (before.data.length > 1) return { ok: false, action: "customer", code: "customer_conflict" };
-  if (before.data.length === 1) {
-    const id = before.data[0]?.id;
-    if (!validCustomerId(id)) return { ok: false, action: "customer", code: "invalid_customer_response" };
-    return {
-      ok: true,
-      action: "customer",
-      outcome: "reused",
-      customer: { id, externalReference },
-    };
-  }
-
-  const created = await deps.asaas.createCustomer({
+  const result = await deps.provisionCustomer({
+    testRunId: command.testRunId,
+    externalReference,
     name: `Livia Sandbox Test ${command.testRunId}`,
     cpfCnpj: command.cpfCnpj,
-    externalReference,
-    notificationDisabled: true,
-  });
-  if (created.ok) {
-    if (!validCustomerId(created.data.id)) {
-      return { ok: false, action: "customer", code: "invalid_customer_response" };
-    }
-    return {
-      ok: true,
-      action: "customer",
-      outcome: "created",
-      customer: { id: created.data.id, externalReference },
-    };
-  }
-  if (!isInconclusive(created.error)) {
-    return {
-      ok: false,
-      action: "customer",
-      code: "customer_create_rejected",
-      upstream: sanitizeAsaasError(created.error),
-    };
-  }
+  }, { asaas: deps.asaas, now: deps.now, newId: deps.newId });
 
-  // O POST não é repetido. Uma única busca read-only tenta descobrir se a
-  // criação inconclusiva chegou ao Asaas.
-  const reconciled = await deps.asaas.findCustomersByExternalReference(externalReference);
-  if (!reconciled.ok) {
+  if (!result.ok) {
     return {
       ok: false,
       action: "customer",
-      code: "customer_create_inconclusive",
-      upstream: sanitizeAsaasError(reconciled.error),
+      code: result.phase === "failed_terminal" ? "customer_create_rejected" : "customer_conflict",
     };
   }
-  if (reconciled.data.length > 1) return { ok: false, action: "customer", code: "customer_conflict" };
-  if (reconciled.data.length === 0) {
+  if (result.phase !== "succeeded") {
+    if (result.outcome === "lookup_failed" && result.phase === "reserved") {
+      return { ok: false, action: "customer", code: "customer_lookup_failed" };
+    }
     return {
       ok: true,
       action: "customer",
@@ -251,13 +203,11 @@ async function ensureCustomer(
       customer: { id: null, externalReference },
     };
   }
-  const id = reconciled.data[0]?.id;
-  if (!validCustomerId(id)) return { ok: false, action: "customer", code: "invalid_customer_response" };
   return {
     ok: true,
     action: "customer",
-    outcome: "reconciled",
-    customer: { id, externalReference },
+    outcome: result.outcome === "verified" ? "reused" : result.outcome,
+    customer: { id: result.intent.externalCustomerId, externalReference },
   };
 }
 

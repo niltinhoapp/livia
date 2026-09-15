@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Establishment } from "@/types";
 import type { AsaasClient, AsaasResult } from "./asaas";
 import type { BillingProvisioningIntent, ProvisioningResult } from "./provisioning";
+import type { SandboxCustomerIntent } from "./asaasSandboxCustomer";
 import {
   executeAsaasSandboxHarness,
   isAsaasSandboxHarnessEnabled,
@@ -81,10 +82,32 @@ function intent(over: Partial<BillingProvisioningIntent> = {}): BillingProvision
   };
 }
 
+function customerIntent(over: Partial<SandboxCustomerIntent> = {}): SandboxCustomerIntent {
+  return {
+    testRunId: TEST_RUN_ID,
+    externalReference: sandboxCustomerExternalReference(TEST_RUN_ID),
+    fingerprint: "fingerprint",
+    phase: "succeeded",
+    attemptId: "attempt-1",
+    externalCustomerId: CUSTOMER_ID,
+    createdAt: 1,
+    updatedAt: 2,
+    lastAttemptAt: 1,
+    lastError: null,
+    ...over,
+  };
+}
+
 function dependencies(client = fakeClient()): SandboxHarnessDependencies {
   return {
     asaas: client,
     getEstablishment: vi.fn().mockResolvedValue(establishment()),
+    provisionCustomer: vi.fn().mockResolvedValue({
+      ok: true,
+      phase: "succeeded",
+      outcome: "created",
+      intent: customerIntent(),
+    }),
     provisionSubscription: vi.fn().mockResolvedValue({
       ok: true,
       phase: "succeeded",
@@ -172,71 +195,55 @@ describe("customer reconciliation", () => {
     cpfCnpj: "12345678901",
   };
 
-  it("0 existentes cria exatamente um customer fictício e sem notificações", async () => {
+  it("delega a criação ao workflow durável com identidade determinística", async () => {
     const asaas = fakeClient();
-    vi.mocked(asaas.createCustomer).mockResolvedValue(ok({ id: CUSTOMER_ID, name: "test" }));
-    const result = await executeAsaasSandboxHarness(command, dependencies(asaas));
+    const deps = dependencies(asaas);
+    const result = await executeAsaasSandboxHarness(command, deps);
 
     expect(result.ok && result.action === "customer" && result.outcome).toBe("created");
-    expect(asaas.createCustomer).toHaveBeenCalledTimes(1);
-    expect(asaas.createCustomer).toHaveBeenCalledWith({
+    expect(deps.provisionCustomer).toHaveBeenCalledWith({
+      testRunId: TEST_RUN_ID,
       name: `Livia Sandbox Test ${TEST_RUN_ID}`,
       cpfCnpj: "12345678901",
       externalReference: sandboxCustomerExternalReference(TEST_RUN_ID),
-      notificationDisabled: true,
-    });
+    }, expect.objectContaining({ asaas }));
+    expect(asaas.createCustomer).not.toHaveBeenCalled();
   });
 
-  it("1 existente reutiliza e faz zero POST", async () => {
-    const asaas = fakeClient();
-    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "test" }]));
-    const result = await executeAsaasSandboxHarness(command, dependencies(asaas));
+  it("mapeia replay verificado para reused", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.provisionCustomer).mockResolvedValue({
+      ok: true,
+      phase: "succeeded",
+      outcome: "verified",
+      intent: customerIntent(),
+    });
+    const result = await executeAsaasSandboxHarness(command, deps);
     expect(result.ok && result.action === "customer" && result.outcome).toBe("reused");
-    expect(asaas.createCustomer).not.toHaveBeenCalled();
   });
 
-  it("N existentes retorna conflito e não escolhe um", async () => {
-    const asaas = fakeClient();
-    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([
-      { id: "cus_1", name: "one" },
-      { id: "cus_2", name: "two" },
-    ]));
-    const result = await executeAsaasSandboxHarness(command, dependencies(asaas));
+  it("mapeia conflito durável sem executar POST diretamente", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.provisionCustomer).mockResolvedValue({ ok: false, phase: "conflict", reason: "multiple_customers" });
+    const result = await executeAsaasSandboxHarness(command, deps);
     expect(result).toEqual({ ok: false, action: "customer", code: "customer_conflict" });
-    expect(asaas.createCustomer).not.toHaveBeenCalled();
+    expect(deps.asaas.createCustomer).not.toHaveBeenCalled();
   });
 
-  it("timeout reconcilia por GET e nunca repete o POST", async () => {
-    const asaas = fakeClient();
-    vi.mocked(asaas.findCustomersByExternalReference)
-      .mockResolvedValueOnce(ok([]))
-      .mockResolvedValueOnce(ok([{ id: CUSTOMER_ID, name: "test" }]));
-    vi.mocked(asaas.createCustomer).mockResolvedValue({
-      ok: false,
-      error: { kind: "timeout", message: "safe" },
+  it("mapeia estado ambíguo persistido para reconciling", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.provisionCustomer).mockResolvedValue({
+      ok: true,
+      phase: "reconciling",
+      outcome: "awaiting_reconciliation",
+      intent: customerIntent({
+        phase: "reconciling",
+        externalCustomerId: null,
+        lastError: { kind: "timeout" },
+      }),
     });
-    const result = await executeAsaasSandboxHarness(command, dependencies(asaas));
-    expect(result.ok && result.action === "customer" && result.outcome).toBe("reconciled");
-    expect(asaas.createCustomer).toHaveBeenCalledTimes(1);
-    expect(asaas.findCustomersByExternalReference).toHaveBeenCalledTimes(2);
-  });
-
-  it("timeout ainda sem resultado retorna reconciling; replay continua sem duplicar quando o GET encontra", async () => {
-    const asaas = fakeClient();
-    vi.mocked(asaas.findCustomersByExternalReference)
-      .mockResolvedValueOnce(ok([]))
-      .mockResolvedValueOnce(ok([]))
-      .mockResolvedValueOnce(ok([{ id: CUSTOMER_ID, name: "test" }]));
-    vi.mocked(asaas.createCustomer).mockResolvedValue({
-      ok: false,
-      error: { kind: "network", message: "safe" },
-    });
-    const deps = dependencies(asaas);
-    const first = await executeAsaasSandboxHarness(command, deps);
-    const replay = await executeAsaasSandboxHarness(command, deps);
-    expect(first.ok && first.action === "customer" && first.outcome).toBe("reconciling");
-    expect(replay.ok && replay.action === "customer" && replay.outcome).toBe("reused");
-    expect(asaas.createCustomer).toHaveBeenCalledTimes(1);
+    const result = await executeAsaasSandboxHarness(command, deps);
+    expect(result.ok && result.action === "customer" && result.outcome).toBe("reconciling");
   });
 });
 
