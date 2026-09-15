@@ -163,6 +163,43 @@ describe("ambiguidade e replay", () => {
     expect(replay.createCustomer).not.toHaveBeenCalled();
   });
 
+  // Regressão do incidente de homologação (OT-05H-B): o replay exato do
+  // mesmo payload devolvia HTTP 500. O intent já estava succeeded com o
+  // mesmo customer, então markSucceeded devolvia um patch VAZIO e o
+  // updateIntent chamava tx.update(ref, {}) — que o Firestore real recusa
+  // ("At least one field must be updated."). O POST nunca chegou a ser
+  // cogitado; quem quebrava era a escrita de no-op.
+  it("replay idêntico do mesmo payload é read-only, não faz POST e mantém o mesmo customer", async () => {
+    const initial = client();
+    const first = await provisionSandboxCustomer(INPUT, dependencies(initial));
+
+    expect(first).toMatchObject({ ok: true, phase: "succeeded", outcome: "created" });
+    expect(initial.createCustomer).toHaveBeenCalledTimes(1);
+    const before = await getSandboxCustomerIntent(INPUT.testRunId);
+    expect(before).toMatchObject({ phase: "succeeded", externalCustomerId: CUSTOMER.id });
+
+    // Mesmo testRunId, mesmo cpfCnpj, mesmo externalReference.
+    const replay = client({
+      findCustomersByExternalReference: vi.fn(async () => ({ ok: true as const, data: [CUSTOMER] })),
+    });
+    const second = await provisionSandboxCustomer(INPUT, dependencies(replay));
+
+    expect(second).toMatchObject({
+      ok: true,
+      phase: "succeeded",
+      outcome: "verified",
+      intent: { phase: "succeeded", externalCustomerId: CUSTOMER.id },
+    });
+    // O lookup (GET) acontece; o POST não — nem neste replay, nem a mais.
+    expect(replay.findCustomersByExternalReference).toHaveBeenCalledTimes(1);
+    expect(replay.createCustomer).not.toHaveBeenCalled();
+    expect(initial.createCustomer).toHaveBeenCalledTimes(1);
+
+    // Igualdade profunda prova que o replay não escreveu nada: nem
+    // updatedAt mudou. succeeded nunca volta para creating.
+    expect(await getSandboxCustomerIntent(INPUT.testRunId)).toEqual(before);
+  });
+
   it.each(["timeout", "network"] as const)(
     "succeeded + falha transitória %s preserva sucesso e externalCustomerId",
     async (kind) => {

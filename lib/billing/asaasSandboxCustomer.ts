@@ -180,6 +180,12 @@ async function updateIntent(
     if (!identityMatches(current, seed)) return null;
     const patch = update(current);
     if (!patch) return null;
+    // Patch vazio = "já está no estado desejado, nada a escrever" (ver
+    // markSucceeded no replay de um intent succeeded). É diferente de null,
+    // que significa "abortar". Precisa sair ANTES do tx.update: o Firestore
+    // real rejeita um update sem nenhum campo ("At least one field must be
+    // updated."), e era isso que derrubava o replay com HTTP 500 (OT-05H-B).
+    if (Object.keys(patch).length === 0) return current;
     tx.update(ref, patch);
     return { ...current, ...patch };
   });
