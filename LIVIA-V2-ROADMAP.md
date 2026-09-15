@@ -472,6 +472,10 @@ Usuários podem acessar o painel sem necessariamente possuir autorização para 
 
 O backend deve aplicar a regra de acesso; esconder botão no frontend não é suficiente.
 
+Na V1 atual, Firebase Authentication, `panelAccess` e `whatsappBeta` já são
+camadas distintas: a sessão identifica a conta, o acesso ao painel é decidido
+no servidor e a coorte de WhatsApp continua independente.
+
 ---
 
 # 17. Múltiplos números e equipes

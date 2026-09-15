@@ -19,6 +19,11 @@ export interface Establishment {
   ownerUid: string;
   status: "active" | "suspended";
   createdAt: number;
+  // Autorização para usar o painel, independente da autenticação Firebase,
+  // do status operacional e da coorte fechada de WhatsApp. A ausência é
+  // reservada aos estabelecimentos já existentes antes desta camada e é
+  // tratada como acesso legado permitido no servidor.
+  panelAccess?: PanelAccess;
   // Conta de WhatsApp própria (conectada via Embedded Signup — mesmo fluxo
   // do Nuvem Rush). A Meta cobra as conversas direto do estabelecimento.
   whatsapp?: EstablishmentWhatsapp;
@@ -29,6 +34,8 @@ export interface Establishment {
   // Configuração do bot (persona + regras).
   bot: BotConfig;
 }
+
+export type PanelAccess = "allowed" | "blocked";
 
 export interface WhatsappBetaParticipation {
   access: "participant" | "grandfathered";

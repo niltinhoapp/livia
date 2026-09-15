@@ -131,7 +131,7 @@ Esperado: usar fonte real, não inventar e não prolongar conversa sem necessida
 
 Antes de aquisição em escala:
 
-- [ ] separar `panelAccess`;
+- [x] separar `panelAccess`;
 - [ ] separar `whatsappAccess`;
 - [ ] separar `trialStatus`;
 - [ ] separar `subscriptionStatus`;
@@ -139,6 +139,10 @@ Antes de aquisição em escala:
 - [ ] preservar clientes já autorizados;
 - [ ] preparar lista de espera;
 - [ ] acompanhar primeiras empresas de perto.
+
+Firebase Authentication identifica a conta; `panelAccess` é a autorização
+server-side do painel; `whatsappBeta` permanece a autorização independente
+para conectar WhatsApp durante a coorte controlada.
 
 ---
 
