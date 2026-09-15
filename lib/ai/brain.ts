@@ -15,6 +15,7 @@ import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/t
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility";
+import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -83,8 +84,8 @@ function isoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-function nowLocal(offsetMin: number): { dateStr: string; human: string } {
-  const d = new Date(Date.now() + offsetMin * 60000);
+function nowLocal(offsetMin: number, nowMs: number = Date.now()): { dateStr: string; human: string } {
+  const d = new Date(nowMs + offsetMin * 60000);
   const y = d.getUTCFullYear();
   const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
   const da = String(d.getUTCDate()).padStart(2, "0");
@@ -938,11 +939,19 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // recebem carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
   const config = booking ? await getScheduleConfig(est.id) : null;
   const offset = config?.utcOffsetMinutes ?? -180;
-  const now = nowLocal(offset);
+  // Um único instante para todo o turno — o mesmo alimenta a data do prompt e
+  // a saudação temporal, sem risco de cruzar um limite de período entre duas
+  // leituras de relógio.
+  const nowMs = Date.now();
+  const now = nowLocal(offset, nowMs);
 
   // Data citada pelo cliente nesta mensagem — resolvida por código, no fuso
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
+  // Saudação temporal coerente (OT-03G): período do dia no fuso do
+  // estabelecimento + a saudação que a própria pessoa usou, para o modelo não
+  // responder "bom dia" à noite nem contradizer um "boa noite" do cliente.
+  const nowHuman = `${now.human} ${greetingGuidanceLine(nowMs, offset, ultimaDoCliente?.text ?? null)}`;
   const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
   // Serviço citado pelo cliente nesta mensagem (nome canônico da base). Mesmo
   // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
@@ -1031,7 +1040,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome),
     },
