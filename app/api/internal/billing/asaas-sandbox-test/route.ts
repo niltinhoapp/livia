@@ -51,7 +51,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result, { status: failureStatus(result.code) });
     }
     return NextResponse.json(result);
-  } catch {
+  } catch (err) {
+    // Observabilidade mínima: antes o catch descartava a exceção inteira e
+    // qualquer falha inesperada virava um 500 mudo — foi o que obrigou o RCA
+    // do replay de customer (OT-05H-B) a sair só da leitura do código.
+    // Registra apenas tipo, código primitivo (quando o erro carrega um, como
+    // os do Firestore/gRPC) e a ação. Nunca mensagem, stack, payload,
+    // cookies, Authorization, ASAAS_API_KEY ou cpfCnpj. A resposta ao
+    // cliente continua idêntica.
+    const code = (err as { code?: unknown })?.code;
+    console.error(
+      "[asaas sandbox harness] erro inesperado",
+      JSON.stringify({
+        action: command.action,
+        errorName: err instanceof Error ? err.name : typeof err,
+        ...(typeof code === "string" || typeof code === "number" ? { errorCode: code } : {}),
+      }),
+    );
     return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
   }
 }

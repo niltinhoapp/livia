@@ -232,9 +232,16 @@ class FakeDoc {
     this.fs.col(this.path).set(this.id, { ...data });
   }
 
+  // Semântica do Firestore real: um update precisa alterar pelo menos um
+  // campo. O SDK valida isso antes de enviar qualquer coisa
+  // (@google-cloud/firestore, write-batch.js: validateUpdateMap) e lança
+  // "At least one field must be updated.". Sem esta checagem o fake aceitava
+  // update({}) em silêncio, e um caminho de no-op que chamava update com um
+  // patch vazio passava nos testes e só quebrava em runtime real (OT-05H-B).
   async update(patch: Doc): Promise<void> {
     const cur = this.fs.col(this.path).get(this.id);
     if (!cur) throw new Error(`5 NOT_FOUND: ${this.path}/${this.id}`);
+    if (Object.keys(patch).length === 0) throw new Error("At least one field must be updated.");
     this.fs.col(this.path).set(this.id, applyPatch(cur, patch));
   }
 
