@@ -15,6 +15,7 @@ import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/t
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility";
+import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
@@ -83,8 +84,8 @@ function isoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-function nowLocal(offsetMin: number): { dateStr: string; human: string } {
-  const d = new Date(Date.now() + offsetMin * 60000);
+function nowLocal(offsetMin: number, nowMs: number = Date.now()): { dateStr: string; human: string } {
+  const d = new Date(nowMs + offsetMin * 60000);
   const y = d.getUTCFullYear();
   const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
   const da = String(d.getUTCDate()).padStart(2, "0");
@@ -933,16 +934,30 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
   const booking = est.bot.bookingEnabled;
 
-  // Offset (para contexto de data e para as ferramentas). Sem booking, evita
-  // o custo de ler a config — as ferramentas que precisam dela e não a
-  // recebem carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
-  const config = booking ? await getScheduleConfig(est.id) : null;
-  const offset = config?.utcOffsetMinutes ?? -180;
-  const now = nowLocal(offset);
+  // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
+  // (getScheduleConfig devolve o default quando não há doc), inclusive sem
+  // booking: a data do prompt e a saudação temporal precisam do fuso certo
+  // mesmo sem agenda. Antes o offset caía em -180 quando booking estava
+  // desligado, ignorando o fuso configurado (OT-03G-R1).
+  const scheduleConfig = await getScheduleConfig(est.id);
+  const offset = scheduleConfig.utcOffsetMinutes;
+  // O toolCtx segue recebendo a config só quando há booking — comportamento de
+  // agenda inalterado; as ferramentas sem booking que precisam dela já a
+  // carregam sob demanda (ver lib/ai/tools.ts: get_business_hours).
+  const config = booking ? scheduleConfig : null;
+  // Um único instante para todo o turno — o mesmo alimenta a data do prompt e
+  // a saudação temporal, sem risco de cruzar um limite de período entre duas
+  // leituras de relógio.
+  const nowMs = Date.now();
+  const now = nowLocal(offset, nowMs);
 
   // Data citada pelo cliente nesta mensagem — resolvida por código, no fuso
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
+  // Saudação temporal coerente (OT-03G): período do dia no fuso do
+  // estabelecimento + a saudação que a própria pessoa usou, para o modelo não
+  // responder "bom dia" à noite nem contradizer um "boa noite" do cliente.
+  const nowHuman = `${now.human} ${greetingGuidanceLine(nowMs, offset, ultimaDoCliente?.text ?? null)}`;
   const statedDate = ultimaDoCliente ? parseDateSelection(ultimaDoCliente.text, now.dateStr) : null;
   // Serviço citado pelo cliente nesta mensagem (nome canônico da base). Mesmo
   // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
@@ -1031,7 +1046,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, now.human, customerProfile, task, intent, appointmentLookup) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome),
     },
