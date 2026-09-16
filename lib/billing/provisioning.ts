@@ -771,8 +771,8 @@ export async function provisionAsaasSubscription(
 
   await dependencies.afterCreateSubscription?.(created.data);
 
-  if (!subscriptionMatches(created.data, creating)) {
-    const conflicted = await transitionWithLease(identity, leaseId, (current) => {
+  const markCreatedConflict = (code: string, error?: SanitizedProvisioningError) =>
+    transitionWithLease(identity, leaseId, (current) => {
       if (current.attemptId !== attemptId || current.phase !== "creating") return null;
       return {
         phase: "conflict",
@@ -780,11 +780,49 @@ export async function provisionAsaasSubscription(
         leaseOwner: null,
         leaseExpiresAt: null,
         updatedAt: dependencies.now(),
-        lastError: { kind: "conflict", code: "created_subscription_mismatch" },
+        lastError: error ?? { kind: "conflict", code },
         conflictSubscriptionIds: [created.data.id],
       };
     });
-    return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+
+  if (created.data.nextDueDate === creating.terms.nextDueDate) {
+    // Caminho atual, inalterado: subscriptionMatches decide tudo.
+    if (!subscriptionMatches(created.data, creating)) {
+      const conflicted = await markCreatedConflict("created_subscription_mismatch");
+      return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+    }
+  } else {
+    // nextDueDate divergiu já na resposta do POST (OT-05H-AH / RCA
+    // OT-05H-AG, reproduzido na gen5). A Asaas documenta
+    // subscription.nextDueDate como "vencimento do próximo pagamento a
+    // ser gerado" — semanticamente diferente de request.nextDueDate
+    // ("vencimento da primeira cobrança"). Não afirmamos em que instante
+    // interno a Asaas avança esse ponteiro; só reagimos ao fato
+    // observável. Nunca usa subscriptionMatches puro aqui — ele
+    // rejeitaria pela igualdade estrita antes de qualquer análise.
+    // Primeiro confirma que TODOS os outros campos batem estritamente.
+    if (!subscriptionMatchesExceptNextDueDate(created.data, creating)) {
+      const conflicted = await markCreatedConflict("created_subscription_mismatch");
+      return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+    }
+
+    // Diferente do recovery: aqui só existe UM ciclo possível — o
+    // primeiro, da própria criação. Não há "N ciclos decorridos" a
+    // calcular (nextDueDateCycleAdvance não se aplica). A evidência
+    // autoritativa do vencimento pedido é a cobrança que a Asaas já
+    // gerou de forma síncrona (comprovada pela gen5), não o ponteiro
+    // nextDueDate da subscription.
+    const paymentsLookup = await dependencies.asaas.listSubscriptionPayments(created.data.id);
+    if (!paymentsLookup.ok) {
+      const conflicted = await markCreatedConflict("", sanitizedError(paymentsLookup.error));
+      return { ok: false, phase: "conflict", reason: "lookup_failed", intent: conflicted ?? undefined };
+    }
+
+    const evidence = findOriginalPaymentEvidence(paymentsLookup.data, created.data.id, creating);
+    if (!evidence.ok) {
+      const conflicted = await markCreatedConflict(evidence.reason);
+      return { ok: false, phase: "conflict", reason: evidence.reason, intent: conflicted ?? undefined };
+    }
   }
 
   const succeeded = await transitionWithLease(identity, leaseId, (current) => {
