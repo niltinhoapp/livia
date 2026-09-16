@@ -852,6 +852,114 @@ describe("inspect — generation explícita isola generations", () => {
       },
     });
   });
+
+  it("inspect expõe payment completo: customer, subscription e deleted:false (OT-05H-Z.1)", async () => {
+    const asaas = fakeClient();
+    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "test" }]));
+    vi.mocked(asaas.getSubscription).mockResolvedValue(ok({
+      id: "sub_test_1",
+      customer: CUSTOMER_ID,
+      billingType: "BOLETO",
+      value: 5,
+      nextDueDate: "2026-10-01",
+      cycle: "MONTHLY",
+      externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+      status: "ACTIVE",
+    }));
+    vi.mocked(asaas.listSubscriptionPayments).mockResolvedValue(ok([{
+      id: "pay_1",
+      status: "PENDING",
+      dueDate: "2026-10-01",
+      value: 5,
+      customer: CUSTOMER_ID,
+      subscription: "sub_test_1",
+      deleted: false,
+    }]));
+    const deps = dependencies(asaas);
+    const result = await executeAsaasSandboxHarness(INSPECT_COMMAND_GEN1, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: "inspect",
+      payments: [{
+        id: "pay_1",
+        status: "PENDING",
+        dueDate: "2026-10-01",
+        value: 5,
+        customer: CUSTOMER_ID,
+        subscription: "sub_test_1",
+        deleted: false,
+      }],
+    });
+  });
+
+  it("inspect expõe deleted:true quando o payment foi removido", async () => {
+    const asaas = fakeClient();
+    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "test" }]));
+    vi.mocked(asaas.getSubscription).mockResolvedValue(ok({
+      id: "sub_test_1",
+      customer: CUSTOMER_ID,
+      billingType: "BOLETO",
+      value: 5,
+      nextDueDate: "2026-10-01",
+      cycle: "MONTHLY",
+      externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+      status: "ACTIVE",
+    }));
+    vi.mocked(asaas.listSubscriptionPayments).mockResolvedValue(ok([{
+      id: "pay_1",
+      status: "REFUNDED",
+      dueDate: "2026-10-01",
+      value: 5,
+      deleted: true,
+    }]));
+    const deps = dependencies(asaas);
+    const result = await executeAsaasSandboxHarness(INSPECT_COMMAND_GEN1, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: "inspect",
+      payments: [{ id: "pay_1", deleted: true }],
+    });
+  });
+
+  it("inspect retorna customer/subscription/deleted:null quando ausentes (contrato atual do payment)", async () => {
+    const asaas = fakeClient();
+    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "test" }]));
+    vi.mocked(asaas.getSubscription).mockResolvedValue(ok({
+      id: "sub_test_1",
+      customer: CUSTOMER_ID,
+      billingType: "BOLETO",
+      value: 5,
+      nextDueDate: "2026-10-01",
+      cycle: "MONTHLY",
+      externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+      status: "ACTIVE",
+    }));
+    vi.mocked(asaas.listSubscriptionPayments).mockResolvedValue(ok([{
+      id: "pay_1",
+      status: "PENDING",
+      dueDate: "2026-10-01",
+      value: 5,
+      // customer, subscription e deleted deliberadamente ausentes
+    }]));
+    const deps = dependencies(asaas);
+    const result = await executeAsaasSandboxHarness(INSPECT_COMMAND_GEN1, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: "inspect",
+      payments: [{
+        id: "pay_1",
+        status: "PENDING",
+        dueDate: "2026-10-01",
+        value: 5,
+        customer: null,
+        subscription: null,
+        deleted: null,
+      }],
+    });
+  });
 });
 
 describe("conflict_recovery via harness", () => {
