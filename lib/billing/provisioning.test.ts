@@ -11,7 +11,9 @@ import {
   getBillingProvisioningIntent,
   logicalSubscriptionExternalReference,
   provisionAsaasSubscription,
+  reconcileConflictedSubscription,
   subscriptionFingerprint,
+  type ConflictRecoveryDependencies,
   type ProvisionSubscriptionInput,
   type ProvisioningDependencies,
 } from "./provisioning";
@@ -488,5 +490,249 @@ describe("segurança da persistência", () => {
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toMatch(/creditCard|access_token|cookie|cvv|pan/i);
     expect(serialized).toContain("server_error");
+  });
+});
+
+describe("reconcileConflictedSubscription", () => {
+  const RECOVERY_EST = "est_recovery";
+  const RECOVERY_GEN = 2;
+  const CONFLICT_SUB_ID = "sub_conflict_1";
+
+  const RECOVERY_INPUT: ProvisionSubscriptionInput = {
+    ...INPUT,
+    establishmentId: RECOVERY_EST,
+    subscriptionGeneration: RECOVERY_GEN,
+    description: "Livia sandbox controlled test",
+  };
+
+  function matchingRecoverySubscription(patch: Partial<AsaasSubscription> = {}): AsaasSubscription {
+    return {
+      id: CONFLICT_SUB_ID,
+      customer: RECOVERY_INPUT.asaasCustomerId,
+      billingType: RECOVERY_INPUT.billingType,
+      value: RECOVERY_INPUT.value,
+      cycle: RECOVERY_INPUT.cycle,
+      nextDueDate: RECOVERY_INPUT.nextDueDate,
+      externalReference: logicalSubscriptionExternalReference(RECOVERY_EST, RECOVERY_GEN),
+      status: "ACTIVE",
+      ...patch,
+    };
+  }
+
+  type ConflictClient = Pick<AsaasClient, "getSubscription" | "findSubscriptionsForReconciliation">;
+
+  function fakeConflictClient(overrides: Partial<ConflictClient> = {}): ConflictClient {
+    return {
+      getSubscription: vi.fn(async () => ({ ok: true as const, data: matchingRecoverySubscription() })),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription()],
+      })),
+      ...overrides,
+    };
+  }
+
+  function recoveryDeps(asaas: ConflictClient, now = () => 1_000): ConflictRecoveryDependencies {
+    let id = 0;
+    return { asaas, now, newId: () => `recovery_id_${++id}`, leaseDurationMs: 30_000 };
+  }
+
+  // Creates a conflict state: createSubscription returns billingType "BOLETO" (simulating
+  // a buggy Asaas response), triggering created_subscription_mismatch for CONFLICT_SUB_ID.
+  async function setupConflictState(): Promise<void> {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: true as const,
+        data: matchingRecoverySubscription({ billingType: "BOLETO" }),
+      })),
+    });
+    const result = await provisionAsaasSubscription(RECOVERY_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict" });
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.conflictSubscriptionIds).toEqual([CONFLICT_SUB_ID]);
+  }
+
+  // 1
+  it("retorna intent_not_found se intent não existe no Firestore", async () => {
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "intent_not_found" });
+  });
+
+  // 2
+  it("retorna not_recoverable se phase é failed_terminal", async () => {
+    await provisionAsaasSubscription(
+      RECOVERY_INPUT,
+      dependencies(fakeAsaas({ createSubscription: vi.fn(async () => asaasFailure("http", 400)) })),
+    );
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.phase).toBe("failed_terminal");
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "not_recoverable" });
+  });
+
+  // 3
+  it("retorna ok:true/verified se phase já é succeeded", async () => {
+    await provisionAsaasSubscription(RECOVERY_INPUT, dependencies(fakeAsaas()));
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.phase).toBe("succeeded");
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "verified" });
+  });
+
+  // 4
+  it("retorna not_recoverable se conflictSubscriptionIds.length > 1", async () => {
+    const client = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ id: "sub_r1" }), matchingRecoverySubscription({ id: "sub_r2" })],
+      })),
+      listSubscriptionPayments: vi.fn(async () => ({ ok: true as const, data: [] })),
+    });
+    await provisionAsaasSubscription(RECOVERY_INPUT, dependencies(client));
+    const stored = await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN);
+    expect(stored?.conflictSubscriptionIds?.length).toBe(2);
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "not_recoverable" });
+  });
+
+  // 5
+  it("retorna busy_or_not_recoverable quando lease ativo existe", async () => {
+    await setupConflictState();
+    let leaseAcquired!: () => void;
+    let release!: () => void;
+    const leased = new Promise<void>((r) => { leaseAcquired = r; });
+    const blocked = new Promise<void>((r) => { release = r; });
+    const slowClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => {
+        leaseAcquired();
+        await blocked;
+        return { ok: true as const, data: [matchingRecoverySubscription()] };
+      }),
+    };
+    const first = reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker_a", recoveryDeps(slowClient));
+    await leased;
+    const second = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker_b", recoveryDeps(slowClient));
+    expect(second).toMatchObject({ ok: false, phase: "conflict", reason: "busy_or_not_recoverable" });
+    release();
+    await first;
+  });
+
+  // 6
+  it("retorna lookup_failed quando API retorna erro e libera o lease", async () => {
+    await setupConflictState();
+    const errorClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => asaasFailure("network")),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(errorClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "lookup_failed" });
+    const stored = await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN);
+    expect(stored?.phase).toBe("conflict");
+    expect(stored?.leaseId).toBeNull();
+  });
+
+  // 7
+  it("retorna no_subscription_found quando lookup retorna vazio e libera lease", async () => {
+    await setupConflictState();
+    const emptyClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({ ok: true as const, data: [] })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(emptyClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "no_subscription_found" });
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.leaseId).toBeNull();
+  });
+
+  // 8
+  it("retorna multiple_subscriptions quando lookup retorna >1 e atualiza conflictSubscriptionIds", async () => {
+    await setupConflictState();
+    const multiClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ id: "sub_new_1" }), matchingRecoverySubscription({ id: "sub_new_2" })],
+      })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(multiClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "multiple_subscriptions" });
+    const stored = await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN);
+    expect(stored?.conflictSubscriptionIds).toEqual(["sub_new_1", "sub_new_2"]);
+  });
+
+  // 9
+  it("retorna conflict_id_mismatch quando found.id != conflictSubscriptionIds[0]", async () => {
+    await setupConflictState();
+    const mismatchIdClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ id: "sub_completely_different" })],
+      })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(mismatchIdClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "conflict_id_mismatch" });
+  });
+
+  // 10
+  it("retorna subscription_not_active quando status é CANCELLED", async () => {
+    await setupConflictState();
+    const cancelledClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ status: "CANCELLED" })],
+      })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(cancelledClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_not_active" });
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.phase).toBe("conflict");
+  });
+
+  // 11
+  it("retorna subscription_not_active quando status está ausente (undefined)", async () => {
+    await setupConflictState();
+    const noStatusClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ status: undefined })],
+      })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(noStatusClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_not_active" });
+  });
+
+  // 12
+  it("retorna subscription_mismatch quando subscriptionMatches falha", async () => {
+    await setupConflictState();
+    const mismatchFieldClient: ConflictClient = {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingRecoverySubscription({ billingType: "BOLETO", status: "ACTIVE" })],
+      })),
+    };
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(mismatchFieldClient));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_mismatch" });
+    expect((await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN))?.phase).toBe("conflict");
+  });
+
+  // 13
+  it("happy path: promove para succeeded com externalSubscriptionId correto", async () => {
+    await setupConflictState();
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
+    const stored = await getBillingProvisioningIntent(RECOVERY_EST, RECOVERY_GEN);
+    expect(stored?.phase).toBe("succeeded");
+    expect(stored?.externalSubscriptionId).toBe(CONFLICT_SUB_ID);
+    expect(stored?.leaseId).toBeNull();
+  });
+
+  // 14
+  it("segunda chamada após reconciliação retorna verified sem nova chamada à API", async () => {
+    await setupConflictState();
+    await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(fakeConflictClient()));
+    const secondClient = fakeConflictClient();
+    const second = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(secondClient));
+    expect(second).toMatchObject({ ok: true, phase: "succeeded", outcome: "verified" });
+    expect(secondClient.findSubscriptionsForReconciliation).not.toHaveBeenCalled();
   });
 });

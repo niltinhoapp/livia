@@ -6,10 +6,12 @@ import { randomUUID } from "node:crypto";
 import { createAsaasClient, type AsaasClient, type AsaasError, type AsaasPayment } from "./asaas";
 import type {
   BillingProvisioningIntent,
+  ConflictRecoveryDependencies,
   ProvisioningResult,
   getBillingProvisioningIntent,
   logicalSubscriptionExternalReference,
   provisionAsaasSubscription,
+  reconcileConflictedSubscription,
 } from "./provisioning";
 import type { provisionSandboxCustomer } from "./asaasSandboxCustomer";
 import type { Establishment } from "@/types";
@@ -49,6 +51,12 @@ export type SandboxHarnessCommand =
       confirmSandbox: true;
       testRunId: string;
       customerId: string;
+    }
+  | {
+      action: "conflict_recovery";
+      confirmSandbox: true;
+      testRunId: string;
+      generation: number;
     };
 
 export type SandboxHarnessFailureCode =
@@ -60,7 +68,8 @@ export type SandboxHarnessFailureCode =
   | "test_establishment_invalid"
   | "subscription_conflict"
   | "subscription_lookup_failed"
-  | "payments_lookup_failed";
+  | "payments_lookup_failed"
+  | "recovery_conflict";
 
 export type SandboxHarnessResult =
   | { ok: true; action: "auth_check"; authenticated: true }
@@ -95,6 +104,13 @@ export type SandboxHarnessResult =
       payments: Array<{ id: string; status: string | null; dueDate: string | null; value: number | null }>;
     }
   | {
+      ok: true;
+      action: "conflict_recovery";
+      phase: "succeeded";
+      generation: number;
+      externalSubscriptionId: string;
+    }
+  | {
       ok: false;
       action: SandboxHarnessCommand["action"];
       code: SandboxHarnessFailureCode | "asaas_auth_failed";
@@ -114,6 +130,7 @@ export interface SandboxHarnessDependencies {
   provisionCustomer: typeof provisionSandboxCustomer;
   getProvisioningIntent: typeof getBillingProvisioningIntent;
   logicalSubscriptionExternalReference: typeof logicalSubscriptionExternalReference;
+  recoverConflict: typeof reconcileConflictedSubscription;
   now: () => number;
   newId: () => string;
 }
@@ -134,6 +151,7 @@ export async function createSandboxHarnessDependencies(apiKey: string): Promise<
     provisionCustomer: customerProvisioning.provisionSandboxCustomer,
     getProvisioningIntent: provisioning.getBillingProvisioningIntent,
     logicalSubscriptionExternalReference: provisioning.logicalSubscriptionExternalReference,
+    recoverConflict: provisioning.reconcileConflictedSubscription,
     now: Date.now,
     newId: randomUUID,
   };
@@ -262,6 +280,44 @@ async function provisionSubscription(
   };
 }
 
+async function recoverConflict(
+  command: Extract<SandboxHarnessCommand, { action: "conflict_recovery" }>,
+  deps: SandboxHarnessDependencies,
+): Promise<SandboxHarnessResult> {
+  const establishment = await requireDedicatedTestEstablishment(command.testRunId, deps);
+  if (typeof establishment === "string") {
+    return { ok: false, action: "conflict_recovery", code: establishment };
+  }
+
+  const result = await deps.recoverConflict(
+    establishment.id,
+    command.generation,
+    "asaas-sandbox-harness",
+    {
+      asaas: deps.asaas,
+      now: deps.now,
+      newId: deps.newId,
+    } satisfies ConflictRecoveryDependencies,
+  );
+
+  if (!result.ok) {
+    return { ok: false, action: "conflict_recovery", code: "recovery_conflict" };
+  }
+
+  const externalSubscriptionId = result.intent?.externalSubscriptionId;
+  if (!externalSubscriptionId) {
+    return { ok: false, action: "conflict_recovery", code: "recovery_conflict" };
+  }
+
+  return {
+    ok: true,
+    action: "conflict_recovery",
+    phase: "succeeded",
+    generation: command.generation,
+    externalSubscriptionId,
+  };
+}
+
 async function inspect(
   command: Extract<SandboxHarnessCommand, { action: "inspect" }>,
   deps: SandboxHarnessDependencies,
@@ -379,6 +435,7 @@ export async function executeAsaasSandboxHarness(
   }
   if (command.action === "customer") return ensureCustomer(command, deps);
   if (command.action === "subscription") return provisionSubscription(command, deps);
+  if (command.action === "conflict_recovery") return recoverConflict(command, deps);
   return inspect(command, deps);
 }
 
@@ -413,6 +470,12 @@ export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessComman
     if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
+    return raw as SandboxHarnessCommand;
+  }
+  if (raw.action === "conflict_recovery") {
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "generation"])) return null;
+    if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
+    if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation) || raw.generation < 1) return null;
     return raw as SandboxHarnessCommand;
   }
   return null;
