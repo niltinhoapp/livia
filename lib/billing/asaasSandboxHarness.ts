@@ -19,6 +19,17 @@ const TEST_RUN_ID = /^[a-z0-9][a-z0-9-]{5,47}$/;
 const CUSTOMER_ID = /^[A-Za-z0-9_-]{3,128}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Allowlist mínima e explícita para homologação. PIX foi o billingType da
+// generation 1 (HTTP 400 invalid_value); BOLETO é a segunda variável a testar.
+// CREDIT_CARD e UNDEFINED são excluídos deliberadamente: a Lívia não manipula
+// dado de cartão nesta fase e UNDEFINED não é um alvo de homologação.
+const HARNESS_BILLING_TYPES = new Set(["PIX", "BOLETO"]);
+
+// Limite conservador que dá margem ampla para homologação sem abrir escopo
+// ilimitado. Gerations fora de 1–10 são rejeitadas pelo parser.
+const GENERATION_MIN = 1;
+const GENERATION_MAX = 10;
+
 export interface SandboxHarnessEnvironment {
   VERCEL_ENV?: string;
   ASAAS_ENVIRONMENT?: string;
@@ -34,6 +45,11 @@ export function isAsaasSandboxHarnessEnabled(env: SandboxHarnessEnvironment): bo
   );
 }
 
+// billingType permitido explicitamente pelo harness de homologação.
+// Subconjunto intencional de AsaasBillingType — não exporta todos os valores
+// do tipo compartilhado para não confundir com o contrato de Production.
+export type HarnessBillingType = "PIX" | "BOLETO";
+
 export type SandboxHarnessCommand =
   | { action: "auth_check"; confirmSandbox: true }
   | { action: "customer"; confirmSandbox: true; testRunId: string; cpfCnpj: string }
@@ -43,12 +59,15 @@ export type SandboxHarnessCommand =
       testRunId: string;
       customerId: string;
       nextDueDate: string;
+      generation: number;
+      billingType: HarnessBillingType;
     }
   | {
       action: "inspect";
       confirmSandbox: true;
       testRunId: string;
       customerId: string;
+      generation: number;
     };
 
 export type SandboxHarnessFailureCode =
@@ -75,7 +94,7 @@ export type SandboxHarnessResult =
       action: "subscription";
       phase: ProvisioningResult["phase"];
       outcome?: string;
-      generation: 1;
+      generation: number;
       externalSubscriptionId: string | null;
     }
   | {
@@ -237,10 +256,10 @@ async function provisionSubscription(
   const result = await deps.provisionSubscription(
     {
       establishmentId: establishment.id,
-      subscriptionGeneration: 1,
+      subscriptionGeneration: command.generation,
       asaasCustomerId: command.customerId,
       leaseOwner: "asaas-sandbox-harness",
-      billingType: "PIX",
+      billingType: command.billingType,
       value: 1,
       cycle: "MONTHLY",
       nextDueDate: command.nextDueDate,
@@ -257,7 +276,7 @@ async function provisionSubscription(
     action: "subscription",
     phase: result.phase,
     outcome: result.outcome,
-    generation: 1,
+    generation: command.generation,
     externalSubscriptionId: result.intent.externalSubscriptionId,
   };
 }
@@ -289,8 +308,8 @@ async function inspect(
     return { ok: false, action: "inspect", code: "customer_conflict" };
   }
 
-  const intent = await deps.getProvisioningIntent(establishment.id, 1);
-  const logicalReference = deps.logicalSubscriptionExternalReference(establishment.id, 1);
+  const intent = await deps.getProvisioningIntent(establishment.id, command.generation);
+  const logicalReference = deps.logicalSubscriptionExternalReference(establishment.id, command.generation);
   let subscription = null;
   if (intent?.externalSubscriptionId) {
     const found = await deps.asaas.getSubscription(intent.externalSubscriptionId);
@@ -388,6 +407,19 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+function validGeneration(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= GENERATION_MIN &&
+    value <= GENERATION_MAX
+  );
+}
+
+function validHarnessBillingType(value: unknown): value is HarnessBillingType {
+  return typeof value === "string" && HARNESS_BILLING_TYPES.has(value);
+}
+
 export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessCommand | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -403,16 +435,19 @@ export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessComman
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "subscription") {
-    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate"])) return null;
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate", "generation", "billingType"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
     if (typeof raw.nextDueDate !== "string" || !ISO_DATE.test(raw.nextDueDate)) return null;
+    if (!validGeneration(raw.generation)) return null;
+    if (!validHarnessBillingType(raw.billingType)) return null;
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "inspect") {
-    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId"])) return null;
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "generation"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
+    if (!validGeneration(raw.generation)) return null;
     return raw as SandboxHarnessCommand;
   }
   return null;
