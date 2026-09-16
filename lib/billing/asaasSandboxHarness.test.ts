@@ -127,6 +127,12 @@ function dependencies(client = fakeClient()): SandboxHarnessDependencies {
     getProvisioningIntent: vi.fn().mockResolvedValue(intent()),
     logicalSubscriptionExternalReference: (establishmentId, generation) =>
       `livia:subscription:${establishmentId}:${generation}`,
+    recoverConflict: vi.fn().mockResolvedValue({
+      ok: true,
+      phase: "succeeded",
+      outcome: "reconciled",
+      intent: intent(),
+    } satisfies ProvisioningResult),
     now: vi.fn(() => 1_800_000_000_000),
     newId: vi.fn(() => "fixed-id"),
   };
@@ -770,5 +776,62 @@ describe("inspect — generation explícita isola generations", () => {
     expect(asaas.createCustomer).not.toHaveBeenCalled();
     expect(asaas.createSubscription).not.toHaveBeenCalled();
     expect(deps.provisionSubscription).not.toHaveBeenCalled();
+  });
+});
+
+describe("conflict_recovery via harness", () => {
+  const command = {
+    action: "conflict_recovery" as const,
+    confirmSandbox: true as const,
+    testRunId: TEST_RUN_ID,
+    generation: 4,
+  };
+
+  it("parseSandboxHarnessCommand aceita conflict_recovery com geração inteira ≥ 1", () => {
+    expect(parseSandboxHarnessCommand(command)).toEqual(command);
+  });
+
+  it("parseSandboxHarnessCommand rejeita generation zero ou não inteiro", () => {
+    expect(parseSandboxHarnessCommand({ ...command, generation: 0 })).toBeNull();
+    expect(parseSandboxHarnessCommand({ ...command, generation: 1.5 })).toBeNull();
+    expect(parseSandboxHarnessCommand({ ...command, generation: "4" })).toBeNull();
+  });
+
+  it("parseSandboxHarnessCommand rejeita campos extras", () => {
+    expect(parseSandboxHarnessCommand({ ...command, extra: "x" })).toBeNull();
+  });
+
+  it("delega ao recoverConflict com establishment do testRunId e nunca chama createSubscription", async () => {
+    const deps = dependencies();
+    const result = await executeAsaasSandboxHarness(command, deps);
+    expect(result).toEqual({
+      ok: true,
+      action: "conflict_recovery",
+      phase: "succeeded",
+      generation: 4,
+      externalSubscriptionId: "sub_test_1",
+    });
+    expect(deps.recoverConflict).toHaveBeenCalledWith(
+      ESTABLISHMENT_ID,
+      4,
+      "asaas-sandbox-harness",
+      expect.objectContaining({ asaas: deps.asaas }),
+    );
+    expect(deps.asaas.createSubscription).not.toHaveBeenCalled();
+  });
+
+  it("falha se tenant de teste não existe", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.getEstablishment).mockResolvedValue(null);
+    const result = await executeAsaasSandboxHarness(command, deps);
+    expect(result).toEqual({ ok: false, action: "conflict_recovery", code: "test_establishment_not_found" });
+    expect(deps.recoverConflict).not.toHaveBeenCalled();
+  });
+
+  it("mapeia recovery conflict para recovery_conflict", async () => {
+    const deps = dependencies();
+    vi.mocked(deps.recoverConflict).mockResolvedValue({ ok: false, phase: "conflict", reason: "no_subscription_found" });
+    const result = await executeAsaasSandboxHarness(command, deps);
+    expect(result).toEqual({ ok: false, action: "conflict_recovery", code: "recovery_conflict" });
   });
 });

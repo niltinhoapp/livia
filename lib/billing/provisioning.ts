@@ -643,6 +643,196 @@ export async function provisionAsaasSubscription(
   return { ok: true, phase: "succeeded", outcome: "created", intent: succeeded };
 }
 
+// Sem createSubscription por design: recovery nunca cria, só valida existente.
+type ConflictRecoveryClient = Pick<
+  AsaasClient,
+  "getSubscription" | "findSubscriptionsForReconciliation"
+>;
+
+export interface ConflictRecoveryDependencies {
+  asaas: ConflictRecoveryClient;
+  now: () => number;
+  newId: () => string;
+  leaseDurationMs?: number;
+}
+
+async function acquireConflictRecoveryLease(
+  identity: IntentIdentity,
+  leaseId: string,
+  leaseOwner: string,
+  now: number,
+  leaseDurationMs: number,
+): Promise<{ acquired: boolean; intent: BillingProvisioningIntent } | null> {
+  const ref = intentRef(identity.establishmentId, identity.subscriptionGeneration);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const current = snap.data() as BillingProvisioningIntent;
+    if (!identityMatches(current, identity)) return null;
+    if (
+      current.phase !== "conflict" ||
+      current.externalSubscriptionId !== null ||
+      current.conflictSubscriptionIds?.length !== 1
+    ) {
+      return { acquired: false, intent: current };
+    }
+    if (current.leaseId && current.leaseExpiresAt !== null && current.leaseExpiresAt > now) {
+      return { acquired: false, intent: current };
+    }
+    const leased: BillingProvisioningIntent = {
+      ...current,
+      leaseId,
+      leaseOwner,
+      leaseExpiresAt: now + leaseDurationMs,
+      updatedAt: now,
+    };
+    tx.update(ref, { leaseId, leaseOwner, leaseExpiresAt: leased.leaseExpiresAt, updatedAt: now });
+    return { acquired: true, intent: leased };
+  });
+}
+
+export async function reconcileConflictedSubscription(
+  establishmentId: string,
+  generation: number,
+  leaseOwner: string,
+  dependencies: ConflictRecoveryDependencies,
+): Promise<ProvisioningResult> {
+  const intent = await getBillingProvisioningIntent(establishmentId, generation);
+  if (!intent) return { ok: false, phase: "conflict", reason: "intent_not_found" };
+
+  if (
+    intent.phase !== "conflict" ||
+    intent.externalSubscriptionId !== null ||
+    intent.conflictSubscriptionIds?.length !== 1
+  ) {
+    if (intent.phase === "succeeded") {
+      return { ok: true, phase: "succeeded", outcome: "verified", intent };
+    }
+    return { ok: false, phase: "conflict", reason: "not_recoverable", intent };
+  }
+
+  const identity = identityOf(intent);
+  const leaseId = dependencies.newId();
+  const now = dependencies.now();
+
+  const acquired = await acquireConflictRecoveryLease(
+    identity,
+    leaseId,
+    leaseOwner,
+    now,
+    dependencies.leaseDurationMs ?? DEFAULT_LEASE_MS,
+  );
+  if (!acquired) return { ok: false, phase: "conflict", reason: "intent_changed" };
+  if (!acquired.acquired) {
+    if (acquired.intent.phase === "succeeded") {
+      return { ok: true, phase: "succeeded", outcome: "verified", intent: acquired.intent };
+    }
+    return { ok: false, phase: "conflict", reason: "busy_or_not_recoverable", intent: acquired.intent };
+  }
+
+  // Estratégia B: busca pelo externalReference canônico
+  const lookup = await dependencies.asaas.findSubscriptionsForReconciliation({
+    customer: intent.asaasCustomerId,
+    externalReference: intent.externalReference,
+    includeDeleted: true,
+  });
+
+  if (!lookup.ok) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: sanitizedError(lookup.error),
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "lookup_failed" };
+  }
+
+  if (lookup.data.length === 0) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "no_subscription_found" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "no_subscription_found" };
+  }
+
+  if (lookup.data.length > 1) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "multiple_subscriptions_on_recovery" },
+        conflictSubscriptionIds: lookup.data.map((s) => s.id),
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "multiple_subscriptions" };
+  }
+
+  const found = lookup.data[0]!;
+
+  // Cross-check A: ID deve coincidir com conflictSubscriptionIds[0]
+  const storedConflictId = acquired.intent.conflictSubscriptionIds![0]!;
+  if (found.id !== storedConflictId) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "conflict_id_mismatch" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "conflict_id_mismatch" };
+  }
+
+  // Guard de status: só promove subscription ACTIVE
+  if (found.status !== "ACTIVE") {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "subscription_not_active" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "subscription_not_active" };
+  }
+
+  // Valida campos críticos com subscriptionMatches (semântica PR #64 para description)
+  if (!subscriptionMatches(found, acquired.intent)) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "subscription_mismatch_on_recovery" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "subscription_mismatch" };
+  }
+
+  // Todos os guards passaram: promove para succeeded
+  const succeeded = await transitionWithLease(identity, leaseId, (current) => {
+    if (current.phase !== "conflict" || current.externalSubscriptionId !== null) return null;
+    return {
+      phase: "succeeded",
+      externalSubscriptionId: found.id,
+      leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+      updatedAt: dependencies.now(),
+      lastError: null,
+      // conflictSubscriptionIds mantido como audit trail
+    };
+  });
+
+  if (!succeeded) return { ok: false, phase: "conflict", reason: "intent_changed" };
+  return { ok: true, phase: "succeeded", outcome: "reconciled", intent: succeeded };
+}
+
 // Exportado apenas para testes/diagnóstico da fundação; não ativa o workflow.
 export async function getBillingProvisioningIntent(
   establishmentId: string,
