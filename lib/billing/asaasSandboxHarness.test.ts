@@ -777,6 +777,81 @@ describe("inspect — generation explícita isola generations", () => {
     expect(asaas.createSubscription).not.toHaveBeenCalled();
     expect(deps.provisionSubscription).not.toHaveBeenCalled();
   });
+
+  it("inspect expõe os campos da subscription usados por subscriptionMatches (OT-05H-V)", async () => {
+    const asaas = fakeClient();
+    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "Secret Name" }]));
+    vi.mocked(asaas.getSubscription).mockResolvedValue(ok({
+      id: "sub_test_1",
+      customer: CUSTOMER_ID,
+      billingType: "BOLETO",
+      value: 5,
+      nextDueDate: "2026-10-01",
+      cycle: "MONTHLY",
+      externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+      description: "Livia sandbox controlled test",
+      status: "ACTIVE",
+    }));
+    vi.mocked(asaas.listSubscriptionPayments).mockResolvedValue(ok([]));
+    const deps = dependencies(asaas);
+    const result = await executeAsaasSandboxHarness(INSPECT_COMMAND_GEN1, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: "inspect",
+      subscription: {
+        id: "sub_test_1",
+        customer: CUSTOMER_ID,
+        externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+        billingType: "BOLETO",
+        value: 5,
+        cycle: "MONTHLY",
+        nextDueDate: "2026-10-01",
+        description: "Livia sandbox controlled test",
+        status: "ACTIVE",
+      },
+    });
+  });
+
+  it("inspect retorna description:null quando a subscription do Asaas não a ecoa (cenário real da conflict_recovery)", async () => {
+    const asaas = fakeClient();
+    vi.mocked(asaas.findCustomersByExternalReference).mockResolvedValue(ok([{ id: CUSTOMER_ID, name: "test" }]));
+    const deps = dependencies(asaas);
+    // Gen ainda em conflict: getProvisioningIntent devolve externalSubscriptionId:null,
+    // então inspect usa findSubscriptionsForReconciliation — mesma consulta usada pela recovery.
+    vi.mocked(deps.getProvisioningIntent).mockResolvedValue(
+      intent({ phase: "conflict", externalSubscriptionId: null, conflictSubscriptionIds: ["sub_conflict_1"] }),
+    );
+    vi.mocked(asaas.findSubscriptionsForReconciliation).mockResolvedValue(ok([{
+      id: "sub_conflict_1",
+      customer: CUSTOMER_ID,
+      billingType: "BOLETO",
+      value: 5,
+      nextDueDate: "2026-10-01",
+      cycle: "MONTHLY",
+      externalReference: `livia:subscription:${ESTABLISHMENT_ID}:1`,
+      status: "ACTIVE",
+      // description deliberadamente ausente — simula a Asaas não ecoando o campo
+    }]));
+    vi.mocked(asaas.listSubscriptionPayments).mockResolvedValue(ok([]));
+
+    const result = await executeAsaasSandboxHarness(INSPECT_COMMAND_GEN1, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: "inspect",
+      subscription: {
+        id: "sub_conflict_1",
+        customer: CUSTOMER_ID,
+        billingType: "BOLETO",
+        value: 5,
+        cycle: "MONTHLY",
+        nextDueDate: "2026-10-01",
+        description: null,
+        status: "ACTIVE",
+      },
+    });
+  });
 });
 
 describe("conflict_recovery via harness", () => {

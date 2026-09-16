@@ -118,7 +118,13 @@ export type SandboxHarnessResult =
       customer: { id: string; externalReference: string } | null;
       subscription: {
         id: string;
+        customer: string | null;
         externalReference: string | null;
+        billingType: string | null;
+        value: number | null;
+        cycle: string | null;
+        nextDueDate: string | null;
+        description: string | null;
         status: string | null;
       } | null;
       provisioning: {
@@ -423,7 +429,13 @@ async function inspect(
     subscription: subscription
       ? {
           id: subscription.id,
+          customer: subscription.customer ?? null,
           externalReference: subscription.externalReference ?? null,
+          billingType: subscription.billingType ?? null,
+          value: subscription.value ?? null,
+          cycle: subscription.cycle ?? null,
+          nextDueDate: subscription.nextDueDate ?? null,
+          description: subscription.description ?? null,
           status: subscription.status ?? null,
         }
       : null,
