@@ -30,6 +30,11 @@ const HARNESS_BILLING_TYPES = new Set(["PIX", "BOLETO"]);
 const GENERATION_MIN = 1;
 const GENERATION_MAX = 10;
 
+// Valor mínimo confirmado pelo Asaas Sandbox para BOLETO (OT-05H-K: "O valor
+// mínimo para cobranças via Boleto Bancário é R$ 5,00."). Aplicado a todos
+// os billingTypes para manter consistência e evitar rejeições silenciosas.
+const HARNESS_VALUE_MIN = 5;
+
 export interface SandboxHarnessEnvironment {
   VERCEL_ENV?: string;
   ASAAS_ENVIRONMENT?: string;
@@ -61,6 +66,7 @@ export type SandboxHarnessCommand =
       nextDueDate: string;
       generation: number;
       billingType: HarnessBillingType;
+      value: number;
     }
   | {
       action: "inspect";
@@ -260,7 +266,7 @@ async function provisionSubscription(
       asaasCustomerId: command.customerId,
       leaseOwner: "asaas-sandbox-harness",
       billingType: command.billingType,
-      value: 1,
+      value: command.value,
       cycle: "MONTHLY",
       nextDueDate: command.nextDueDate,
       description: "Livia sandbox controlled test",
@@ -420,6 +426,10 @@ function validHarnessBillingType(value: unknown): value is HarnessBillingType {
   return typeof value === "string" && HARNESS_BILLING_TYPES.has(value);
 }
 
+function validHarnessValue(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= HARNESS_VALUE_MIN;
+}
+
 export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessCommand | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -435,12 +445,13 @@ export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessComman
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "subscription") {
-    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate", "generation", "billingType"])) return null;
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate", "generation", "billingType", "value"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
     if (typeof raw.nextDueDate !== "string" || !ISO_DATE.test(raw.nextDueDate)) return null;
     if (!validGeneration(raw.generation)) return null;
     if (!validHarnessBillingType(raw.billingType)) return null;
+    if (!validHarnessValue(raw.value)) return null;
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "inspect") {

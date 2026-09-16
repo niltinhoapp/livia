@@ -146,6 +146,7 @@ const SUBSCRIPTION_COMMAND_GEN1 = {
   nextDueDate: "2026-10-01",
   generation: 1,
   billingType: "PIX" as const,
+  value: 5,
 };
 
 // Comando base de subscription para gen 2 + BOLETO (nova variável de homologação)
@@ -157,6 +158,7 @@ const SUBSCRIPTION_COMMAND_GEN2 = {
   nextDueDate: "2026-10-01",
   generation: 2,
   billingType: "BOLETO" as const,
+  value: 5,
 };
 
 const INSPECT_COMMAND_GEN1 = {
@@ -221,7 +223,7 @@ describe("payload e confirmação explícita", () => {
   });
 });
 
-describe("parser — subscription: generation e billingType obrigatórios e estritos", () => {
+describe("parser — subscription: generation, billingType e value obrigatórios e estritos", () => {
   const base = {
     action: "subscription",
     confirmSandbox: true,
@@ -230,9 +232,10 @@ describe("parser — subscription: generation e billingType obrigatórios e estr
     nextDueDate: "2026-10-01",
     generation: 2,
     billingType: "BOLETO",
+    value: 5,
   };
 
-  it("aceita generation 2 + BOLETO", () => {
+  it("aceita generation 2 + BOLETO + value 5", () => {
     expect(parseSandboxHarnessCommand(base)).toEqual(base);
   });
 
@@ -264,6 +267,94 @@ describe("parser — subscription: generation e billingType obrigatórios e estr
       expect(parseSandboxHarnessCommand({ ...base, generation: g })).not.toBeNull();
     }
     expect(parseSandboxHarnessCommand({ ...base, generation: 11 })).toBeNull();
+  });
+});
+
+describe("parser — subscription: value obrigatório, finito e >= 5", () => {
+  const base = {
+    action: "subscription",
+    confirmSandbox: true,
+    testRunId: TEST_RUN_ID,
+    customerId: CUSTOMER_ID,
+    nextDueDate: "2026-10-01",
+    generation: 2,
+    billingType: "BOLETO",
+    value: 5,
+  };
+
+  // Cenário 1: value ausente → rejeita
+  it("rejeita value ausente (exactKeys falha)", () => {
+    const { value: _v, ...sem } = base;
+    expect(parseSandboxHarnessCommand(sem)).toBeNull();
+  });
+
+  // Cenário 2: value string "5" → rejeita
+  it("rejeita value string '5'", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: "5" })).toBeNull();
+  });
+
+  // Cenário 3: value 4 (abaixo do mínimo) → rejeita
+  it("rejeita value 4 (abaixo do mínimo de 5)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 4 })).toBeNull();
+  });
+
+  // Cenário 4: value 4.99 (abaixo do mínimo, não-inteiro) → rejeita
+  it("rejeita value 4.99 (abaixo do mínimo)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 4.99 })).toBeNull();
+  });
+
+  // Cenário 5: value 0 → rejeita
+  it("rejeita value 0", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 0 })).toBeNull();
+  });
+
+  // Cenário 6: value negativo → rejeita
+  it("rejeita value negativo (-1)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: -1 })).toBeNull();
+  });
+
+  // Cenário 7: value NaN → rejeita (isFinite(NaN) === false)
+  it("rejeita value NaN", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: NaN })).toBeNull();
+  });
+
+  // Cenário 8: value Infinity → rejeita (isFinite(Infinity) === false)
+  it("rejeita value Infinity", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: Infinity })).toBeNull();
+  });
+
+  // Cenário 9: value exatamente 5 → aceita (limite mínimo inclusive)
+  it("aceita value exatamente 5 (mínimo inclusivo)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 5 })).toEqual({ ...base, value: 5 });
+  });
+
+  // Cenário 10: value 10 (acima do mínimo, inteiro) → aceita
+  it("aceita value 10", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 10 })).not.toBeNull();
+  });
+
+  // Cenário 11: value 5.5 (finito e >= 5, não-inteiro) → aceita
+  it("aceita value 5.5 (finito, >= 5, não-inteiro é permitido)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, value: 5.5 })).not.toBeNull();
+  });
+
+  // Cenário 12: comando antigo sem value (apenas generation + billingType) → rejeita
+  it("rejeita contrato antigo com generation + billingType mas sem value", () => {
+    const antigo = {
+      action: "subscription",
+      confirmSandbox: true,
+      testRunId: TEST_RUN_ID,
+      customerId: CUSTOMER_ID,
+      nextDueDate: "2026-10-01",
+      generation: 2,
+      billingType: "BOLETO",
+    };
+    expect(parseSandboxHarnessCommand(antigo)).toBeNull();
+  });
+
+  // Cenário 13: value correto + campo extra → rejeita (exactKeys)
+  it("rejeita value correto mas com campo extra (exactKeys)", () => {
+    expect(parseSandboxHarnessCommand({ ...base, extra: "x" })).toBeNull();
   });
 });
 
@@ -412,7 +503,7 @@ describe("subscription — generation explícita e billingType", () => {
         subscriptionGeneration: 1,
         asaasCustomerId: CUSTOMER_ID,
         billingType: "PIX",
-        value: 1,
+        value: 5,
         cycle: "MONTHLY",
         nextDueDate: "2026-10-01",
       }),
@@ -421,14 +512,14 @@ describe("subscription — generation explícita e billingType", () => {
     expect(asaas.createSubscription).not.toHaveBeenCalled();
   });
 
-  it("generation=2 + BOLETO: passa geração e billingType corretos, value permanece 1", async () => {
+  it("generation=2 + BOLETO: passa geração, billingType e value corretos ao provisionSubscription", async () => {
     const asaas = fakeClient();
     const deps = subscriptionDependencies(asaas);
     vi.mocked(deps.provisionSubscription).mockResolvedValue({
       ok: true,
       phase: "succeeded",
       outcome: "created",
-      intent: intentForGen(2, { terms: { billingType: "BOLETO", value: 1, cycle: "MONTHLY", nextDueDate: "2026-10-01", description: "Livia sandbox controlled test" } }),
+      intent: intentForGen(2, { terms: { billingType: "BOLETO", value: 5, cycle: "MONTHLY", nextDueDate: "2026-10-01", description: "Livia sandbox controlled test" } }),
     });
 
     const result = await executeAsaasSandboxHarness(SUBSCRIPTION_COMMAND_GEN2, deps);
@@ -440,7 +531,7 @@ describe("subscription — generation explícita e billingType", () => {
       subscriptionGeneration: 2,
       asaasCustomerId: CUSTOMER_ID,
       billingType: "BOLETO",
-      value: 1,
+      value: 5,
       cycle: "MONTHLY",
     });
     expect(asaas.createSubscription).not.toHaveBeenCalled();
@@ -461,7 +552,7 @@ describe("subscription — generation explícita e billingType", () => {
     expect(vi.mocked(deps.provisionSubscription).mock.calls[0]?.[0]?.billingType).toBe("BOLETO");
   });
 
-  it("value permanece exatamente 1 para generation 2 + BOLETO", async () => {
+  it("value do comando (5) é repassado exatamente ao provisionSubscription, não hardcoded", async () => {
     const deps = subscriptionDependencies();
     vi.mocked(deps.provisionSubscription).mockResolvedValue({
       ok: true, phase: "succeeded", outcome: "created",
@@ -470,7 +561,20 @@ describe("subscription — generation explícita e billingType", () => {
 
     await executeAsaasSandboxHarness(SUBSCRIPTION_COMMAND_GEN2, deps);
 
-    expect(vi.mocked(deps.provisionSubscription).mock.calls[0]?.[0]?.value).toBe(1);
+    expect(vi.mocked(deps.provisionSubscription).mock.calls[0]?.[0]?.value).toBe(5);
+  });
+
+  it("value 10 no comando é repassado como 10, provando que não é hardcoded", async () => {
+    const deps = subscriptionDependencies();
+    vi.mocked(deps.provisionSubscription).mockResolvedValue({
+      ok: true, phase: "succeeded", outcome: "created",
+      intent: intentForGen(2),
+    });
+    const cmdWith10 = { ...SUBSCRIPTION_COMMAND_GEN2, value: 10 };
+
+    await executeAsaasSandboxHarness(cmdWith10, deps);
+
+    expect(vi.mocked(deps.provisionSubscription).mock.calls[0]?.[0]?.value).toBe(10);
   });
 
   it("generation 1 em failed_terminal não interfere na generation 2", async () => {
