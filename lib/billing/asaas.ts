@@ -383,6 +383,16 @@ export interface ListSubscriptionsInput {
 
 export type FindSubscriptionsInput = Omit<ListSubscriptionsInput, "limit" | "offset">;
 
+// `status` é mantido como string livre (não um union fechado), pelo mesmo
+// motivo de `AsaasSubscription.status`: é um valor que só a Asaas produz e
+// pode evoluir (a documentação oficial já lista 14 valores hoje — ver
+// OT-05H-X). Fechar isso num Set faria isAsaasPayment rejeitar toda
+// resposta assim que a Asaas introduzir um 15º status, derrubando
+// listSubscriptionPayments inteiro por forward-incompatibilidade. Qualquer
+// allowlist específica (ex.: quais status contam como "cobrança realmente
+// emitida" para um guard de recovery) pertence ao chamador, não ao parser
+// genérico do client. `deleted` reflete o campo documentado da Asaas
+// ("determina se a cobrança foi removida") — ver OT-05H-X.
 export interface AsaasPayment {
   id: string;
   status?: string;
@@ -390,6 +400,7 @@ export interface AsaasPayment {
   subscription?: string;
   value?: number;
   dueDate?: string;
+  deleted?: boolean;
 }
 
 // Sem retry automático nesta função também — mesmo raciocínio de
@@ -559,6 +570,42 @@ function isAsaasSubscription(value: unknown): value is AsaasSubscription {
   );
 }
 
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// Valida formato E existência real no calendário (rejeita "2026-02-30"),
+// em UTC puro — nunca via `new Date(string)` interpretado em fuso local,
+// que pode deslocar o dia dependendo do timezone do processo.
+function isValidIsoDate(value: string): boolean {
+  const match = ISO_DATE_PATTERN.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+// Só `id` é obrigatório, igual ao contrato de AsaasPayment — os demais
+// campos são opcionais (a Asaas às vezes não os ecoa completamente,
+// como description em subscriptions — ver PR #64), mas QUANDO presentes
+// precisam ter o tipo/formato certo, senão a resposta inteira é rejeitada
+// como invalid_response. Nunca aceita um campo presente e malformado.
 function isAsaasPayment(value: unknown): value is AsaasPayment {
-  return Boolean(value && typeof value === "object" && typeof (value as Record<string, unknown>).id === "string");
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  if (typeof item.id !== "string" || item.id.length === 0) return false;
+  if (item.status !== undefined && typeof item.status !== "string") return false;
+  if (item.customer !== undefined && (typeof item.customer !== "string" || item.customer.length === 0)) return false;
+  if (item.subscription !== undefined && (typeof item.subscription !== "string" || item.subscription.length === 0)) {
+    return false;
+  }
+  if (item.value !== undefined && (typeof item.value !== "number" || !Number.isFinite(item.value))) return false;
+  if (item.dueDate !== undefined && (typeof item.dueDate !== "string" || !isValidIsoDate(item.dueDate))) return false;
+  if (item.deleted !== undefined && typeof item.deleted !== "boolean") return false;
+  return true;
 }
