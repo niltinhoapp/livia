@@ -389,7 +389,9 @@ function subscriptionMatches(
     toCents(subscription.value) === toCents(intent.terms.value) &&
     subscription.cycle === intent.terms.cycle &&
     subscription.nextDueDate === intent.terms.nextDueDate &&
-    (intent.terms.description === undefined || subscription.description === intent.terms.description)
+    (intent.terms.description === undefined ||
+      subscription.description === undefined ||
+      subscription.description === intent.terms.description)
   );
 }
 
