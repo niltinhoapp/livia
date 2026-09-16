@@ -191,7 +191,6 @@ describe("production kill switch", () => {
   };
 
   it.each([
-    ["production", { ...valid, VERCEL_ENV: "production" }],
     ["development", { ...valid, VERCEL_ENV: "development" }],
     ["VERCEL_ENV ausente", { ...valid, VERCEL_ENV: undefined }],
     ["ambiente Asaas ausente", { ...valid, ASAAS_ENVIRONMENT: undefined }],
@@ -202,8 +201,33 @@ describe("production kill switch", () => {
     expect(isAsaasSandboxHarnessEnabled(env)).toBe(false);
   });
 
-  it("permite somente preview + sandbox + prefixo hmlg", () => {
+  it("permite preview + sandbox + prefixo hmlg", () => {
     expect(isAsaasSandboxHarnessEnabled(valid)).toBe(true);
+  });
+
+  // OT-06G: VERCEL_ENV=="production" passou a ser aceito, decisão temporária
+  // da fase pré-beta (ver comentário em isAsaasSandboxHarnessEnabled) — mas
+  // só quando TODOS os outros gates Sandbox continuam válidos.
+  describe("VERCEL_ENV=production (OT-06G, temporário — fase pré-beta)", () => {
+    const validProduction = { ...valid, VERCEL_ENV: "production" };
+
+    it("Production + sandbox válido -> habilitado", () => {
+      expect(isAsaasSandboxHarnessEnabled(validProduction)).toBe(true);
+    });
+
+    it("Production + ASAAS_ENVIRONMENT não-sandbox -> bloqueado", () => {
+      expect(isAsaasSandboxHarnessEnabled({ ...validProduction, ASAAS_ENVIRONMENT: "production" })).toBe(false);
+      expect(isAsaasSandboxHarnessEnabled({ ...validProduction, ASAAS_ENVIRONMENT: undefined })).toBe(false);
+    });
+
+    it("Production + chave sem prefixo sandbox -> bloqueado", () => {
+      expect(isAsaasSandboxHarnessEnabled({ ...validProduction, ASAAS_API_KEY: "$aact_prod_FAKE" })).toBe(false);
+      expect(isAsaasSandboxHarnessEnabled({ ...validProduction, ASAAS_API_KEY: undefined })).toBe(false);
+    });
+
+    it("Preview + sandbox válido continua habilitado (regressão — B2 não alterou o caminho existente)", () => {
+      expect(isAsaasSandboxHarnessEnabled(valid)).toBe(true);
+    });
   });
 });
 

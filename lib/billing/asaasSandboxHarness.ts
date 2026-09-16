@@ -43,9 +43,21 @@ export interface SandboxHarnessEnvironment {
   ASAAS_API_KEY?: string;
 }
 
+// VERCEL_ENV aceita "preview" OU "production" (OT-06G) — decisão temporária
+// da fase pré-beta: Production do APP está sendo usada como ambiente de
+// homologação, mas SEMPRE contra o Asaas Sandbox, nunca Asaas Production.
+// Isso não abre brecha para chamar api.asaas.com: os dois checks abaixo
+// (ASAAS_ENVIRONMENT + prefixo da chave) continuam obrigatórios, e — mais
+// forte ainda — createSandboxHarnessDependencies() hardcoda
+// `environment: "sandbox"` como string literal ao construir o AsaasClient
+// (nunca lê ASAAS_ENVIRONMENT para escolher a URL base), e createAsaasClient
+// por sua vez lança exceção se a chave não tiver o prefixo sandbox. VERCEL_ENV
+// aqui só controla SE a rota responde, nunca PARA ONDE ela chama. Quando a
+// fase pré-beta acabar (clientes reais entrando), esta OT deve ser revertida
+// junto com a separação real Preview/Production (ver OT-06F).
 export function isAsaasSandboxHarnessEnabled(env: SandboxHarnessEnvironment): boolean {
   return (
-    env.VERCEL_ENV === "preview" &&
+    (env.VERCEL_ENV === "preview" || env.VERCEL_ENV === "production") &&
     env.ASAAS_ENVIRONMENT === "sandbox" &&
     typeof env.ASAAS_API_KEY === "string" &&
     env.ASAAS_API_KEY.startsWith(SANDBOX_KEY_PREFIX)
