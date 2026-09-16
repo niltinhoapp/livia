@@ -345,6 +345,168 @@ describe("subscription GET e reconciliação paginada", () => {
   });
 });
 
+describe("isAsaasPayment — contrato fortalecido (OT-05H-Y)", () => {
+  async function listOne(payment: unknown) {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { data: [payment] }));
+    return client({}, fetchImpl).listSubscriptionPayments("sub_1");
+  }
+
+  it("payment válido completo (todos os campos, incluindo deleted) é aceito", async () => {
+    const payment = {
+      id: "pay_1",
+      status: "PENDING",
+      customer: "cus_1",
+      subscription: "sub_1",
+      value: 5,
+      dueDate: "2026-10-01",
+      deleted: false,
+    };
+    const result = await listOne(payment);
+    expect(result).toEqual({ ok: true, data: [payment] });
+  });
+
+  it("deleted:false é aceito", async () => {
+    const result = await listOne({ id: "pay_1", deleted: false });
+    expect(result.ok).toBe(true);
+  });
+
+  it("deleted:true é aceito (payment removido continua uma resposta válida)", async () => {
+    const result = await listOne({ id: "pay_1", deleted: true });
+    expect(result.ok).toBe(true);
+  });
+
+  it("deleted malformado (não-boolean) é rejeitado", async () => {
+    const result = await listOne({ id: "pay_1", deleted: "true" });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("value ausente é aceito (campo opcional)", async () => {
+    const result = await listOne({ id: "pay_1", status: "PENDING" });
+    expect(result.ok).toBe(true);
+  });
+
+  it("value malformado (string) é rejeitado", async () => {
+    const result = await listOne({ id: "pay_1", value: "5" });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it.each([
+    ["NaN", NaN],
+    ["Infinity", Infinity],
+    ["-Infinity", -Infinity],
+  ])("value %s é rejeitado", async (_label, value) => {
+    const result = await listOne({ id: "pay_1", value });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("dueDate ausente é aceito (campo opcional)", async () => {
+    const result = await listOne({ id: "pay_1" });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["formato errado", "01/10/2026"],
+    ["mês inválido", "2026-13-01"],
+    ["dia inexistente no calendário (30 de fevereiro)", "2026-02-30"],
+    ["dia inexistente em ano não-bissexto", "2027-02-29"],
+  ])("dueDate malformada (%s) é rejeitada", async (_label, dueDate) => {
+    const result = await listOne({ id: "pay_1", dueDate });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("dueDate em ano bissexto (29 de fevereiro) é aceita", async () => {
+    const result = await listOne({ id: "pay_1", dueDate: "2028-02-29" });
+    expect(result.ok).toBe(true);
+  });
+
+  it("customer ausente é aceito (campo opcional)", async () => {
+    const result = await listOne({ id: "pay_1" });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["string vazia", ""],
+    ["tipo errado (number)", 123],
+  ])("customer malformado (%s) é rejeitado", async (_label, customer) => {
+    const result = await listOne({ id: "pay_1", customer });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("subscription presente e válido é aceito", async () => {
+    const result = await listOne({ id: "pay_1", subscription: "sub_1" });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["string vazia", ""],
+    ["tipo errado (number)", 123],
+  ])("subscription malformado (%s) é rejeitado", async (_label, subscription) => {
+    const result = await listOne({ id: "pay_1", subscription });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("status com qualquer um dos 14 valores documentados pela Asaas é aceito", async () => {
+    const statuses = [
+      "PENDING", "RECEIVED", "CONFIRMED", "OVERDUE", "REFUNDED", "RECEIVED_IN_CASH",
+      "REFUND_REQUESTED", "REFUND_IN_PROGRESS", "CHARGEBACK_REQUESTED", "CHARGEBACK_DISPUTE",
+      "AWAITING_CHARGEBACK_REVERSAL", "DUNNING_REQUESTED", "DUNNING_RECEIVED", "AWAITING_RISK_ANALYSIS",
+    ];
+    for (const status of statuses) {
+      const result = await listOne({ id: "pay_1", status });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("status desconhecido/futuro (não documentado hoje) é aceito no parser — forward compatibility", async () => {
+    // Decisão OT-05H-Y: status não é fechado em union/Set no client genérico
+    // (mesmo padrão já usado em AsaasSubscription.status). Um 15º status
+    // que a Asaas venha a introduzir não pode derrubar listSubscriptionPayments
+    // inteiro. Allowlists específicas pertencem ao chamador (ex.: um guard
+    // de recovery), não a este parser.
+    const result = await listOne({ id: "pay_1", status: "UM_STATUS_QUE_NAO_EXISTE_AINDA" });
+    expect(result.ok).toBe(true);
+  });
+
+  it("status malformado (tipo errado) é rejeitado", async () => {
+    const result = await listOne({ id: "pay_1", status: 123 });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it.each([
+    ["ausente", undefined],
+    ["vazio", ""],
+    ["tipo errado (number)", 123],
+  ])("id %s é rejeitado", async (_label, id) => {
+    const result = await listOne(id === undefined ? {} : { id });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.kind).toBe("invalid_response");
+  });
+
+  it("listSubscriptionPayments continua sem enviar body e usando GET", async () => {
+    const fetchImpl = mockFetch(async () => jsonResponse(200, { data: [{ id: "pay_1" }] }));
+    await client({}, fetchImpl).listSubscriptionPayments("sub_1");
+    expect(fetchImpl.mock.calls[0]?.[1].method).toBe("GET");
+    expect(fetchImpl.mock.calls[0]?.[1].body).toBeUndefined();
+  });
+
+  it("paginação de payments continua idêntica (limit/offset, sem novos parâmetros)", async () => {
+    const fetchImpl = mockFetch(async (url) => {
+      const params = new URL(url).searchParams;
+      expect([...params.keys()].sort()).toEqual(["limit", "offset"]);
+      return jsonResponse(200, { data: [{ id: "pay_1" }], hasMore: false });
+    });
+    await client({}, fetchImpl).listSubscriptionPayments("sub_1");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("13) nenhum dado de cartão é aceito", () => {
   it("creditCard/creditCardHolderInfo/creditCardToken nunca chegam ao corpo da requisição", async () => {
     const fetchImpl = mockFetch(async () => jsonResponse(200, { id: "sub_1" }));
