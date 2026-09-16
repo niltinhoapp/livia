@@ -371,8 +371,78 @@ describe("concorrência e transaction retry", () => {
   });
 });
 
+describe("lastError descriptions", () => {
+  it("HTTP 400 com description preserva codes e descriptions no lastError", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          kind: "http" as const,
+          status: 400,
+          errors: [{ code: "invalid_value", description: "mensagem de validação" }],
+          message: "Asaas: requisição falhou (HTTP 400).",
+        } satisfies AsaasError,
+      })),
+    });
+    await provisionAsaasSubscription(INPUT, dependencies(client));
+    const stored = await getBillingProvisioningIntent("est_1", 1);
+    expect(stored?.phase).toBe("failed_terminal");
+    expect(stored?.lastError).toEqual({
+      kind: "http",
+      status: 400,
+      codes: ["invalid_value"],
+      descriptions: ["mensagem de validação"],
+    });
+  });
+
+  it("múltiplos errors preservam todos os codes e descriptions na ordem original", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          kind: "http" as const,
+          status: 422,
+          errors: [
+            { code: "invalid_value", description: "O campo value é inválido" },
+            { code: "invalid_field", description: "O campo nextDueDate é inválido" },
+          ],
+          message: "Asaas: requisição falhou (HTTP 422).",
+        } satisfies AsaasError,
+      })),
+    });
+    await provisionAsaasSubscription(INPUT, dependencies(client));
+    const stored = await getBillingProvisioningIntent("est_1", 1);
+    expect(stored?.lastError).toMatchObject({
+      codes: ["invalid_value", "invalid_field"],
+      descriptions: ["O campo value é inválido", "O campo nextDueDate é inválido"],
+    });
+  });
+
+  it("description ausente em todos os errors omite descriptions do lastError", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          kind: "http" as const,
+          status: 400,
+          errors: [{ code: "invalid_value" }],
+          message: "Asaas: requisição falhou (HTTP 400).",
+        } satisfies AsaasError,
+      })),
+    });
+    await provisionAsaasSubscription(INPUT, dependencies(client));
+    const stored = await getBillingProvisioningIntent("est_1", 1);
+    expect(stored?.lastError).toEqual({
+      kind: "http",
+      status: 400,
+      codes: ["invalid_value"],
+    });
+    expect(stored?.lastError).not.toHaveProperty("descriptions");
+  });
+});
+
 describe("segurança da persistência", () => {
-  it("não persiste API key, token, cartão ou payload HTTP bruto", async () => {
+  it("não persiste AsaasError.message, cartão ou payload HTTP bruto; persiste descriptions do errors[]", async () => {
     const secret = "$aact_hmlg_SECRET_SHOULD_NOT_PERSIST";
     const client = fakeAsaas({
       createSubscription: vi.fn(async () => ({
@@ -380,7 +450,10 @@ describe("segurança da persistência", () => {
         error: {
           kind: "http" as const,
           status: 500,
-          errors: [{ code: "server_error", description: `token ${secret}` }],
+          // description vem do corpo estruturado do Asaas (campo seguro — não ecoa
+          // dados de request) e agora é persistida como parte de descriptions[].
+          errors: [{ code: "server_error", description: "erro interno de validação" }],
+          // message é nossa própria string sintetizada e NUNCA deve ser persistida.
           message: secret,
         },
       })),
@@ -390,5 +463,6 @@ describe("segurança da persistência", () => {
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toMatch(/creditCard|access_token|cookie|cvv|pan/i);
     expect(serialized).toContain("server_error");
+    expect(serialized).toContain("erro interno de validação");
   });
 });
