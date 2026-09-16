@@ -809,9 +809,10 @@ export async function provisionAsaasSubscription(
     // Diferente do recovery: aqui só existe UM ciclo possível — o
     // primeiro, da própria criação. Não há "N ciclos decorridos" a
     // calcular (nextDueDateCycleAdvance não se aplica). A evidência
-    // autoritativa do vencimento pedido é a cobrança que a Asaas já
-    // gerou de forma síncrona (comprovada pela gen5), não o ponteiro
-    // nextDueDate da subscription.
+    // autoritativa do vencimento pedido é a cobrança já observável nesta
+    // resposta (comprovado pela gen5) — não o ponteiro nextDueDate da
+    // subscription. Não afirmamos em que instante interno a Asaas gera
+    // essa cobrança.
     const paymentsLookup = await dependencies.asaas.listSubscriptionPayments(created.data.id);
     if (!paymentsLookup.ok) {
       const conflicted = await markCreatedConflict("", sanitizedError(paymentsLookup.error));
