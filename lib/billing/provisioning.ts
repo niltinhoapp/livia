@@ -33,6 +33,7 @@ export interface SanitizedProvisioningError {
   kind: AsaasError["kind"] | "conflict";
   status?: number;
   codes?: string[];
+  descriptions?: string[];
   code?: string;
 }
 
@@ -360,12 +361,16 @@ async function markKnownSubscriptionLookupFailure(
 }
 
 function sanitizedError(error: AsaasError): SanitizedProvisioningError {
+  const descriptions = error.errors
+    ?.map((item) => item.description)
+    .filter((d): d is string => Boolean(d));
   return {
     kind: error.kind,
     ...(error.status !== undefined ? { status: error.status } : {}),
     ...(error.errors
       ? { codes: error.errors.map((item) => item.code).filter((code): code is string => Boolean(code)) }
       : {}),
+    ...(descriptions?.length ? { descriptions } : {}),
   };
 }
 
@@ -384,8 +389,170 @@ function subscriptionMatches(
     toCents(subscription.value) === toCents(intent.terms.value) &&
     subscription.cycle === intent.terms.cycle &&
     subscription.nextDueDate === intent.terms.nextDueDate &&
-    (intent.terms.description === undefined || subscription.description === intent.terms.description)
+    (intent.terms.description === undefined ||
+      subscription.description === undefined ||
+      subscription.description === intent.terms.description)
   );
+}
+
+// Cópia deliberada de subscriptionMatches SEM a condição de nextDueDate —
+// nunca extraída/reaproveitada por composição, para que subscriptionMatches
+// (usada em provisionAsaasSubscription, replay normal e verificação
+// pós-POST) permaneça absolutamente intocada por esta OT (OT-05H-Z). Usada
+// só dentro de reconcileConflictedSubscription quando nextDueDate diverge,
+// para confirmar que TODOS os outros campos batem estritamente antes de
+// sequer considerar avanço temporal.
+function subscriptionMatchesExceptNextDueDate(
+  subscription: AsaasSubscription,
+  intent: BillingProvisioningIntent,
+): boolean {
+  return (
+    subscription.customer === intent.asaasCustomerId &&
+    subscription.externalReference === intent.externalReference &&
+    subscription.billingType === intent.terms.billingType &&
+    toCents(subscription.value) === toCents(intent.terms.value) &&
+    subscription.cycle === intent.terms.cycle &&
+    (intent.terms.description === undefined ||
+      subscription.description === undefined ||
+      subscription.description === intent.terms.description)
+  );
+}
+
+const ISO_DATE_PARTS = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function parseIsoDateParts(value: string): { year: number; month: number; day: number } | null {
+  const match = ISO_DATE_PARTS.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) {
+    return null;
+  }
+  return { year, month, day };
+}
+
+// Último dia do mês pedido, em UTC puro — "dia 0 do mês seguinte".
+function daysInMonth(year: number, month1Based: number): number {
+  return new Date(Date.UTC(year, month1Based, 0)).getUTCDate();
+}
+
+// Só os 5 cycles mensais têm multiplicador de meses; WEEKLY/BIWEEKLY usam
+// passo de dias exato (ver CYCLE_DAYS) — nunca os dois ao mesmo tempo.
+const CYCLE_MONTHS: Partial<Record<AsaasCycle, number>> = {
+  MONTHLY: 1,
+  BIMONTHLY: 2,
+  QUARTERLY: 3,
+  SEMIANNUALLY: 6,
+  YEARLY: 12,
+};
+
+const CYCLE_DAYS: Partial<Record<AsaasCycle, number>> = {
+  WEEKLY: 7,
+  BIWEEKLY: 14,
+};
+
+// Teto de segurança por tempo decorrido (não por N fixo) — cobre
+// folgadamente qualquer recovery tardio realista (~5 anos) sem permitir
+// loop ilimitado, igual para ciclos curtos (muitos N) ou longos (poucos N).
+const MAX_ELAPSED_DAYS_FOR_CYCLE_ADVANCE = 5 * 366;
+
+// Determina se `targetIso` corresponde a exatamente N ciclos (N >= 1) à
+// frente de `originIso`, segundo `cycle`. Retorna null sempre que isso não
+// puder ser determinado com segurança: data malformada, retrocesso,
+// diferença que não é múltiplo exato do ciclo, cycle fora dos 7 conhecidos,
+// e — para ciclos mensais — quando o dia de origem não existe no mês-alvo
+// (ex.: dia 31 caindo num mês de 30 dias). Esse último caso é
+// deliberadamente fail-closed: a documentação oficial da Asaas NÃO define
+// se ela usaria "clamp" (último dia do mês) ou "rollover" (transbordar pro
+// mês seguinte) nesse cenário (auditoria OT-05H-X), e aceitar qualquer uma
+// das duas convenções sem essa confirmação seria adivinhar, não validar.
+// Para o caso conhecido da gen4 (2026-10-01 → 2026-11-01, dia 1, MONTHLY)
+// não há essa ambiguidade: dia 1 existe em todo mês.
+function nextDueDateCycleAdvance(
+  cycle: AsaasCycle,
+  originIso: string,
+  targetIso: string,
+): number | null {
+  const origin = parseIsoDateParts(originIso);
+  const target = parseIsoDateParts(targetIso);
+  if (!origin || !target) return null;
+
+  const originUtc = Date.UTC(origin.year, origin.month - 1, origin.day);
+  const targetUtc = Date.UTC(target.year, target.month - 1, target.day);
+  if (targetUtc <= originUtc) return null; // nunca aceita retrocesso
+
+  const daysStep = CYCLE_DAYS[cycle];
+  if (daysStep !== undefined) {
+    const diffDays = Math.round((targetUtc - originUtc) / 86_400_000);
+    if (diffDays % daysStep !== 0) return null;
+    const n = diffDays / daysStep;
+    const maxN = Math.floor(MAX_ELAPSED_DAYS_FOR_CYCLE_ADVANCE / daysStep);
+    return n >= 1 && n <= maxN ? n : null;
+  }
+
+  const monthsStep = CYCLE_MONTHS[cycle];
+  if (monthsStep !== undefined) {
+    const maxN = Math.max(1, Math.floor(MAX_ELAPSED_DAYS_FOR_CYCLE_ADVANCE / 28 / monthsStep));
+    for (let n = 1; n <= maxN; n += 1) {
+      const monthIndex = origin.month - 1 + n * monthsStep;
+      const candidateYear = origin.year + Math.floor(monthIndex / 12);
+      const candidateMonth = (monthIndex % 12) + 1;
+      if (origin.day > daysInMonth(candidateYear, candidateMonth)) continue; // ambíguo, pula sem adivinhar
+      const candidateUtc = Date.UTC(candidateYear, candidateMonth - 1, origin.day);
+      if (candidateUtc === targetUtc) return n;
+    }
+    return null;
+  }
+
+  return null; // cycle fora dos 7 conhecidos — defesa em profundidade
+}
+
+// Allowlist mínima e deliberada (OT-05H-Z): dos 14 status oficiais de
+// payment confirmados na auditoria OT-05H-X, só PENDING é aceito hoje como
+// prova de que a cobrança original do ciclo pedido pela intent foi
+// realmente emitida pela Asaas. É o único status observado empiricamente
+// na gen4 (OT-05H-U) e o único usado neste repositório antes desta OT.
+// Ampliar esta lista (ex.: RECEIVED, CONFIRMED) exige decisão própria,
+// confirmando que o novo valor realmente significa "cobrança emitida e
+// não estornada/cancelada" — nunca suposição. Não modifica o parser
+// genérico isAsaasPayment (PR #67): a allowlist vive só aqui, no guard
+// financeiro que precisa dela.
+const RECOVERY_ELIGIBLE_PAYMENT_STATUSES = new Set<string>(["PENDING"]);
+
+type OriginalPaymentEvidence =
+  | { ok: true; payment: AsaasPayment }
+  | { ok: false; reason: "original_payment_not_found" | "original_payment_ambiguous" | "original_payment_not_eligible" };
+
+// Exige exatamente 1 payment cujo dueDate seja igual, caractere-a-caractere,
+// ao nextDueDate ORIGINAL da intent (nunca de um ciclo intermediário) — e
+// só então avalia elegibilidade (value/deleted/status/customer/subscription)
+// nesse único candidato. 0 ou >1 payments com o dueDate correto nunca chega
+// a avaliar elegibilidade — a ambiguidade em qual cobrança é "a original"
+// já é suficiente para falhar fechado.
+function findOriginalPaymentEvidence(
+  payments: AsaasPayment[],
+  subscriptionId: string,
+  intent: BillingProvisioningIntent,
+): OriginalPaymentEvidence {
+  const byDueDate = payments.filter((payment) => payment.dueDate === intent.terms.nextDueDate);
+  if (byDueDate.length === 0) return { ok: false, reason: "original_payment_not_found" };
+  if (byDueDate.length > 1) return { ok: false, reason: "original_payment_ambiguous" };
+
+  const candidate = byDueDate[0]!;
+  const eligible =
+    candidate.value !== undefined &&
+    Number.isFinite(candidate.value) &&
+    toCents(candidate.value) === toCents(intent.terms.value) &&
+    candidate.deleted === false &&
+    typeof candidate.status === "string" &&
+    RECOVERY_ELIGIBLE_PAYMENT_STATUSES.has(candidate.status) &&
+    (candidate.customer === undefined || candidate.customer === intent.asaasCustomerId) &&
+    (candidate.subscription === undefined || candidate.subscription === subscriptionId);
+
+  return eligible ? { ok: true, payment: candidate } : { ok: false, reason: "original_payment_not_eligible" };
 }
 
 async function inspectDuplicatePayments(
@@ -604,8 +771,8 @@ export async function provisionAsaasSubscription(
 
   await dependencies.afterCreateSubscription?.(created.data);
 
-  if (!subscriptionMatches(created.data, creating)) {
-    const conflicted = await transitionWithLease(identity, leaseId, (current) => {
+  const markCreatedConflict = (code: string, error?: SanitizedProvisioningError) =>
+    transitionWithLease(identity, leaseId, (current) => {
       if (current.attemptId !== attemptId || current.phase !== "creating") return null;
       return {
         phase: "conflict",
@@ -613,11 +780,50 @@ export async function provisionAsaasSubscription(
         leaseOwner: null,
         leaseExpiresAt: null,
         updatedAt: dependencies.now(),
-        lastError: { kind: "conflict", code: "created_subscription_mismatch" },
+        lastError: error ?? { kind: "conflict", code },
         conflictSubscriptionIds: [created.data.id],
       };
     });
-    return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+
+  if (created.data.nextDueDate === creating.terms.nextDueDate) {
+    // Caminho atual, inalterado: subscriptionMatches decide tudo.
+    if (!subscriptionMatches(created.data, creating)) {
+      const conflicted = await markCreatedConflict("created_subscription_mismatch");
+      return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+    }
+  } else {
+    // nextDueDate divergiu já na resposta do POST (OT-05H-AH / RCA
+    // OT-05H-AG, reproduzido na gen5). A Asaas documenta
+    // subscription.nextDueDate como "vencimento do próximo pagamento a
+    // ser gerado" — semanticamente diferente de request.nextDueDate
+    // ("vencimento da primeira cobrança"). Não afirmamos em que instante
+    // interno a Asaas avança esse ponteiro; só reagimos ao fato
+    // observável. Nunca usa subscriptionMatches puro aqui — ele
+    // rejeitaria pela igualdade estrita antes de qualquer análise.
+    // Primeiro confirma que TODOS os outros campos batem estritamente.
+    if (!subscriptionMatchesExceptNextDueDate(created.data, creating)) {
+      const conflicted = await markCreatedConflict("created_subscription_mismatch");
+      return { ok: false, phase: "conflict", reason: "created_subscription_mismatch", intent: conflicted ?? undefined };
+    }
+
+    // Diferente do recovery: aqui só existe UM ciclo possível — o
+    // primeiro, da própria criação. Não há "N ciclos decorridos" a
+    // calcular (nextDueDateCycleAdvance não se aplica). A evidência
+    // autoritativa do vencimento pedido é a cobrança já observável nesta
+    // resposta (comprovado pela gen5) — não o ponteiro nextDueDate da
+    // subscription. Não afirmamos em que instante interno a Asaas gera
+    // essa cobrança.
+    const paymentsLookup = await dependencies.asaas.listSubscriptionPayments(created.data.id);
+    if (!paymentsLookup.ok) {
+      const conflicted = await markCreatedConflict("", sanitizedError(paymentsLookup.error));
+      return { ok: false, phase: "conflict", reason: "lookup_failed", intent: conflicted ?? undefined };
+    }
+
+    const evidence = findOriginalPaymentEvidence(paymentsLookup.data, created.data.id, creating);
+    if (!evidence.ok) {
+      const conflicted = await markCreatedConflict(evidence.reason);
+      return { ok: false, phase: "conflict", reason: evidence.reason, intent: conflicted ?? undefined };
+    }
   }
 
   const succeeded = await transitionWithLease(identity, leaseId, (current) => {
@@ -634,6 +840,248 @@ export async function provisionAsaasSubscription(
   });
   if (!succeeded) return { ok: false, phase: "conflict", reason: "intent_changed" };
   return { ok: true, phase: "succeeded", outcome: "created", intent: succeeded };
+}
+
+// Sem createSubscription por design: recovery nunca cria, só valida
+// existente. `Pick<AsaasClient, ...>` garante isso estruturalmente — o
+// próprio AsaasClient não declara updateSubscription/deleteSubscription/
+// createPayment nem nenhum outro método de escrita além de
+// createSubscription (ver asaas.ts), que fica deliberadamente fora deste
+// Pick. listSubscriptionPayments (OT-05H-Z) é leitura pura, usada só para
+// coletar evidência de recovery temporal de nextDueDate.
+type ConflictRecoveryClient = Pick<
+  AsaasClient,
+  "getSubscription" | "findSubscriptionsForReconciliation" | "listSubscriptionPayments"
+>;
+
+export interface ConflictRecoveryDependencies {
+  asaas: ConflictRecoveryClient;
+  now: () => number;
+  newId: () => string;
+  leaseDurationMs?: number;
+}
+
+async function acquireConflictRecoveryLease(
+  identity: IntentIdentity,
+  leaseId: string,
+  leaseOwner: string,
+  now: number,
+  leaseDurationMs: number,
+): Promise<{ acquired: boolean; intent: BillingProvisioningIntent } | null> {
+  const ref = intentRef(identity.establishmentId, identity.subscriptionGeneration);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const current = snap.data() as BillingProvisioningIntent;
+    if (!identityMatches(current, identity)) return null;
+    if (
+      current.phase !== "conflict" ||
+      current.externalSubscriptionId !== null ||
+      current.conflictSubscriptionIds?.length !== 1
+    ) {
+      return { acquired: false, intent: current };
+    }
+    if (current.leaseId && current.leaseExpiresAt !== null && current.leaseExpiresAt > now) {
+      return { acquired: false, intent: current };
+    }
+    const leased: BillingProvisioningIntent = {
+      ...current,
+      leaseId,
+      leaseOwner,
+      leaseExpiresAt: now + leaseDurationMs,
+      updatedAt: now,
+    };
+    tx.update(ref, { leaseId, leaseOwner, leaseExpiresAt: leased.leaseExpiresAt, updatedAt: now });
+    return { acquired: true, intent: leased };
+  });
+}
+
+export async function reconcileConflictedSubscription(
+  establishmentId: string,
+  generation: number,
+  leaseOwner: string,
+  dependencies: ConflictRecoveryDependencies,
+): Promise<ProvisioningResult> {
+  const intent = await getBillingProvisioningIntent(establishmentId, generation);
+  if (!intent) return { ok: false, phase: "conflict", reason: "intent_not_found" };
+
+  if (
+    intent.phase !== "conflict" ||
+    intent.externalSubscriptionId !== null ||
+    intent.conflictSubscriptionIds?.length !== 1
+  ) {
+    if (intent.phase === "succeeded") {
+      return { ok: true, phase: "succeeded", outcome: "verified", intent };
+    }
+    return { ok: false, phase: "conflict", reason: "not_recoverable", intent };
+  }
+
+  const identity = identityOf(intent);
+  const leaseId = dependencies.newId();
+  const now = dependencies.now();
+
+  const acquired = await acquireConflictRecoveryLease(
+    identity,
+    leaseId,
+    leaseOwner,
+    now,
+    dependencies.leaseDurationMs ?? DEFAULT_LEASE_MS,
+  );
+  if (!acquired) return { ok: false, phase: "conflict", reason: "intent_changed" };
+  if (!acquired.acquired) {
+    if (acquired.intent.phase === "succeeded") {
+      return { ok: true, phase: "succeeded", outcome: "verified", intent: acquired.intent };
+    }
+    return { ok: false, phase: "conflict", reason: "busy_or_not_recoverable", intent: acquired.intent };
+  }
+
+  // Estratégia B: busca pelo externalReference canônico
+  const lookup = await dependencies.asaas.findSubscriptionsForReconciliation({
+    customer: intent.asaasCustomerId,
+    externalReference: intent.externalReference,
+    includeDeleted: true,
+  });
+
+  if (!lookup.ok) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: sanitizedError(lookup.error),
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "lookup_failed" };
+  }
+
+  if (lookup.data.length === 0) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "no_subscription_found" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "no_subscription_found" };
+  }
+
+  if (lookup.data.length > 1) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "multiple_subscriptions_on_recovery" },
+        conflictSubscriptionIds: lookup.data.map((s) => s.id),
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "multiple_subscriptions" };
+  }
+
+  const found = lookup.data[0]!;
+
+  // Cross-check A: ID deve coincidir com conflictSubscriptionIds[0]
+  const storedConflictId = acquired.intent.conflictSubscriptionIds![0]!;
+  if (found.id !== storedConflictId) {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "conflict_id_mismatch" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "conflict_id_mismatch" };
+  }
+
+  // Guard de status: só promove subscription ACTIVE
+  if (found.status !== "ACTIVE") {
+    await transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "subscription_not_active" },
+      };
+    });
+    return { ok: false, phase: "conflict", reason: "subscription_not_active" };
+  }
+
+  const releaseWithConflict = (code: string) =>
+    transitionWithLease(identity, leaseId, (current) => {
+      if (current.phase !== "conflict") return null;
+      return {
+        leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code },
+      };
+    });
+
+  if (found.nextDueDate === acquired.intent.terms.nextDueDate) {
+    // Caminho rápido: nextDueDate bate exatamente — subscriptionMatches
+    // (intocada) decide tudo, sem nenhuma chamada extra a
+    // listSubscriptionPayments.
+    if (!subscriptionMatches(found, acquired.intent)) {
+      await releaseWithConflict("subscription_mismatch_on_recovery");
+      return { ok: false, phase: "conflict", reason: "subscription_mismatch" };
+    }
+  } else {
+    // nextDueDate divergiu (OT-05H-Z): nunca usa subscriptionMatches puro
+    // aqui — ele rejeitaria pela igualdade estrita de nextDueDate antes de
+    // qualquer análise temporal. Primeiro confirma que TODOS os outros
+    // campos batem estritamente (mesma força de subscriptionMatches, exceto
+    // nextDueDate).
+    if (!subscriptionMatchesExceptNextDueDate(found, acquired.intent)) {
+      await releaseWithConflict("subscription_mismatch_on_recovery");
+      return { ok: false, phase: "conflict", reason: "subscription_mismatch" };
+    }
+
+    const advance = nextDueDateCycleAdvance(
+      acquired.intent.terms.cycle,
+      acquired.intent.terms.nextDueDate,
+      found.nextDueDate,
+    );
+    if (advance === null) {
+      await releaseWithConflict("next_due_date_not_valid_cycle_advance");
+      return { ok: false, phase: "conflict", reason: "next_due_date_not_valid_cycle_advance" };
+    }
+
+    const paymentsLookup = await dependencies.asaas.listSubscriptionPayments(found.id);
+    if (!paymentsLookup.ok) {
+      await transitionWithLease(identity, leaseId, (current) => {
+        if (current.phase !== "conflict") return null;
+        return {
+          leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+          updatedAt: dependencies.now(),
+          lastError: sanitizedError(paymentsLookup.error),
+        };
+      });
+      return { ok: false, phase: "conflict", reason: "lookup_failed" };
+    }
+
+    const evidence = findOriginalPaymentEvidence(paymentsLookup.data, found.id, acquired.intent);
+    if (!evidence.ok) {
+      await releaseWithConflict(evidence.reason);
+      return { ok: false, phase: "conflict", reason: evidence.reason };
+    }
+  }
+
+  // Todos os guards passaram: promove para succeeded
+  const succeeded = await transitionWithLease(identity, leaseId, (current) => {
+    if (current.phase !== "conflict" || current.externalSubscriptionId !== null) return null;
+    return {
+      phase: "succeeded",
+      externalSubscriptionId: found.id,
+      leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+      updatedAt: dependencies.now(),
+      lastError: null,
+      // conflictSubscriptionIds mantido como audit trail
+    };
+  });
+
+  if (!succeeded) return { ok: false, phase: "conflict", reason: "intent_changed" };
+  return { ok: true, phase: "succeeded", outcome: "reconciled", intent: succeeded };
 }
 
 // Exportado apenas para testes/diagnóstico da fundação; não ativa o workflow.

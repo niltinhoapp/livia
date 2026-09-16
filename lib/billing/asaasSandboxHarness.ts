@@ -6,10 +6,12 @@ import { randomUUID } from "node:crypto";
 import { createAsaasClient, type AsaasClient, type AsaasError, type AsaasPayment } from "./asaas";
 import type {
   BillingProvisioningIntent,
+  ConflictRecoveryDependencies,
   ProvisioningResult,
   getBillingProvisioningIntent,
   logicalSubscriptionExternalReference,
   provisionAsaasSubscription,
+  reconcileConflictedSubscription,
 } from "./provisioning";
 import type { provisionSandboxCustomer } from "./asaasSandboxCustomer";
 import type { Establishment } from "@/types";
@@ -18,6 +20,22 @@ const SANDBOX_KEY_PREFIX = "$aact_hmlg_";
 const TEST_RUN_ID = /^[a-z0-9][a-z0-9-]{5,47}$/;
 const CUSTOMER_ID = /^[A-Za-z0-9_-]{3,128}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Allowlist mínima e explícita para homologação. PIX foi o billingType da
+// generation 1 (HTTP 400 invalid_value); BOLETO é a segunda variável a testar.
+// CREDIT_CARD e UNDEFINED são excluídos deliberadamente: a Lívia não manipula
+// dado de cartão nesta fase e UNDEFINED não é um alvo de homologação.
+const HARNESS_BILLING_TYPES = new Set(["PIX", "BOLETO"]);
+
+// Limite conservador que dá margem ampla para homologação sem abrir escopo
+// ilimitado. Gerations fora de 1–10 são rejeitadas pelo parser.
+const GENERATION_MIN = 1;
+const GENERATION_MAX = 10;
+
+// Valor mínimo confirmado pelo Asaas Sandbox para BOLETO (OT-05H-K: "O valor
+// mínimo para cobranças via Boleto Bancário é R$ 5,00."). Aplicado a todos
+// os billingTypes para manter consistência e evitar rejeições silenciosas.
+const HARNESS_VALUE_MIN = 5;
 
 export interface SandboxHarnessEnvironment {
   VERCEL_ENV?: string;
@@ -34,6 +52,11 @@ export function isAsaasSandboxHarnessEnabled(env: SandboxHarnessEnvironment): bo
   );
 }
 
+// billingType permitido explicitamente pelo harness de homologação.
+// Subconjunto intencional de AsaasBillingType — não exporta todos os valores
+// do tipo compartilhado para não confundir com o contrato de Production.
+export type HarnessBillingType = "PIX" | "BOLETO";
+
 export type SandboxHarnessCommand =
   | { action: "auth_check"; confirmSandbox: true }
   | { action: "customer"; confirmSandbox: true; testRunId: string; cpfCnpj: string }
@@ -43,12 +66,22 @@ export type SandboxHarnessCommand =
       testRunId: string;
       customerId: string;
       nextDueDate: string;
+      generation: number;
+      billingType: HarnessBillingType;
+      value: number;
     }
   | {
       action: "inspect";
       confirmSandbox: true;
       testRunId: string;
       customerId: string;
+      generation: number;
+    }
+  | {
+      action: "conflict_recovery";
+      confirmSandbox: true;
+      testRunId: string;
+      generation: number;
     };
 
 export type SandboxHarnessFailureCode =
@@ -60,7 +93,8 @@ export type SandboxHarnessFailureCode =
   | "test_establishment_invalid"
   | "subscription_conflict"
   | "subscription_lookup_failed"
-  | "payments_lookup_failed";
+  | "payments_lookup_failed"
+  | "recovery_conflict";
 
 export type SandboxHarnessResult =
   | { ok: true; action: "auth_check"; authenticated: true }
@@ -75,7 +109,7 @@ export type SandboxHarnessResult =
       action: "subscription";
       phase: ProvisioningResult["phase"];
       outcome?: string;
-      generation: 1;
+      generation: number;
       externalSubscriptionId: string | null;
     }
   | {
@@ -84,7 +118,13 @@ export type SandboxHarnessResult =
       customer: { id: string; externalReference: string } | null;
       subscription: {
         id: string;
+        customer: string | null;
         externalReference: string | null;
+        billingType: string | null;
+        value: number | null;
+        cycle: string | null;
+        nextDueDate: string | null;
+        description: string | null;
         status: string | null;
       } | null;
       provisioning: {
@@ -92,7 +132,22 @@ export type SandboxHarnessResult =
         generation: number;
         externalSubscriptionId: string | null;
       } | null;
-      payments: Array<{ id: string; status: string | null; dueDate: string | null; value: number | null }>;
+      payments: Array<{
+        id: string;
+        status: string | null;
+        dueDate: string | null;
+        value: number | null;
+        customer: string | null;
+        subscription: string | null;
+        deleted: boolean | null;
+      }>;
+    }
+  | {
+      ok: true;
+      action: "conflict_recovery";
+      phase: "succeeded";
+      generation: number;
+      externalSubscriptionId: string;
     }
   | {
       ok: false;
@@ -114,6 +169,7 @@ export interface SandboxHarnessDependencies {
   provisionCustomer: typeof provisionSandboxCustomer;
   getProvisioningIntent: typeof getBillingProvisioningIntent;
   logicalSubscriptionExternalReference: typeof logicalSubscriptionExternalReference;
+  recoverConflict: typeof reconcileConflictedSubscription;
   now: () => number;
   newId: () => string;
 }
@@ -134,6 +190,7 @@ export async function createSandboxHarnessDependencies(apiKey: string): Promise<
     provisionCustomer: customerProvisioning.provisionSandboxCustomer,
     getProvisioningIntent: provisioning.getBillingProvisioningIntent,
     logicalSubscriptionExternalReference: provisioning.logicalSubscriptionExternalReference,
+    recoverConflict: provisioning.reconcileConflictedSubscription,
     now: Date.now,
     newId: randomUUID,
   };
@@ -237,11 +294,11 @@ async function provisionSubscription(
   const result = await deps.provisionSubscription(
     {
       establishmentId: establishment.id,
-      subscriptionGeneration: 1,
+      subscriptionGeneration: command.generation,
       asaasCustomerId: command.customerId,
       leaseOwner: "asaas-sandbox-harness",
-      billingType: "PIX",
-      value: 1,
+      billingType: command.billingType,
+      value: command.value,
       cycle: "MONTHLY",
       nextDueDate: command.nextDueDate,
       description: "Livia sandbox controlled test",
@@ -257,8 +314,46 @@ async function provisionSubscription(
     action: "subscription",
     phase: result.phase,
     outcome: result.outcome,
-    generation: 1,
+    generation: command.generation,
     externalSubscriptionId: result.intent.externalSubscriptionId,
+  };
+}
+
+async function recoverConflict(
+  command: Extract<SandboxHarnessCommand, { action: "conflict_recovery" }>,
+  deps: SandboxHarnessDependencies,
+): Promise<SandboxHarnessResult> {
+  const establishment = await requireDedicatedTestEstablishment(command.testRunId, deps);
+  if (typeof establishment === "string") {
+    return { ok: false, action: "conflict_recovery", code: establishment };
+  }
+
+  const result = await deps.recoverConflict(
+    establishment.id,
+    command.generation,
+    "asaas-sandbox-harness",
+    {
+      asaas: deps.asaas,
+      now: deps.now,
+      newId: deps.newId,
+    } satisfies ConflictRecoveryDependencies,
+  );
+
+  if (!result.ok) {
+    return { ok: false, action: "conflict_recovery", code: "recovery_conflict" };
+  }
+
+  const externalSubscriptionId = result.intent?.externalSubscriptionId;
+  if (!externalSubscriptionId) {
+    return { ok: false, action: "conflict_recovery", code: "recovery_conflict" };
+  }
+
+  return {
+    ok: true,
+    action: "conflict_recovery",
+    phase: "succeeded",
+    generation: command.generation,
+    externalSubscriptionId,
   };
 }
 
@@ -289,8 +384,8 @@ async function inspect(
     return { ok: false, action: "inspect", code: "customer_conflict" };
   }
 
-  const intent = await deps.getProvisioningIntent(establishment.id, 1);
-  const logicalReference = deps.logicalSubscriptionExternalReference(establishment.id, 1);
+  const intent = await deps.getProvisioningIntent(establishment.id, command.generation);
+  const logicalReference = deps.logicalSubscriptionExternalReference(establishment.id, command.generation);
   let subscription = null;
   if (intent?.externalSubscriptionId) {
     const found = await deps.asaas.getSubscription(intent.externalSubscriptionId);
@@ -342,7 +437,13 @@ async function inspect(
     subscription: subscription
       ? {
           id: subscription.id,
+          customer: subscription.customer ?? null,
           externalReference: subscription.externalReference ?? null,
+          billingType: subscription.billingType ?? null,
+          value: subscription.value ?? null,
+          cycle: subscription.cycle ?? null,
+          nextDueDate: subscription.nextDueDate ?? null,
+          description: subscription.description ?? null,
           status: subscription.status ?? null,
         }
       : null,
@@ -358,6 +459,9 @@ async function inspect(
       status: payment.status ?? null,
       dueDate: payment.dueDate ?? null,
       value: payment.value ?? null,
+      customer: payment.customer ?? null,
+      subscription: payment.subscription ?? null,
+      deleted: payment.deleted ?? null,
     })),
   };
 }
@@ -379,6 +483,7 @@ export async function executeAsaasSandboxHarness(
   }
   if (command.action === "customer") return ensureCustomer(command, deps);
   if (command.action === "subscription") return provisionSubscription(command, deps);
+  if (command.action === "conflict_recovery") return recoverConflict(command, deps);
   return inspect(command, deps);
 }
 
@@ -386,6 +491,23 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function validGeneration(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= GENERATION_MIN &&
+    value <= GENERATION_MAX
+  );
+}
+
+function validHarnessBillingType(value: unknown): value is HarnessBillingType {
+  return typeof value === "string" && HARNESS_BILLING_TYPES.has(value);
+}
+
+function validHarnessValue(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= HARNESS_VALUE_MIN;
 }
 
 export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessCommand | null {
@@ -403,16 +525,26 @@ export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessComman
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "subscription") {
-    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate"])) return null;
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "nextDueDate", "generation", "billingType", "value"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
     if (typeof raw.nextDueDate !== "string" || !ISO_DATE.test(raw.nextDueDate)) return null;
+    if (!validGeneration(raw.generation)) return null;
+    if (!validHarnessBillingType(raw.billingType)) return null;
+    if (!validHarnessValue(raw.value)) return null;
     return raw as SandboxHarnessCommand;
   }
   if (raw.action === "inspect") {
-    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId"])) return null;
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "customerId", "generation"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.customerId !== "string" || !CUSTOMER_ID.test(raw.customerId)) return null;
+    if (!validGeneration(raw.generation)) return null;
+    return raw as SandboxHarnessCommand;
+  }
+  if (raw.action === "conflict_recovery") {
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "generation"])) return null;
+    if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
+    if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation) || raw.generation < 1) return null;
     return raw as SandboxHarnessCommand;
   }
   return null;
