@@ -6,7 +6,7 @@ vi.mock("@/lib/firebase/admin", async () => {
 });
 
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import type { AsaasClient, AsaasError, AsaasSubscription, CreateSubscriptionInput } from "./asaas";
+import type { AsaasClient, AsaasError, AsaasPayment, AsaasSubscription, CreateSubscriptionInput } from "./asaas";
 import {
   getBillingProvisioningIntent,
   logicalSubscriptionExternalReference,
@@ -519,7 +519,10 @@ describe("reconcileConflictedSubscription", () => {
     };
   }
 
-  type ConflictClient = Pick<AsaasClient, "getSubscription" | "findSubscriptionsForReconciliation">;
+  type ConflictClient = Pick<
+    AsaasClient,
+    "getSubscription" | "findSubscriptionsForReconciliation" | "listSubscriptionPayments"
+  >;
 
   function fakeConflictClient(overrides: Partial<ConflictClient> = {}): ConflictClient {
     return {
@@ -528,6 +531,7 @@ describe("reconcileConflictedSubscription", () => {
         ok: true as const,
         data: [matchingRecoverySubscription()],
       })),
+      listSubscriptionPayments: vi.fn(async () => ({ ok: true as const, data: [] })),
       ...overrides,
     };
   }
@@ -601,6 +605,7 @@ describe("reconcileConflictedSubscription", () => {
     const blocked = new Promise<void>((r) => { release = r; });
     const slowClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => {
         leaseAcquired();
         await blocked;
@@ -620,6 +625,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const errorClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => asaasFailure("network")),
     };
     const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(errorClient));
@@ -634,6 +640,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const emptyClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({ ok: true as const, data: [] })),
     };
     const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(emptyClient));
@@ -646,6 +653,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const multiClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({
         ok: true as const,
         data: [matchingRecoverySubscription({ id: "sub_new_1" }), matchingRecoverySubscription({ id: "sub_new_2" })],
@@ -662,6 +670,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const mismatchIdClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({
         ok: true as const,
         data: [matchingRecoverySubscription({ id: "sub_completely_different" })],
@@ -676,6 +685,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const cancelledClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({
         ok: true as const,
         data: [matchingRecoverySubscription({ status: "CANCELLED" })],
@@ -691,6 +701,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const noStatusClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({
         ok: true as const,
         data: [matchingRecoverySubscription({ status: undefined })],
@@ -705,6 +716,7 @@ describe("reconcileConflictedSubscription", () => {
     await setupConflictState();
     const mismatchFieldClient: ConflictClient = {
       getSubscription: vi.fn(),
+      listSubscriptionPayments: vi.fn(),
       findSubscriptionsForReconciliation: vi.fn(async () => ({
         ok: true as const,
         data: [matchingRecoverySubscription({ billingType: "BOLETO", status: "ACTIVE" })],
@@ -734,5 +746,267 @@ describe("reconcileConflictedSubscription", () => {
     const second = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(secondClient));
     expect(second).toMatchObject({ ok: true, phase: "succeeded", outcome: "verified" });
     expect(secondClient.findSubscriptionsForReconciliation).not.toHaveBeenCalled();
+  });
+
+  it("nextDueDate igual: promove sem nunca chamar listSubscriptionPayments", async () => {
+    await setupConflictState();
+    const client = fakeConflictClient();
+    const result = await reconcileConflictedSubscription(RECOVERY_EST, RECOVERY_GEN, "worker", recoveryDeps(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  it("ConflictRecoveryClient nunca expõe createSubscription (garantia estrutural)", () => {
+    const client = fakeConflictClient();
+    expect("createSubscription" in client).toBe(false);
+  });
+});
+
+describe("reconcileConflictedSubscription — recovery temporal de nextDueDate (OT-05H-Z)", () => {
+  const TEMPORAL_EST = "est_temporal";
+  const TEMPORAL_GEN = 4;
+  const TEMPORAL_SUB_ID = "sub_kq0ax6txhhbovblg"; // mesmo formato do caso real da gen4
+
+  // Espelha os dados reais da gen4 confirmados em OT-05H-U/W: BOLETO, R$5,
+  // MONTHLY, nextDueDate original 2026-10-01.
+  const TEMPORAL_INPUT: ProvisionSubscriptionInput = {
+    establishmentId: TEMPORAL_EST,
+    subscriptionGeneration: TEMPORAL_GEN,
+    asaasCustomerId: "cus_temporal_1",
+    leaseOwner: "worker_1",
+    billingType: "BOLETO",
+    value: 5,
+    cycle: "MONTHLY",
+    nextDueDate: "2026-10-01",
+    description: "Livia sandbox controlled test",
+  };
+
+  function matchingTemporalSubscription(patch: Partial<AsaasSubscription> = {}): AsaasSubscription {
+    return {
+      id: TEMPORAL_SUB_ID,
+      customer: TEMPORAL_INPUT.asaasCustomerId,
+      billingType: TEMPORAL_INPUT.billingType,
+      value: TEMPORAL_INPUT.value,
+      cycle: TEMPORAL_INPUT.cycle,
+      nextDueDate: TEMPORAL_INPUT.nextDueDate,
+      externalReference: logicalSubscriptionExternalReference(TEMPORAL_EST, TEMPORAL_GEN),
+      status: "ACTIVE",
+      ...patch,
+    };
+  }
+
+  function matchingTemporalPayment(patch: Partial<AsaasPayment> = {}): AsaasPayment {
+    return {
+      id: "pay_temporal_1",
+      subscription: TEMPORAL_SUB_ID,
+      customer: TEMPORAL_INPUT.asaasCustomerId,
+      dueDate: TEMPORAL_INPUT.nextDueDate,
+      value: TEMPORAL_INPUT.value,
+      status: "PENDING",
+      deleted: false,
+      ...patch,
+    };
+  }
+
+  type TemporalConflictClient = Pick<
+    AsaasClient,
+    "getSubscription" | "findSubscriptionsForReconciliation" | "listSubscriptionPayments"
+  >;
+
+  function temporalClient(
+    subscriptionPatch: Partial<AsaasSubscription>,
+    payments: AsaasPayment[],
+    overrides: Partial<TemporalConflictClient> = {},
+  ): TemporalConflictClient {
+    return {
+      getSubscription: vi.fn(),
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingTemporalSubscription(subscriptionPatch)],
+      })),
+      listSubscriptionPayments: vi.fn(async () => ({ ok: true as const, data: payments })),
+      ...overrides,
+    };
+  }
+
+  function temporalDeps(client: TemporalConflictClient): ConflictRecoveryDependencies {
+    let id = 0;
+    return { asaas: client, now: () => 1_000, newId: () => `temporal_id_${++id}`, leaseDurationMs: 30_000 };
+  }
+
+  // Cria o estado de conflict via billingType inconsistente na resposta do
+  // POST (mesmo mecanismo dos outros testes de recovery), preservando
+  // TEMPORAL_SUB_ID como conflictSubscriptionIds[0].
+  async function setupTemporalConflictState(): Promise<void> {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: true as const,
+        data: matchingTemporalSubscription({ billingType: "PIX" }),
+      })),
+    });
+    const result = await provisionAsaasSubscription(TEMPORAL_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict" });
+    expect((await getBillingProvisioningIntent(TEMPORAL_EST, TEMPORAL_GEN))?.conflictSubscriptionIds).toEqual([
+      TEMPORAL_SUB_ID,
+    ]);
+  }
+
+  it("gen4 real: MONTHLY 2026-10-01 → 2026-11-01, payment PENDING/value 5/deleted:false ⇒ succeeded", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient(
+      { nextDueDate: "2026-11-01" },
+      [matchingTemporalPayment()],
+    );
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
+    const stored = await getBillingProvisioningIntent(TEMPORAL_EST, TEMPORAL_GEN);
+    expect(stored?.phase).toBe("succeeded");
+    expect(stored?.externalSubscriptionId).toBe(TEMPORAL_SUB_ID);
+    expect(client.listSubscriptionPayments).toHaveBeenCalledWith(TEMPORAL_SUB_ID);
+  });
+
+  it("avanço + payment deleted:true ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ deleted: true })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("avanço + payment sem deleted (undefined) ⇒ fail-closed (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ deleted: undefined })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("avanço + payment com value errado ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ value: 999 })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("avanço + payment sem value ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ value: undefined })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("avanço + payment com dueDate errado ⇒ conflict (original_payment_not_found)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ dueDate: "2026-10-02" })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_found" });
+  });
+
+  it("avanço + 0 candidatos ⇒ conflict (original_payment_not_found)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, []);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_found" });
+  });
+
+  it("avanço + 2 candidatos com o mesmo dueDate original ⇒ conflict (original_payment_ambiguous)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [
+      matchingTemporalPayment({ id: "pay_a" }),
+      matchingTemporalPayment({ id: "pay_b" }),
+    ]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_ambiguous" });
+  });
+
+  it("status desconhecido/não permitido ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ status: "RECEIVED" })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("payment.customer presente e divergente ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [matchingTemporalPayment({ customer: "cus_outro" })]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("payment.subscription presente e divergente ⇒ conflict (original_payment_not_eligible)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01" }, [
+      matchingTemporalPayment({ subscription: "sub_outra" }),
+    ]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  it("retrocesso de nextDueDate ⇒ conflict (next_due_date_not_valid_cycle_advance), sem listar payments", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-09-01" }, []);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "next_due_date_not_valid_cycle_advance" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  it("avanço que não corresponde a nenhum múltiplo do cycle ⇒ conflict (next_due_date_not_valid_cycle_advance)", async () => {
+    await setupTemporalConflictState();
+    // +15 dias não é múltiplo de nenhum ciclo mensal válido para MONTHLY.
+    const client = temporalClient({ nextDueDate: "2026-10-16" }, []);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "next_due_date_not_valid_cycle_advance" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  it("borda de mês ambígua (dia 31 → mês de 30 dias) falha fechado sem adivinhar convenção", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: true as const,
+        data: matchingTemporalSubscription({
+          nextDueDate: "2026-01-31",
+          billingType: "PIX", // gera o conflict inicial
+        }),
+      })),
+    });
+    const ambiguousInput: ProvisionSubscriptionInput = { ...TEMPORAL_INPUT, nextDueDate: "2026-01-31" };
+    const setupResult = await provisionAsaasSubscription(ambiguousInput, dependencies(client));
+    expect(setupResult).toMatchObject({ ok: false, phase: "conflict" });
+
+    // Nem clamp (2026-02-28) nem rollover (2026-03-03) devem ser aceitos:
+    // a documentação da Asaas não define qual convenção seria usada.
+    const clampClient = temporalClient({ nextDueDate: "2026-02-28" }, []);
+    const clampResult = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(clampClient));
+    expect(clampResult).toMatchObject({ ok: false, phase: "conflict", reason: "next_due_date_not_valid_cycle_advance" });
+
+    fakeDb.reset();
+    await provisionAsaasSubscription(ambiguousInput, dependencies(client));
+    const rolloverClient = temporalClient({ nextDueDate: "2026-03-03" }, []);
+    const rolloverResult = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(rolloverClient));
+    expect(rolloverResult).toMatchObject({ ok: false, phase: "conflict", reason: "next_due_date_not_valid_cycle_advance" });
+  });
+
+  it("outro campo da subscription diverge além do nextDueDate avançado ⇒ conflict (subscription_mismatch)", async () => {
+    await setupTemporalConflictState();
+    const client = temporalClient({ nextDueDate: "2026-11-01", billingType: "PIX" }, [matchingTemporalPayment()]);
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_mismatch" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  it("WEEKLY: avanço de exatamente 2 semanas (14 dias) com evidência ⇒ succeeded", async () => {
+    const weeklyInput: ProvisionSubscriptionInput = { ...TEMPORAL_INPUT, cycle: "WEEKLY", nextDueDate: "2026-10-01" };
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async () => ({
+        ok: true as const,
+        data: matchingTemporalSubscription({ cycle: "WEEKLY", billingType: "PIX" }),
+      })),
+    });
+    await provisionAsaasSubscription(weeklyInput, dependencies(client));
+
+    const recoveryClient = temporalClient(
+      { cycle: "WEEKLY", nextDueDate: "2026-10-15" }, // +14 dias = 2 ciclos WEEKLY
+      [matchingTemporalPayment({ dueDate: "2026-10-01" })],
+    );
+    const result = await reconcileConflictedSubscription(TEMPORAL_EST, TEMPORAL_GEN, "worker", temporalDeps(recoveryClient));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
   });
 });
