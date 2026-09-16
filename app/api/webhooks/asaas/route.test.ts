@@ -105,14 +105,12 @@ describe("payload inválido -> 400 (autenticado, mas não é um envelope Asaas)"
   });
 });
 
-describe("decisão durável -> 200 (aplicada ou deliberadamente descartada)", () => {
+describe("decisão durável (marker de dedup criado, ou nunca necessário) -> 200", () => {
   it.each([
     ["applied", { outcome: "applied", event: "PAYMENT_CONFIRMED", establishmentId: "e", generation: 1, from: "trial", to: "active" }],
     ["duplicate", { outcome: "duplicate", eventId: "evt_1" }],
     ["ignored (evento desconhecido ou SUBSCRIPTION_INACTIVATED)", { outcome: "ignored", event: "SUBSCRIPTION_INACTIVATED" }],
     ["unresolved_identity", { outcome: "unresolved_identity", event: "PAYMENT_RECEIVED" }],
-    ["establishment_not_found", { outcome: "establishment_not_found", event: "PAYMENT_RECEIVED", establishmentId: "e", generation: 1 }],
-    ["billing_not_initialized", { outcome: "billing_not_initialized", event: "PAYMENT_RECEIVED", establishmentId: "e", generation: 1 }],
     ["out_of_order", { outcome: "out_of_order", event: "PAYMENT_RECEIVED", establishmentId: "e", generation: 1 }],
     ["invalid_transition", { outcome: "invalid_transition", event: "PAYMENT_OVERDUE", establishmentId: "e", generation: 1, from: "canceled" }],
   ])("%s -> 200", async (_label, result) => {
@@ -120,6 +118,18 @@ describe("decisão durável -> 200 (aplicada ou deliberadamente descartada)", ()
     const res = await post({ id: "evt_1", event: "PAYMENT_RECEIVED", dateCreated: "2026-09-16 10:00:00" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ received: true });
+  });
+});
+
+describe("outcome transitório sem marker de dedup (OT-06G.1/G.2) -> 503, nunca 200", () => {
+  it.each([
+    ["establishment_not_found", { outcome: "establishment_not_found", event: "PAYMENT_RECEIVED", establishmentId: "e", generation: 1 }],
+    ["billing_not_initialized", { outcome: "billing_not_initialized", event: "PAYMENT_RECEIVED", establishmentId: "e", generation: 1 }],
+  ])("%s -> 503, permite retry da Asaas", async (_label, result) => {
+    processAsaasWebhookEvent.mockResolvedValue(result);
+    const res = await post({ id: "evt_1", event: "PAYMENT_RECEIVED", dateCreated: "2026-09-16 10:00:00" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "TEMPORARILY_UNAVAILABLE" });
   });
 });
 
