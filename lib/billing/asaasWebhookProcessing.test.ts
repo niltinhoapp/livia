@@ -189,7 +189,7 @@ describe("resolveAndApplyEvent (real, via fakeDb) — decisões e transições",
     expect(result).toMatchObject({ outcome: "applied", from: "active", to: "canceled" });
   });
 
-  it("establishment inexistente -> establishment_not_found", async () => {
+  it("establishment inexistente -> establishment_not_found, sem marker definitivo (OT-06G.1/G.2, item 4)", async () => {
     const deps = await createAsaasWebhookProcessingDependencies();
     const result = await deps.resolveAndApplyEvent(params());
     expect(result).toEqual({
@@ -198,9 +198,11 @@ describe("resolveAndApplyEvent (real, via fakeDb) — decisões e transições",
       establishmentId: EST_ID,
       generation: 1,
     });
+    const dedupSnap = await fakeDb.collection("_processed_asaas_events").doc(params().eventId).get();
+    expect(dedupSnap.exists).toBe(false);
   });
 
-  it("billing nunca inicializado -> billing_not_initialized, nunca inventa estado inicial", async () => {
+  it("billing nunca inicializado -> billing_not_initialized, nunca inventa estado inicial, sem marker definitivo (OT-06G.1/G.2, item 1)", async () => {
     await fakeDb.collection("establishments").doc(EST_ID).set({});
     const deps = await createAsaasWebhookProcessingDependencies();
     const result = await deps.resolveAndApplyEvent(params());
@@ -210,6 +212,8 @@ describe("resolveAndApplyEvent (real, via fakeDb) — decisões e transições",
       establishmentId: EST_ID,
       generation: 1,
     });
+    const dedupSnap = await fakeDb.collection("_processed_asaas_events").doc(params().eventId).get();
+    expect(dedupSnap.exists).toBe(false);
   });
 
   it("evento fora de ordem -> out_of_order, sem transição", async () => {
@@ -335,5 +339,123 @@ describe("resolveAndApplyEvent — atomicidade dedup+transição (OT-06G, bloque
     expect(first).toBe(true);
     const second = await deps.reserveEventId("evt_ignored_1");
     expect(second).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Camada 2c: outcomes transitórios vs. terminais (OT-06G.1/G.2) — os 9
+// cenários de regressão exigidos pela OT-06G.2.
+// ---------------------------------------------------------------------
+describe("resolveAndApplyEvent — terminal vs. transitório (OT-06G.1/G.2)", () => {
+  async function seedEstablishment(id: string, billingOverride: Partial<EstablishmentBilling> = {}) {
+    await fakeDb.collection("establishments").doc(id).set({ billing: billing(billingOverride) });
+  }
+
+  function params(over: Partial<ResolveAndApplyParams> = {}): ResolveAndApplyParams {
+    return {
+      eventId: "evt_transitorio_1",
+      establishmentId: EST_ID,
+      generation: 1,
+      event: "PAYMENT_CONFIRMED",
+      domainEvent: "payment_confirmed",
+      eventTimestamp: Date.UTC(2026, 8, 16, 10, 0, 0),
+      ...over,
+    };
+  }
+
+  it("2) billing_not_initialized: retry do mesmo event.id continua possível (não fica preso em duplicate)", async () => {
+    await fakeDb.collection("establishments").doc(EST_ID).set({});
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const first = await deps.resolveAndApplyEvent(params());
+    expect(first).toMatchObject({ outcome: "billing_not_initialized" });
+
+    const retry = await deps.resolveAndApplyEvent(params());
+    expect(retry).toMatchObject({ outcome: "billing_not_initialized" }); // continua sendo reprocessado, nunca "duplicate"
+  });
+
+  it("3) após inicializar billing, o MESMO event.id aplica a transição e então cria marker", async () => {
+    await fakeDb.collection("establishments").doc(EST_ID).set({});
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const first = await deps.resolveAndApplyEvent(params());
+    expect(first).toMatchObject({ outcome: "billing_not_initialized" });
+    let dedupSnap = await fakeDb.collection("_processed_asaas_events").doc("evt_transitorio_1").get();
+    expect(dedupSnap.exists).toBe(false);
+
+    await seedEstablishment(EST_ID, { billingStatus: "trial" });
+
+    const second = await deps.resolveAndApplyEvent(params());
+    expect(second).toMatchObject({ outcome: "applied", from: "trial", to: "active" });
+    dedupSnap = await fakeDb.collection("_processed_asaas_events").doc("evt_transitorio_1").get();
+    expect(dedupSnap.exists).toBe(true);
+
+    const thirdSameId = await deps.resolveAndApplyEvent(params());
+    expect(thirdSameId).toEqual({ outcome: "duplicate", eventId: "evt_transitorio_1" }); // agora sim vira duplicate
+  });
+
+  it("5) após criar establishment + billing (partindo de establishment_not_found), o MESMO event.id aplica e cria marker", async () => {
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const first = await deps.resolveAndApplyEvent(params());
+    expect(first).toMatchObject({ outcome: "establishment_not_found" });
+    let dedupSnap = await fakeDb.collection("_processed_asaas_events").doc("evt_transitorio_1").get();
+    expect(dedupSnap.exists).toBe(false);
+
+    await seedEstablishment(EST_ID, { billingStatus: "trial" });
+
+    const second = await deps.resolveAndApplyEvent(params());
+    expect(second).toMatchObject({ outcome: "applied", from: "trial", to: "active" });
+    dedupSnap = await fakeDb.collection("_processed_asaas_events").doc("evt_transitorio_1").get();
+    expect(dedupSnap.exists).toBe(true);
+  });
+
+  it("6) out_of_order continua terminal/deduplicável: retry do mesmo event.id vira duplicate, não reaplica", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "active", lastAsaasEventAt: Date.UTC(2026, 8, 16, 12, 0, 0) });
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const first = await deps.resolveAndApplyEvent(params({ eventTimestamp: Date.UTC(2026, 8, 16, 10, 0, 0) }));
+    expect(first).toMatchObject({ outcome: "out_of_order" });
+
+    const retry = await deps.resolveAndApplyEvent(params({ eventTimestamp: Date.UTC(2026, 8, 16, 10, 0, 0) }));
+    expect(retry).toEqual({ outcome: "duplicate", eventId: "evt_transitorio_1" });
+  });
+
+  it("7) invalid_transition continua terminal/deduplicável: retry do mesmo event.id vira duplicate, não reaplica", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "canceled" });
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const first = await deps.resolveAndApplyEvent(params({ event: "PAYMENT_OVERDUE", domainEvent: "payment_overdue" }));
+    expect(first).toMatchObject({ outcome: "invalid_transition", from: "canceled" });
+
+    const retry = await deps.resolveAndApplyEvent(params({ event: "PAYMENT_OVERDUE", domainEvent: "payment_overdue" }));
+    expect(retry).toEqual({ outcome: "duplicate", eventId: "evt_transitorio_1" });
+  });
+
+  it("8) falha transacional durante um caso que resultaria em establishment_not_found continua sem marker órfão", async () => {
+    // Regressão explícita do teste 5 do bloco B1 acima, agora nomeada em
+    // termos da OT-06G.2: mesmo outcome transitório, mesma garantia.
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const spy = vi.spyOn(fakeDb, "collection").mockImplementationOnce(() => {
+      throw new Error("firestore indisponível");
+    });
+    await expect(deps.resolveAndApplyEvent(params())).rejects.toThrow();
+    spy.mockRestore();
+
+    const dedupSnap = await fakeDb.collection("_processed_asaas_events").doc("evt_transitorio_1").get();
+    expect(dedupSnap.exists).toBe(false);
+  });
+
+  it("9) concorrência em cima de um outcome terminal (invalid_transition) garante uma aplicação da decisão e uma duplicate", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "canceled" });
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const [r1, r2] = await Promise.all([
+      deps.resolveAndApplyEvent(params({ event: "PAYMENT_OVERDUE", domainEvent: "payment_overdue" })),
+      deps.resolveAndApplyEvent(params({ event: "PAYMENT_OVERDUE", domainEvent: "payment_overdue" })),
+    ]);
+
+    const outcomes = [r1.outcome, r2.outcome].sort();
+    expect(outcomes).toEqual(["duplicate", "invalid_transition"]);
   });
 });

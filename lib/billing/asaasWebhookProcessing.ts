@@ -1,5 +1,6 @@
 // Orquestração do processamento de um evento de Webhook Asaas (OT-06C;
-// atomicidade dedup+transição corrigida em OT-06G).
+// atomicidade dedup+transição corrigida em OT-06G; terminal vs. transitório
+// refinado em OT-06G.1/G.2).
 // Só esta camada faz I/O (via dependências injetadas, mesmo padrão de
 // ProvisioningDependencies/ConflictRecoveryDependencies) — a tradução em si
 // (asaasWebhookEvents.ts) e a máquina de estados (stateMachine.ts)
@@ -15,26 +16,40 @@
 // falha depois disso (ex.: Firestore instável durante a leitura de
 // establishment) deixava o marker de dedup persistido sem a transição
 // correspondente — um retry legítimo da Asaas encontrava "duplicate" e
-// nunca reaplicava, perdendo o sinal financeiro em silêncio. Corrigido
-// dividindo o dedup em duas estratégias, conforme o que está em jogo:
+// nunca reaplicava, perdendo o sinal financeiro em silêncio.
 //
-//   - Eventos que NUNCA tocam establishment/billing (ignored,
-//     unresolved_identity): a única escrita é o próprio marker — uma
-//     escrita isolada já é atômica por definição, nada para coordenar.
-//     reserveEventId (.create(), mesmo padrão de alreadyProcessed em
-//     repo.ts) continua suficiente e seguro para esses dois casos.
+// TERMINAL vs. TRANSITÓRIO (OT-06G.1/G.2): nem toda decisão que passa pela
+// leitura de billing é definitiva. Três níveis, conforme o que está em jogo:
 //
-//   - Qualquer evento que precisa ler o estado de billing para decidir
-//     (establishment_not_found, billing_not_initialized, out_of_order,
-//     invalid_transition, applied): dedup + leitura + decisão + escrita
-//     (quando aplicável) acontecem em UMA ÚNICA transação Firestore
-//     (resolveAndApplyEvent). Ou tudo commita junto, ou nada persiste —
-//     nunca existe marker órfão sem a transição que ele deveria
-//     representar. Concorrência (duas entregas simultâneas do mesmo
-//     event.id) é resolvida pelo próprio isolamento de transação do
-//     Firestore: a segunda transação a tentar commitar volta a ler o
-//     marker (já criado pela primeira) e retorna "duplicate" sem
-//     reaplicar nada.
+//   1. Eventos que NUNCA tocam establishment/billing (ignored,
+//      unresolved_identity): a única escrita é o próprio marker — uma
+//      escrita isolada já é atômica por definição, nada para coordenar.
+//      reserveEventId (.create(), mesmo padrão de alreadyProcessed em
+//      repo.ts) é suficiente e seguro para esses dois casos.
+//
+//   2. Outcomes TRANSITÓRIOS (establishment_not_found,
+//      billing_not_initialized): a causa mais provável (corrida entre
+//      criação do establishment e chegada do webhook; billing ainda não
+//      inicializado por nenhum fluxo de onboarding — OT-06A) pode se
+//      resolver depois. NENHUM marker definitivo é criado — o mesmo
+//      event.id continua reprocessável. A rota (route.ts) devolve 503
+//      para esses dois outcomes, para que o retry nativo da Asaas continue
+//      tentando dentro da janela dela.
+//
+//   3. Outcomes TERMINAIS (out_of_order, invalid_transition, applied): a
+//      decisão é definitiva — out_of_order por garantia matemática
+//      (lastAsaasEventAt só cresce), invalid_transition por decisão de
+//      negócio já documentada em stateMachine.ts (cancelamento não é
+//      revertido automaticamente por webhook de pagamento), applied por
+//      já ter sido persistido de fato. Todos os três criam marker
+//      definitivo, na MESMA transação da leitura/decisão que levou a eles
+//      — nunca existe marker órfão sem a decisão que ele representa. A
+//      rota devolve 200 para os três.
+//
+// Concorrência (duas entregas simultâneas do mesmo event.id) é resolvida
+// pelo isolamento de transação do Firestore: a segunda transação a tentar
+// commitar volta a ler o marker (já criado pela primeira, quando aplicável)
+// e retorna "duplicate" sem reaplicar nada.
 import type { BillingStatus, EstablishmentBilling } from "@/types";
 import { nextBillingStatus, type BillingEventType } from "./stateMachine";
 import {
@@ -168,8 +183,17 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
 
         const now = Date.now();
 
+        // establishment_not_found e billing_not_initialized são
+        // deliberadamente TRANSITÓRIOS (OT-06G.1/G.2): nenhum marker
+        // definitivo é criado aqui. A causa mais provável (corrida entre a
+        // criação do establishment e a chegada do webhook; billing ainda
+        // não inicializado por nenhum fluxo de onboarding — OT-06A) pode
+        // se resolver depois, e o mesmo event.id precisa continuar
+        // reprocessável quando isso acontecer. Diferente de
+        // out_of_order/invalid_transition (abaixo), aqui não temos
+        // informação suficiente para decidir com segurança — não é uma
+        // conclusão definitiva, é "ainda não posso decidir".
         if (!estSnap.exists) {
-          tx.create(dedupRef, { at: now, outcome: "establishment_not_found" });
           return {
             outcome: "establishment_not_found",
             event: params.event,
@@ -182,7 +206,6 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
         const billing = data?.billing ?? null;
 
         if (!billing) {
-          tx.create(dedupRef, { at: now, outcome: "billing_not_initialized" });
           return {
             outcome: "billing_not_initialized",
             event: params.event,
@@ -191,6 +214,10 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
           };
         }
 
+        // out_of_order É terminal, de propósito (OT-06G.1): lastAsaasEventAt
+        // só cresce, então um evento mais antigo que ele permanece mais
+        // antigo para sempre — retry nunca muda essa conclusão. Marker
+        // definitivo continua correto aqui.
         if (
           params.eventTimestamp !== null &&
           typeof billing.lastAsaasEventAt === "number" &&
@@ -205,6 +232,12 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
           };
         }
 
+        // invalid_transition também É terminal, de propósito (OT-06G.1):
+        // os únicos casos reais possíveis dado o tradutor atual (payment_*
+        // sobre canceled/suspended) refletem uma decisão de negócio já
+        // documentada em stateMachine.ts — cancelamento não deve ser
+        // revertido automaticamente por um webhook de pagamento. Marker
+        // definitivo continua correto aqui.
         const transition = nextBillingStatus(billing.billingStatus, { type: params.domainEvent });
         if (!transition.ok) {
           tx.create(dedupRef, { at: now, outcome: "invalid_transition" });

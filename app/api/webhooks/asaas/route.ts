@@ -1,5 +1,5 @@
 // Webhook Asaas (OT-06C, contrato fechado em OT-06B; política HTTP
-// corrigida em OT-06C.1).
+// corrigida em OT-06C.1; 503 estendido a outcomes transitórios em OT-06G.2).
 //
 // Segurança: autenticação por secret PRÓPRIO do Webhook (ASAAS_WEBHOOK_TOKEN),
 // enviado pela Asaas no header `asaas-access-token` — NUNCA a ASAAS_API_KEY
@@ -7,7 +7,7 @@
 // Asaas, a outra autentica a ASAAS chamando NÓS). Comparação em tempo
 // constante, mesmo padrão do HMAC do webhook WhatsApp.
 //
-// POLÍTICA DE RESPOSTA HTTP (revisada em OT-06C.1 — nunca copiar
+// POLÍTICA DE RESPOSTA HTTP (revisada em OT-06C.1 e OT-06G.2 — nunca copiar
 // cegamente o "sempre 200" do webhook WhatsApp; os dois domínios têm risco
 // diferente. Base: documentação oficial Asaas — docs.asaas.com/docs/erro-400-bad-request
 // ("responda HTTP 200 após confirmar a persistência") e
@@ -15,11 +15,11 @@
 // categoria de erro ESPERADA e MONITORADA nos próprios Logs de Webhook da
 // Asaas — mascará-la como 200 esconde o problema até do painel deles)):
 //
-//   200 -> evento autenticado E cuja decisão (aplicar, ignorar
-//          deliberadamente, descartar por duplicidade/fora de
-//          ordem/identidade não resolvida/transição inválida) já está
-//          durável. "200" aqui significa literalmente "não me reenvie
-//          este id" — nunca é emitido antes disso.
+//   200 -> evento autenticado E cuja decisão já é DURÁVEL (marker de dedup
+//          criado): applied, duplicate, ignored, unresolved_identity,
+//          out_of_order, invalid_transition. "200" aqui significa
+//          literalmente "não me reenvie este id" — nunca é emitido antes
+//          do marker existir (quando o outcome cria um).
 //   400 -> autenticado, mas o corpo não é um envelope Asaas válido (JSON
 //          quebrado, ou faltam id/event/dateCreated — os 3 campos que TODO
 //          evento real da Asaas sempre traz, confirmado na documentação;
@@ -31,9 +31,14 @@
 //          própria Asaas espera ver e monitorar nos Logs de Webhook — um
 //          401 aqui é o comportamento correto e documentado, não um
 //          incidente a esconder.
-//   503 -> falha transitória/interna (ex.: Firestore indisponível) ANTES de
-//          garantir que o evento foi persistido/aplicado com segurança.
-//          Nunca confirma um evento financeiro que pode não ter sido
+//   503 -> (a) falha transitória/interna (ex.: Firestore indisponível) ANTES
+//          de garantir que o evento foi persistido/aplicado com segurança;
+//          (b) outcomes establishment_not_found/billing_not_initialized
+//          (OT-06G.1/G.2) — decisão deliberadamente NÃO durável, sem marker
+//          de dedup, porque a causa (establishment ainda não existe;
+//          billing nunca inicializado) pode se resolver depois e o mesmo
+//          event.id precisa continuar reprocessável. Em ambos os casos,
+//          nunca confirma um evento financeiro que pode não ter sido
 //          gravado — deixa a Asaas reenviar, exatamente o mecanismo de
 //          retry que a doc documenta para esse propósito.
 import { NextRequest, NextResponse } from "next/server";
@@ -59,12 +64,21 @@ function verifyWebhookToken(header: string | null): boolean {
   return expected.length === provided.length && timingSafeEqual(expected, provided);
 }
 
-// Todo outcome de processAsaasWebhookEvent, exceto "invalid_envelope", já
-// representa uma decisão durável (aplicada ou deliberadamente descartada) —
-// "invalid_envelope" é o único que significa "não consegui nem interpretar
-// isso", tratado separadamente como 400 antes de chegar aqui.
+// invalid_envelope: não consegui nem interpretar o corpo -> 400.
+// establishment_not_found / billing_not_initialized (OT-06G.1/G.2):
+// deliberadamente sem marker de dedup, decisão ainda não durável -> 503,
+// para a Asaas reenviar quando a causa se resolver.
+// Todo outro outcome já criou (ou nunca precisou de) marker de dedup -> 200.
 function statusForOutcome(result: AsaasWebhookProcessingResult): number {
-  return result.outcome === "invalid_envelope" ? 400 : 200;
+  if (result.outcome === "invalid_envelope") return 400;
+  if (result.outcome === "establishment_not_found" || result.outcome === "billing_not_initialized") return 503;
+  return 200;
+}
+
+function responseBodyForStatus(status: number): Record<string, unknown> {
+  if (status === 200) return { received: true };
+  if (status === 400) return { error: "INVALID_PAYLOAD" };
+  return { error: "TEMPORARILY_UNAVAILABLE" };
 }
 
 export async function POST(req: NextRequest) {
@@ -87,10 +101,7 @@ export async function POST(req: NextRequest) {
     const result = await processAsaasWebhookEvent(body, dependencies);
     logStage("processed", sanitizeResultForLog(result));
     const status = statusForOutcome(result);
-    return NextResponse.json(
-      status === 200 ? { received: true } : { error: "INVALID_PAYLOAD" },
-      { status },
-    );
+    return NextResponse.json(responseBodyForStatus(status), { status });
   } catch (err) {
     // Falha ANTES de garantir persistência — nunca confirma um evento
     // financeiro que pode não ter sido aplicado. Só tipo/nome do erro no
