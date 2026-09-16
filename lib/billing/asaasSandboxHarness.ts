@@ -132,7 +132,15 @@ export type SandboxHarnessResult =
         generation: number;
         externalSubscriptionId: string | null;
       } | null;
-      payments: Array<{ id: string; status: string | null; dueDate: string | null; value: number | null }>;
+      payments: Array<{
+        id: string;
+        status: string | null;
+        dueDate: string | null;
+        value: number | null;
+        customer: string | null;
+        subscription: string | null;
+        deleted: boolean | null;
+      }>;
     }
   | {
       ok: true;
@@ -451,6 +459,9 @@ async function inspect(
       status: payment.status ?? null,
       dueDate: payment.dueDate ?? null,
       value: payment.value ?? null,
+      customer: payment.customer ?? null,
+      subscription: payment.subscription ?? null,
+      deleted: payment.deleted ?? null,
     })),
   };
 }
