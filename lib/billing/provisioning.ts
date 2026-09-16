@@ -33,6 +33,7 @@ export interface SanitizedProvisioningError {
   kind: AsaasError["kind"] | "conflict";
   status?: number;
   codes?: string[];
+  descriptions?: string[];
   code?: string;
 }
 
@@ -360,12 +361,16 @@ async function markKnownSubscriptionLookupFailure(
 }
 
 function sanitizedError(error: AsaasError): SanitizedProvisioningError {
+  const descriptions = error.errors
+    ?.map((item) => item.description)
+    .filter((d): d is string => Boolean(d));
   return {
     kind: error.kind,
     ...(error.status !== undefined ? { status: error.status } : {}),
     ...(error.errors
       ? { codes: error.errors.map((item) => item.code).filter((code): code is string => Boolean(code)) }
       : {}),
+    ...(descriptions?.length ? { descriptions } : {}),
   };
 }
 
