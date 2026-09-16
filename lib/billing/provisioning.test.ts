@@ -1010,3 +1010,165 @@ describe("reconcileConflictedSubscription — recovery temporal de nextDueDate (
     expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
   });
 });
+
+describe("provisionAsaasSubscription — evidência pós-create de nextDueDate (OT-05H-AH)", () => {
+  const CREATE_EST = "est_create_evidence";
+  const CREATE_GEN = 1;
+  const CREATE_SUB_ID = "sub_create_evidence_1";
+
+  // Espelha o caso real da gen5 (RCA OT-05H-AG): BOLETO, R$5, MONTHLY,
+  // nextDueDate 2026-12-01.
+  const CREATE_INPUT: ProvisionSubscriptionInput = {
+    establishmentId: CREATE_EST,
+    subscriptionGeneration: CREATE_GEN,
+    asaasCustomerId: "cus_create_1",
+    leaseOwner: "worker_1",
+    billingType: "BOLETO",
+    value: 5,
+    cycle: "MONTHLY",
+    nextDueDate: "2026-12-01",
+    description: "Livia sandbox controlled test",
+  };
+
+  function createdSubscription(patch: Partial<AsaasSubscription> = {}): AsaasSubscription {
+    return {
+      id: CREATE_SUB_ID,
+      customer: CREATE_INPUT.asaasCustomerId,
+      billingType: CREATE_INPUT.billingType,
+      value: CREATE_INPUT.value,
+      cycle: CREATE_INPUT.cycle,
+      nextDueDate: CREATE_INPUT.nextDueDate,
+      externalReference: logicalSubscriptionExternalReference(CREATE_EST, CREATE_GEN),
+      description: CREATE_INPUT.description,
+      status: "ACTIVE",
+      ...patch,
+    };
+  }
+
+  function createdPayment(patch: Partial<AsaasPayment> = {}): AsaasPayment {
+    return {
+      id: "pay_create_evidence_1",
+      subscription: CREATE_SUB_ID,
+      customer: CREATE_INPUT.asaasCustomerId,
+      dueDate: CREATE_INPUT.nextDueDate,
+      value: CREATE_INPUT.value,
+      status: "PENDING",
+      deleted: false,
+      ...patch,
+    };
+  }
+
+  function createClient(
+    subscriptionPatch: Partial<AsaasSubscription>,
+    payments: AsaasPayment[],
+    overrides: Partial<ReconciliationClient> = {},
+  ): ReconciliationClient {
+    return fakeAsaas({
+      createSubscription: vi.fn(async () => ({ ok: true as const, data: createdSubscription(subscriptionPatch) })),
+      listSubscriptionPayments: vi.fn(async () => ({ ok: true as const, data: payments })),
+      ...overrides,
+    });
+  }
+
+  // 1
+  it("nextDueDate igual: succeeded sem chamar listSubscriptionPayments", async () => {
+    const client = createClient({}, []);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "created" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  // 2 — caso real da gen5
+  it("gen5 real: nextDueDate diverge (2026-12-01 → 2027-01-01) + payment válido ⇒ succeeded", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment()]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "created" });
+    const stored = await getBillingProvisioningIntent(CREATE_EST, CREATE_GEN);
+    expect(stored?.phase).toBe("succeeded");
+    expect(stored?.externalSubscriptionId).toBe(CREATE_SUB_ID);
+    expect(client.listSubscriptionPayments).toHaveBeenCalledWith(CREATE_SUB_ID);
+  });
+
+  // 3
+  it("payment com dueDate diferente do original ⇒ conflict (evidência não encontrada)", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment({ dueDate: "2026-12-02" })]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_found" });
+  });
+
+  // 4
+  it("value divergente no payment ⇒ conflict", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment({ value: 999 })]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  // 5
+  it("payment deleted:true ⇒ conflict", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment({ deleted: true })]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  // 6
+  it("status diferente de PENDING ⇒ conflict", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment({ status: "RECEIVED" })]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_not_eligible" });
+  });
+
+  // 7
+  it("dois candidatos com o mesmo dueDate original ⇒ conflict, nunca adivinha", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [
+      createdPayment({ id: "pay_a" }),
+      createdPayment({ id: "pay_b" }),
+    ]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "original_payment_ambiguous" });
+  });
+
+  // 8
+  it("outro campo da subscription diverge além do nextDueDate ⇒ conflict, sem listar payments", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01", billingType: "PIX" }, [createdPayment()]);
+    const result = await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "created_subscription_mismatch" });
+    expect(client.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  // 9
+  it("exatamente uma chamada createSubscription, mesmo com divergência de nextDueDate", async () => {
+    const client = createClient({ nextDueDate: "2027-01-01" }, [createdPayment()]);
+    await provisionAsaasSubscription(CREATE_INPUT, dependencies(client));
+    expect(client.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  // 10a
+  it("replay por ID conhecido continua usando subscriptionMatches estrito (regressão)", async () => {
+    const firstClient = createClient({}, []);
+    await provisionAsaasSubscription(CREATE_INPUT, dependencies(firstClient));
+    const replayClient = fakeAsaas({
+      getSubscription: vi.fn(async () => ({ ok: true as const, data: createdSubscription({ nextDueDate: "2027-01-01" }) })),
+    });
+    const replayResult = await provisionAsaasSubscription(CREATE_INPUT, dependencies(replayClient));
+    expect(replayResult).toMatchObject({ ok: false, phase: "conflict", reason: "known_subscription_mismatch" });
+    expect(replayClient.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+
+  // 10b
+  it("reconciliação pré-create continua usando subscriptionMatches estrito (regressão)", async () => {
+    const PRECREATE_GEN = 2;
+    const precreateInput = { ...CREATE_INPUT, subscriptionGeneration: PRECREATE_GEN };
+    const precreateClient = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [createdSubscription({
+          nextDueDate: "2027-01-01",
+          externalReference: logicalSubscriptionExternalReference(CREATE_EST, PRECREATE_GEN),
+        })],
+      })),
+    });
+    const precreateResult = await provisionAsaasSubscription(precreateInput, dependencies(precreateClient));
+    expect(precreateResult).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_mismatch" });
+    expect(precreateClient.listSubscriptionPayments).not.toHaveBeenCalled();
+  });
+});
