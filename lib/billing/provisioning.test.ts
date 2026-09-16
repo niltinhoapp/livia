@@ -371,6 +371,104 @@ describe("concorrência e transaction retry", () => {
   });
 });
 
+describe("subscriptionMatches — description ausente na resposta Asaas (OT-05H-P)", () => {
+  const descInput: ProvisionSubscriptionInput = { ...INPUT, description: "Livia sandbox controlled test" };
+
+  function noDescClient(extraPatch: Partial<AsaasSubscription> = {}): ReconciliationClient {
+    return fakeAsaas({
+      createSubscription: vi.fn(async (input: CreateSubscriptionInput) => ({
+        ok: true as const,
+        data: matchingSubscription({
+          customer: input.customer,
+          billingType: input.billingType,
+          value: input.value,
+          cycle: input.cycle,
+          nextDueDate: input.nextDueDate,
+          externalReference: input.externalReference,
+          ...extraPatch,
+          // description deliberadamente ausente — simula Asaas não ecoando
+        }),
+      })),
+    });
+  }
+
+  it("response sem description não dispara conflict quando intent tem description", async () => {
+    const client = noDescClient();
+    const result = await provisionAsaasSubscription(descInput, dependencies(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "created" });
+    expect((await getBillingProvisioningIntent("est_1", 1))?.externalSubscriptionId).toBe("sub_1");
+  });
+
+  it("response com description diferente da intent ainda dispara created_subscription_mismatch", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async (input: CreateSubscriptionInput) => ({
+        ok: true as const,
+        data: matchingSubscription({
+          customer: input.customer, billingType: input.billingType, value: input.value,
+          cycle: input.cycle, nextDueDate: input.nextDueDate, externalReference: input.externalReference,
+          description: "description completamente diferente",
+        }),
+      })),
+    });
+    const result = await provisionAsaasSubscription(descInput, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "created_subscription_mismatch" });
+    expect(client.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("response com description igual à intent é aceita normalmente", async () => {
+    const client = fakeAsaas({
+      createSubscription: vi.fn(async (input: CreateSubscriptionInput) => ({
+        ok: true as const,
+        data: matchingSubscription({
+          customer: input.customer, billingType: input.billingType, value: input.value,
+          cycle: input.cycle, nextDueDate: input.nextDueDate, externalReference: input.externalReference,
+          description: "Livia sandbox controlled test",
+        }),
+      })),
+    });
+    const result = await provisionAsaasSubscription(descInput, dependencies(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded" });
+  });
+
+  it("divergência em billingType continua disparando created_subscription_mismatch independente da description", async () => {
+    const client = noDescClient({ billingType: "BOLETO" });
+    const result = await provisionAsaasSubscription(descInput, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "created_subscription_mismatch" });
+    expect(client.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("phase conflict pré-existente impede POST em qualquer replay subsequente", async () => {
+    await provisionAsaasSubscription(descInput, dependencies(noDescClient({ billingType: "BOLETO" })));
+    expect((await getBillingProvisioningIntent("est_1", 1))?.phase).toBe("conflict");
+    const replayClient = noDescClient();
+    const replay = await provisionAsaasSubscription(descInput, dependencies(replayClient));
+    expect(replay).toMatchObject({ ok: false, phase: "conflict" });
+    expect(replayClient.createSubscription).not.toHaveBeenCalled();
+  });
+
+  it("reconciliation: subscription encontrada sem description + intent com description → reconciliada sem POST", async () => {
+    const client = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingSubscription()],
+      })),
+    });
+    const result = await provisionAsaasSubscription(descInput, dependencies(client));
+    expect(result).toMatchObject({ ok: true, phase: "succeeded", outcome: "reconciled" });
+    expect(client.createSubscription).not.toHaveBeenCalled();
+    expect((await getBillingProvisioningIntent("est_1", 1))?.externalSubscriptionId).toBe("sub_1");
+  });
+
+  it("fingerprint diferente em description continua disparando identity_conflict", async () => {
+    const client = noDescClient();
+    await provisionAsaasSubscription(descInput, dependencies(client));
+    vi.mocked(client.createSubscription).mockClear();
+    const result = await provisionAsaasSubscription({ ...descInput, description: "outro plano" }, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "identity_conflict" });
+    expect(client.createSubscription).not.toHaveBeenCalled();
+  });
+});
+
 describe("segurança da persistência", () => {
   it("não persiste API key, token, cartão ou payload HTTP bruto", async () => {
     const secret = "$aact_hmlg_SECRET_SHOULD_NOT_PERSIST";
