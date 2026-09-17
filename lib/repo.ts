@@ -17,6 +17,7 @@ import type {
   Message,
   MessageRole,
   CustomerProfile,
+  Campaign,
   ConversationTask,
   IntentType,
   PendingTask,
@@ -981,6 +982,87 @@ export async function listCustomerProfiles(
     .limit(limitCount)
     .get();
   return snap.docs.map((d) => d.data() as CustomerProfile);
+}
+
+// ---- Campanhas (fundação) ----
+// Campanhas vivem na subcoleção do estabelecimento e nunca aceitam tenant de
+// payload HTTP: futuras rotas devem resolver establishmentId pela sessão, no
+// mesmo padrão das rotas atuais.
+
+const EMPTY_CAMPAIGN_COUNTERS: Campaign["counters"] = {
+  total: 0,
+  queued: 0,
+  sent: 0,
+  delivered: 0,
+  read: 0,
+  failed: 0,
+  replied: 0,
+  skipped: 0,
+};
+
+export async function createCampaign(
+  establishmentId: string,
+  input: { name: string },
+): Promise<Campaign> {
+  const name = input.name.trim();
+  if (!name || name.length > 120) throw new Error("Nome da campanha inválido.");
+
+  const now = Date.now();
+  const campaign: Campaign = {
+    id: randomUUID(),
+    establishmentId,
+    name,
+    status: "draft",
+    scheduledAt: null,
+    startedAt: null,
+    finishedAt: null,
+    counters: { ...EMPTY_CAMPAIGN_COUNTERS },
+    createdAt: now,
+    updatedAt: now,
+  };
+  await sub(establishmentId, "campaigns").doc(campaign.id).create(campaign);
+  return campaign;
+}
+
+export async function getCampaign(
+  establishmentId: string,
+  campaignId: string,
+): Promise<Campaign | null> {
+  const doc = await sub(establishmentId, "campaigns").doc(campaignId).get();
+  return doc.exists ? (doc.data() as Campaign) : null;
+}
+
+export type MarketingOptOutResult = "opted_out" | "already_opted_out" | "blocked" | "customer_not_found";
+
+// Opt-out é uma operação terminal para marketing, mas não altera Conversation,
+// CustomerProfile fora da política, agenda, handoff nem o atendimento normal.
+// A transação torna a repetição idempotente e preserva o primeiro registro.
+export async function optOutCustomerFromMarketing(
+  establishmentId: string,
+  phone: string,
+  reason?: string,
+): Promise<MarketingOptOutResult> {
+  const ref = sub(establishmentId, "customers").doc(normalizePhone(phone));
+  const normalizedReason = reason?.trim().slice(0, 160) || "customer_request";
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return "customer_not_found";
+
+    const profile = snap.data() as CustomerProfile;
+    if (profile.marketingStatus === "blocked") return "blocked";
+    if (profile.marketingStatus === "opted_out") return "already_opted_out";
+
+    const now = Date.now();
+    tx.update(ref, {
+      marketingStatus: "opted_out",
+      marketingStatusUpdatedAt: now,
+      marketingOptOutAt: now,
+      marketingOptOutReason: normalizedReason,
+      updatedAt: now,
+    });
+    return "opted_out";
+  });
 }
 
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens
