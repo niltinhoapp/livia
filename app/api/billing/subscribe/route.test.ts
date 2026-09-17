@@ -6,6 +6,7 @@ const getEstablishment = vi.fn();
 const linkEstablishmentBilling = vi.fn();
 const resolveOrCreateAsaasCustomer = vi.fn();
 const provisionAsaasSubscription = vi.fn();
+const resolvePixPaymentForSubscription = vi.fn();
 const createAsaasClient = vi.fn((..._args: unknown[]) => ({ fakeClient: true }));
 
 vi.mock("@/lib/auth/session", () => ({
@@ -20,6 +21,9 @@ vi.mock("@/lib/billing/customerIdentity", () => ({
 }));
 vi.mock("@/lib/billing/provisioning", () => ({
   provisionAsaasSubscription: (...a: unknown[]) => provisionAsaasSubscription(...a),
+}));
+vi.mock("@/lib/billing/pixPayment", () => ({
+  resolvePixPaymentForSubscription: (...a: unknown[]) => resolvePixPaymentForSubscription(...a),
 }));
 vi.mock("@/lib/billing/asaas", () => ({
   createAsaasClient: (...a: unknown[]) => createAsaasClient(...a),
@@ -56,6 +60,8 @@ function request(body: unknown) {
   });
 }
 
+const DUE_DATE = "2026-09-17";
+
 function customerOk(id = "cus_1") {
   return { ok: true, externalCustomerId: id, outcome: "created" as const };
 }
@@ -64,8 +70,11 @@ function subscriptionSucceeded(subId = "sub_1") {
     ok: true,
     phase: "succeeded" as const,
     outcome: "created" as const,
-    intent: { externalSubscriptionId: subId },
+    intent: { externalSubscriptionId: subId, terms: { nextDueDate: DUE_DATE } },
   };
+}
+function pixReady() {
+  return { ok: true, status: "ready" as const, pixCopyPaste: "00020126...copia-cola", qrCode: "BASE64IMG" };
 }
 
 beforeEach(() => {
@@ -76,6 +85,7 @@ beforeEach(() => {
   getEstablishment.mockResolvedValue(establishment());
   resolveOrCreateAsaasCustomer.mockResolvedValue(customerOk());
   provisionAsaasSubscription.mockResolvedValue(subscriptionSucceeded());
+  resolvePixPaymentForSubscription.mockResolvedValue(pixReady());
 });
 
 afterEach(() => {
@@ -125,10 +135,13 @@ describe("POST /api/billing/subscribe", () => {
     );
   });
 
-  it("6) subscription criada/reconciliada -> 200 status subscribed", async () => {
+  it("6) subscription criada/reconciliada + PIX pronto -> 200 payment_required (não basta a subscription existir)", async () => {
     const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "subscribed", outcome: "created" });
+    expect(await res.json()).toEqual({
+      status: "payment_required",
+      payment: { pixCopyPaste: "00020126...copia-cola", qrCode: "BASE64IMG" },
+    });
   });
 
   it("7-9) preço/ciclo/billingType são sempre definidos server-side (R$129/MONTHLY/PIX)", async () => {
@@ -207,5 +220,54 @@ describe("POST /api/billing/subscribe", () => {
     const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
     const text = await res.text();
     expect(text).not.toContain("52998224725");
+  });
+
+  // ---- OT-07E2: cobrança PIX ----
+
+  it("15) billingStatus já 'active': não pede CPF/CNPJ, não toca customer/subscription", async () => {
+    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "active", updatedAt: 1 } }));
+    const res = await POST(request({}) as never); // nem envia cpfCnpj — não deveria ser exigido
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "active" });
+    expect(resolveOrCreateAsaasCustomer).not.toHaveBeenCalled();
+    expect(provisionAsaasSubscription).not.toHaveBeenCalled();
+  });
+
+  it("16) cobrança pertence à subscription recém-provisionada (nunca a outra) — subscriptionId nunca vem do corpo", async () => {
+    provisionAsaasSubscription.mockResolvedValue(subscriptionSucceeded("sub_correta"));
+    await POST(request({ cpfCnpj: "52998224725", subscriptionId: "sub_de_outro_tenant" }) as never);
+    expect(resolvePixPaymentForSubscription).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ subscriptionId: "sub_correta", nextDueDate: DUE_DATE }),
+    );
+  });
+
+  it("17) resposta payment_required não vaza customerId/subscriptionId/payload bruto do Asaas", async () => {
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const text = await res.text();
+    expect(text).not.toContain("cus_1");
+    expect(text).not.toContain("sub_1");
+  });
+
+  it("18) cobrança ainda não gerada (corrida pós-criação) -> 202 processing, sem erro", async () => {
+    resolvePixPaymentForSubscription.mockResolvedValue({ ok: true, status: "not_generated_yet" });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ status: "processing" });
+  });
+
+  it("19) falha ao buscar a cobrança/QR -> 502 sanitizado", async () => {
+    resolvePixPaymentForSubscription.mockResolvedValue({ ok: false, reason: "qrcode_failed" });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "PIX_LOOKUP_FAILED" });
+  });
+
+  it("20) repetição com subscription já reconciliada reutiliza a mesma cobrança (não recalcula nextDueDate a cada chamada)", async () => {
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const firstCall = resolvePixPaymentForSubscription.mock.calls[0]!;
+    const secondCall = resolvePixPaymentForSubscription.mock.calls[1]!;
+    expect(firstCall[1].nextDueDate).toBe(secondCall[1].nextDueDate);
   });
 });

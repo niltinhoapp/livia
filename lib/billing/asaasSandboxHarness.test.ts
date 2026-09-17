@@ -31,6 +31,9 @@ function fakeClient(): AsaasClient {
     listSubscriptions: vi.fn(),
     findSubscriptionsForReconciliation: vi.fn().mockResolvedValue(ok([])),
     listSubscriptionPayments: vi.fn().mockResolvedValue(ok([])),
+    // OT-07E2: método novo do client, sem uso pelo harness — stub inerte
+    // só para satisfazer o tipo AsaasClient.
+    getPixQrCode: vi.fn(),
   };
 }
 

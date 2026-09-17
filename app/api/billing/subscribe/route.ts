@@ -1,20 +1,24 @@
 // POST /api/billing/subscribe — inicia a assinatura real da Lívia para o
-// establishment autenticado (OT-07E1). Conecta o customer/subscription
-// Asaas já homologados (OT-05H/OT-06/OT-07E0) ao fluxo real de produto pela
-// primeira vez — até aqui só o harness administrativo os exercitava.
+// establishment autenticado (OT-07E1) e devolve a cobrança PIX pronta para
+// pagamento (OT-07E2). Conecta o customer/subscription Asaas já homologados
+// (OT-05H/OT-06/OT-07E0) ao fluxo real de produto — até OT-07E1 só o
+// harness administrativo os exercitava.
 //
 // Plano fixo do MVP (nunca aceito do cliente): R$129/mês, MONTHLY, PIX.
 // establishmentId nunca vem do corpo da requisição — sempre resolvido pela
 // sessão autenticada (mesmo padrão de app/api/establishment).
 //
-// Exibição/pagamento do PIX (invoiceUrl/QR) fica para OT-07E2 — o client
-// Asaas hoje não expõe esse campo (ver Pré-OT-07E).
+// FONTE DE VERDADE: esta rota NUNCA marca billingStatus como "active" —
+// devolver o QR/copia-e-cola só dá ao cliente uma forma de pagar, não prova
+// pagamento. Só o webhook (app/api/webhooks/asaas/route.ts, já homologado)
+// aplica essa transição.
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, linkEstablishmentBilling } from "@/lib/repo";
 import { resolveOrCreateAsaasCustomer } from "@/lib/billing/customerIdentity";
 import { provisionAsaasSubscription } from "@/lib/billing/provisioning";
+import { resolvePixPaymentForSubscription } from "@/lib/billing/pixPayment";
 import { createAsaasClient, type AsaasClient, type AsaasEnvironment } from "@/lib/billing/asaas";
 
 const PLAN_VALUE = 129;
@@ -50,6 +54,13 @@ export async function POST(req: NextRequest) {
   const establishment = await getEstablishment(establishmentId);
   if (!establishment) {
     return NextResponse.json({ error: "ESTABLISHMENT_NOT_FOUND" }, { status: 404 });
+  }
+
+  // Assinatura já ativa (aplicado pelo webhook): nenhuma nova contratação,
+  // nenhum CPF/CNPJ necessário de novo. Idempotente por construção — nem
+  // toca customer/subscription/Asaas.
+  if (establishment.billing?.billingStatus === "active") {
+    return NextResponse.json({ status: "active" });
   }
 
   let body: unknown;
@@ -95,13 +106,34 @@ export async function POST(req: NextRequest) {
     { asaas, now: Date.now, newId: randomUUID },
   );
 
-  if (result.ok && result.phase === "succeeded") {
-    if (result.intent.externalSubscriptionId) {
-      await linkEstablishmentBilling(establishmentId, {
-        externalSubscriptionId: result.intent.externalSubscriptionId,
+  if (result.ok && result.phase === "succeeded" && result.intent.externalSubscriptionId) {
+    const externalSubscriptionId = result.intent.externalSubscriptionId;
+    await linkEstablishmentBilling(establishmentId, { externalSubscriptionId });
+
+    // subscriptionId vem exclusivamente do intent que o PRÓPRIO backend
+    // acabou de provisionar/reconciliar para este establishment — nunca do
+    // corpo da requisição. Isso é o que garante que um tenant nunca possa
+    // consultar a cobrança de outro.
+    const pix = await resolvePixPaymentForSubscription(
+      { asaas },
+      { subscriptionId: externalSubscriptionId, nextDueDate: result.intent.terms.nextDueDate },
+    );
+    if (pix.ok && pix.status === "ready") {
+      return NextResponse.json({
+        status: "payment_required",
+        payment: {
+          pixCopyPaste: pix.pixCopyPaste,
+          qrCode: pix.qrCode,
+          ...(pix.expiresAt !== undefined ? { expiresAt: pix.expiresAt } : {}),
+        },
       });
     }
-    return NextResponse.json({ status: "subscribed", outcome: result.outcome });
+    if (pix.ok) {
+      // not_generated_yet: corrida logo após criar a subscription — retry
+      // seguro (idempotente) do mesmo endpoint resolve.
+      return NextResponse.json({ status: "processing" }, { status: 202 });
+    }
+    return NextResponse.json({ error: "PIX_LOOKUP_FAILED" }, { status: 502 });
   }
 
   if (result.ok) {
