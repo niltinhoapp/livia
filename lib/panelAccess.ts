@@ -2,7 +2,7 @@
 // whatsappBeta, Meta ou dados operacionais do tenant.
 import { getAuth } from "firebase-admin/auth";
 import { db, establishmentRef, firebaseAdminApp } from "@/lib/firebase/admin";
-import { defaultBotConfig } from "@/lib/repo";
+import { defaultBotConfig, initialTrialBilling } from "@/lib/repo";
 import type { Establishment, PanelAccess } from "@/types";
 
 export type PanelAccessState = "absent" | "legacy" | PanelAccess;
@@ -221,6 +221,7 @@ export async function provisionPanelAccess(
         ownerUid: input.targetUid,
         status: "active",
         createdAt: now,
+        billing: initialTrialBilling(now),
         panelAccess: "allowed",
         bot: defaultBotConfig(),
       };

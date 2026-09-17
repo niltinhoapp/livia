@@ -18,6 +18,12 @@ vi.mock("@/lib/repo", () => ({
     handoffKeywords: [],
     medicalGuardrail: false,
   }),
+  initialTrialBilling: (now: number) => ({
+    billingStatus: "trial",
+    trialStartAt: now,
+    trialEndsAt: now + 7 * 24 * 60 * 60 * 1000,
+    updatedAt: now,
+  }),
 }));
 
 const { changePanelAccess, provisionPanelAccess } = await import("./panelAccess");
@@ -98,6 +104,11 @@ describe("provisionPanelAccess", () => {
     });
     expect(tenant("target-uid")?.whatsapp).toBeUndefined();
     expect(tenant("target-uid")?.whatsappBeta).toBeUndefined();
+    // OT-07C: caminho alternativo de criação (fora de upsertEstablishmentConfig)
+    // produz o mesmo billing inicial de trial.
+    const billing = tenant("target-uid")?.billing;
+    expect(billing?.billingStatus).toBe("trial");
+    expect(billing?.trialEndsAt! - billing?.trialStartAt!).toBe(7 * 24 * 60 * 60 * 1000);
     expect(events("target-uid")).toEqual([
       expect.objectContaining({
         action: "provision",
