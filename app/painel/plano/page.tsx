@@ -25,6 +25,12 @@ const FUTURE_PLANS = [
   { id: "premium", name: "Premium" },
 ];
 
+// OT-BILLING-UI-01: Hosted Checkout/Asaas aguardando suporte — contratação
+// desabilitada SÓ no front (o fluxo abaixo continua intacto, incluindo a
+// chamada real a POST /api/billing/subscribe). Reativar trocando esta
+// constante para false quando o Asaas for resolvido.
+const PAYMENT_TEMPORARILY_DISABLED = true;
+
 type SubscribeStep = "idle" | "collecting" | "submitting" | "payment_required" | "processing" | "error";
 
 interface PixPayment {
@@ -200,9 +206,19 @@ export default function PlanoPage() {
         {/* -------- Contratação -------- */}
         {!isActive && subscribeStep === "idle" && (
           <div className="mt-5 border-t border-line/60 pt-4">
-            <Button onClick={() => setSubscribeStep("collecting")}>
-              {hasPendingSubscription ? "Ver cobrança pendente" : "Contratar Lívia"}
+            <Button
+              disabled={PAYMENT_TEMPORARILY_DISABLED}
+              onClick={() => setSubscribeStep("collecting")}
+            >
+              {PAYMENT_TEMPORARILY_DISABLED
+                ? "Contratação em breve"
+                : hasPendingSubscription
+                  ? "Ver cobrança pendente"
+                  : "Contratar Lívia"}
             </Button>
+            {PAYMENT_TEMPORARILY_DISABLED && (
+              <p className="mt-2 text-xs text-ink-400">Pagamento temporariamente indisponível.</p>
+            )}
           </div>
         )}
 
