@@ -66,8 +66,32 @@ describe("POST /api/internal/billing/asaas-sandbox-test", () => {
     expect(executeAsaasSandboxHarness).not.toHaveBeenCalled();
   });
 
-  it("kill switch bloqueado faz zero chamada externa", async () => {
+  // OT-06G tornou VERCEL_ENV="production" uma decisão deliberada e temporária
+  // da fase pré-beta (Production do APP como ambiente de homologação, sempre
+  // contra Asaas Sandbox — ver isAsaasSandboxHarnessEnabled). Este teste
+  // ficou stale depois dessa mudança: antes da OT-06G, production SEMPRE
+  // bloqueava o harness (404); hoje o harness segue habilitado em production
+  // do app DESDE QUE os gates Sandbox (ASAAS_ENVIRONMENT + prefixo da chave)
+  // continuem satisfeitos. Corrigido na OT-07B para refletir o comportamento
+  // atual — a cobertura exaustiva da tabela verdade do gate em si já existe
+  // em lib/billing/asaasSandboxHarness.test.ts ("production kill switch");
+  // aqui só confirmamos que a ROTA de fato consulta esse gate e não bloqueia
+  // indevidamente um caso que deveria estar liberado.
+  it("VERCEL_ENV=production com gates Sandbox satisfeitos: harness continua habilitado (OT-06G)", async () => {
     vi.stubEnv("VERCEL_ENV", "production");
+    const response = await POST(request({ action: "auth_check", confirmSandbox: true }));
+    expect(response.status).toBe(200);
+    expect(createSandboxHarnessDependencies).toHaveBeenCalledWith(API_KEY);
+    expect(executeAsaasSandboxHarness).toHaveBeenCalled();
+  });
+
+  // O kill switch real não é VERCEL_ENV — é ASAAS_ENVIRONMENT precisar
+  // continuar "sandbox" mesmo com VERCEL_ENV=production. Este teste cobre a
+  // rota (dispatch para 404 + zero chamada externa); a tabela verdade
+  // completa do gate está em asaasSandboxHarness.test.ts.
+  it("kill switch real: ASAAS_ENVIRONMENT != sandbox bloqueia mesmo em VERCEL_ENV=production, faz zero chamada externa", async () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("ASAAS_ENVIRONMENT", "production");
     const response = await POST(request({ action: "auth_check", confirmSandbox: true }));
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "SANDBOX_HARNESS_DISABLED" });

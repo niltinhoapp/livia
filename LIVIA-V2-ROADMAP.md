@@ -738,6 +738,13 @@ Preparar contratos do CRM para timeline, canais, equipe, oportunidades e pagamen
 
 Asaas, planos, benefícios, assinatura, suspensão e reativação.
 
+Nota (OT-07B, auditoria OT-07A em `main` 56c2f127278659cb45622e017bd08ad118447842):
+a fundação técnica (client Asaas, state machine de `billingStatus`, webhook
+idempotente, homologação Sandbox via harness administrativo) já existe.
+Falta conectar ao fluxo comercial real (plano/checkout, trial automático,
+controle de acesso por `billingStatus`, suspensão/reativação automáticas) —
+ver `README.md` §4 para o detalhamento atual.
+
 ## V2.2 — IA mais capaz
 
 Centralizar AI Gateway, criar benchmark, migrar de forma controlada o modelo de atendimento e manter fallback.

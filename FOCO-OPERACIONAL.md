@@ -155,18 +155,22 @@ não concede vaga de WhatsApp e uma revogação não altera a conexão existente
 
 Primeira frente estrutural da V2.
 
-- [ ] auditar modelo atual de usuário/estabelecimento;
-- [ ] desenhar `Plan`;
-- [ ] desenhar `Subscription`;
-- [ ] desenhar `Benefit`;
+Atualizado na OT-07B (auditoria de estado real em OT-07A, `main`
+56c2f127278659cb45622e017bd08ad118447842) — a fundação técnica abaixo já
+existe, mas segue desconectada do fluxo comercial real:
+
+- [x] client Asaas (sandbox e produção) + state machine de `billingStatus`;
+- [x] webhook Asaas com processamento atômico/idempotente;
+- [x] integrar sandbox Asaas (homologação do provisioning já realizada via harness administrativo);
+- [x] webhooks idempotentes;
+- [ ] auditar modelo atual de usuário/estabelecimento (para o desenho de `Plan`/`Subscription`/`Benefit` abaixo);
+- [ ] desenhar `Plan`/`Subscription`/`Benefit` como entidades de produto (hoje só existe `billingStatus` na state machine — não há modelagem de plano/benefício no domínio);
 - [ ] suportar desconto/cortesia sem alterar preço-base;
-- [ ] integrar sandbox Asaas;
-- [ ] checkout/assinatura;
-- [ ] webhooks idempotentes;
-- [ ] pagamento aprovado libera acesso;
-- [ ] inadimplência suspende dentro da Lívia;
-- [ ] reativação restaura acesso;
-- [ ] cancelamento preserva dados;
+- [ ] checkout/assinatura (hoje `app/painel/plano` é mockup, sem chamada real de backend);
+- [ ] pagamento aprovado libera acesso (webhook já marca `billingStatus`, mas nenhuma rota consome esse campo hoje);
+- [ ] inadimplência suspende dentro da Lívia (state machine suporta `suspended`, mas nada aciona `grace_expired`/`trial_expired` hoje);
+- [ ] reativação restaura acesso (evento `reactivate` existe na state machine, sem rota administrativa que o dispare);
+- [ ] cancelamento preserva dados (webhook `SUBSCRIPTION_DELETED` já marca `canceled`; falta confirmar que nada exclui dados nesse caminho);
 - [ ] nunca desconectar Meta/WhatsApp por cobrança.
 
 ---
