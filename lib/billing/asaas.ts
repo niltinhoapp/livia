@@ -128,6 +128,7 @@ export function createAsaasClient(config: AsaasClientConfig): AsaasClient {
       findSubscriptionsForReconciliation(resolved, input),
     listSubscriptionPayments: (subscriptionId) =>
       listSubscriptionPayments(resolved, subscriptionId),
+    getPixQrCode: (paymentId) => getPixQrCode(resolved, paymentId),
   };
 }
 
@@ -142,6 +143,15 @@ export interface AsaasClient {
     input: FindSubscriptionsInput,
   ): Promise<AsaasResult<AsaasSubscription[]>>;
   listSubscriptionPayments(subscriptionId: string): Promise<AsaasResult<AsaasPayment[]>>;
+  // GET /payments/{id}/pixQrCode (OT-07E2) — leitura pura, nunca cria
+  // cobrança. É o passo de integração PIX documentado oficialmente
+  // (docs.asaas.com/reference/get-qr-code-for-pix-payments): "crie a
+  // cobrança, depois envie o ID retornado para recuperar os dados do QR
+  // Code". Preferido a invoiceUrl (que também existe, documentado em
+  // docs.asaas.com/reference/criar-nova-cobranca) porque mantém o cliente
+  // dentro do painel da Lívia em vez de redirecioná-lo para asaas.com, e
+  // porque é o caminho que a própria documentação de PIX descreve.
+  getPixQrCode(paymentId: string): Promise<AsaasResult<AsaasPixQrCode>>;
 }
 
 // Leitura mínima para homologar credencial/conectividade sem criar qualquer
@@ -486,6 +496,41 @@ async function listSubscriptionPayments(
     "cobranças",
     isAsaasPayment,
   );
+}
+
+// Dados para o cliente final concluir um pagamento PIX (OT-07E2) — nunca
+// inclui dado de outra cobrança/subscription: o escopo é sempre o
+// paymentId explícito recebido, resolvido server-side (ver
+// lib/billing/pixPayment.ts).
+export interface AsaasPixQrCode {
+  encodedImage: string; // imagem do QR Code em base64 (PNG)
+  payload: string; // código "copia e cola"
+  expirationDate?: string;
+}
+
+async function getPixQrCode(
+  config: ResolvedConfig,
+  paymentId: string,
+): Promise<AsaasResult<AsaasPixQrCode>> {
+  const result = await request<unknown>(
+    config,
+    "GET",
+    `/payments/${encodeURIComponent(paymentId)}/pixQrCode`,
+  );
+  if (!result.ok) return result;
+  if (!isAsaasPixQrCode(result.data)) {
+    return invalidResponse("Asaas: resposta de QR Code Pix sem os campos mínimos esperados.");
+  }
+  return { ok: true, data: result.data };
+}
+
+function isAsaasPixQrCode(value: unknown): value is AsaasPixQrCode {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  if (typeof item.encodedImage !== "string" || item.encodedImage.length === 0) return false;
+  if (typeof item.payload !== "string" || item.payload.length === 0) return false;
+  if (item.expirationDate !== undefined && typeof item.expirationDate !== "string") return false;
+  return true;
 }
 
 function invalidResponse<T>(message: string): AsaasResult<T> {
