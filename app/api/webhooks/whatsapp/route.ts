@@ -14,6 +14,7 @@
 // alheio). Mesmo padrão do webhook do Nuvem Rush.
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { logError } from "@/lib/observability";
 import {
   findEstablishmentByPhoneNumberId,
   getEstablishment,
@@ -179,7 +180,11 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // Não silencioso: qualquer exceção não tratada por um passo específico
     // (ver os try/catch nomeados dentro de handleWebhook) cai aqui e fica
-    // visível nos logs — nunca é engolida.
+    // visível nos logs — nunca é engolida. Também é o boundary que capta
+    // erro não tratado da camada de IA (lib/ai/gateway.ts propaga de
+    // propósito, sem try/catch próprio) e de handoff (ambos vivem dentro de
+    // handleWebhook, sem módulo próprio).
+    logError({ category: "whatsapp_webhook", operation: "handle_webhook", error: err });
     console.error("[livia webhook] erro não tratado", {
       errorType: err instanceof Error ? err.name : "unknown",
     });

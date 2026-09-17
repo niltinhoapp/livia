@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { requirePlatformAdmin } from "@/lib/auth/platformAdmin";
+import { logError } from "@/lib/observability";
 import {
   changePanelAccess,
   provisionPanelAccess,
@@ -99,7 +100,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: result.reason.toUpperCase() }, { status: failureStatus(result.reason) });
     }
     return NextResponse.json(result, { status: result.outcome === "created" ? 201 : 200 });
-  } catch {
+  } catch (err) {
+    // Antes desta OT, uma falha aqui era 100% silenciosa (catch vazio).
+    logError({ category: "auth", operation: `panel_access_${command.action}`, error: err });
     return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
   }
 }

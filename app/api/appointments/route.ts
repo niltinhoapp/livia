@@ -2,6 +2,7 @@
 // POST /api/appointments  -> cria agendamento (valida horário livre)
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
+import { logError } from "@/lib/observability";
 import {
   getScheduleConfig,
   listAppointments,
@@ -40,31 +41,38 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const config = await getScheduleConfig(id);
-  const durationMin = b.durationMin ?? config.defaultDurationMin;
+  try {
+    const config = await getScheduleConfig(id);
+    const durationMin = b.durationMin ?? config.defaultDurationMin;
 
-  // Revalida no servidor que o horário ainda está livre (evita corrida).
-  const dayStart = b.startAt - (b.startAt % (24 * 3600000));
-  const existing = await listAppointments(id, dayStart - 24 * 3600000, dayStart + 48 * 3600000);
-  const clash = existing.some(
-    (a) =>
-      a.status !== "cancelled" &&
-      a.status !== "no_show" &&
-      b.startAt! < a.startAt + a.durationMin * 60000 &&
-      a.startAt < b.startAt! + durationMin * 60000,
-  );
-  if (clash) {
-    return NextResponse.json({ error: "horário indisponível" }, { status: 409 });
+    // Revalida no servidor que o horário ainda está livre (evita corrida).
+    const dayStart = b.startAt - (b.startAt % (24 * 3600000));
+    const existing = await listAppointments(id, dayStart - 24 * 3600000, dayStart + 48 * 3600000);
+    const clash = existing.some(
+      (a) =>
+        a.status !== "cancelled" &&
+        a.status !== "no_show" &&
+        b.startAt! < a.startAt + a.durationMin * 60000 &&
+        a.startAt < b.startAt! + durationMin * 60000,
+    );
+    if (clash) {
+      return NextResponse.json({ error: "horário indisponível" }, { status: 409 });
+    }
+
+    const appt = await createAppointment(id, {
+      contactPhone: b.contactPhone,
+      contactName: b.contactName ?? null,
+      serviceName: b.serviceName,
+      startAt: b.startAt,
+      durationMin,
+      source: b.source ?? "manual",
+      note: b.note ?? null,
+    });
+    return NextResponse.json({ appointment: appt });
+  } catch (err) {
+    // Antes desta OT, uma falha aqui virava um 500 genérico do Next.js sem
+    // nenhum log nosso — agora fica visível e com contexto mínimo.
+    logError({ category: "agenda", operation: "create_appointment", establishmentId: id, error: err });
+    return NextResponse.json({ error: "internal_error" }, { status: 500 });
   }
-
-  const appt = await createAppointment(id, {
-    contactPhone: b.contactPhone,
-    contactName: b.contactName ?? null,
-    serviceName: b.serviceName,
-    startAt: b.startAt,
-    durationMin,
-    source: b.source ?? "manual",
-    note: b.note ?? null,
-  });
-  return NextResponse.json({ appointment: appt });
 }
