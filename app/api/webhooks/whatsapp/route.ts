@@ -36,7 +36,12 @@ import {
   getPendingTask,
   alreadyProcessed,
 } from "@/lib/repo";
-import { sendText, markAsRead } from "@/lib/whatsapp/client";
+import {
+  sendText,
+  markAsRead,
+  downloadWhatsAppAudio,
+  WhatsAppMediaError,
+} from "@/lib/whatsapp/client";
 import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
@@ -53,7 +58,17 @@ import { declaresAutomatedRecipient, isClearClosingReply, isClearHumanDemand, is
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
-import type { Establishment, EstablishmentWhatsapp, ConversationTask, CustomerProfile } from "@/types";
+import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription";
+import type {
+  Establishment,
+  EstablishmentWhatsapp,
+  ConversationTask,
+  CustomerProfile,
+  MessageMedia,
+  MessageTranscription,
+} from "@/types";
+
+const AUDIO_FAILURE_REPLY = "Não consegui entender esse áudio. Pode enviar novamente ou escrever a mensagem?";
 
 // Log de diagnóstico do webhook — nunca inclui secret/token/telefone/texto da
 // mensagem. Identificadores técnicos são mascarados; contagens e estados são
@@ -78,6 +93,11 @@ function sanitizeLogData(data: Record<string, unknown>): Record<string, unknown>
 
 function logStage(stage: string, data?: Record<string, unknown>) {
   console.log(`[livia webhook] ${stage}`, data ? JSON.stringify(sanitizeLogData(data)) : "");
+}
+
+function audioErrorCode(err: unknown): string {
+  if (err instanceof WhatsAppMediaError || err instanceof AudioTranscriptionError) return err.code;
+  return "unexpected_error";
 }
 
 export async function GET(req: NextRequest) {
@@ -297,7 +317,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
 
   const contactPhone = inbound.from;
   const contactName = value.contacts?.[0]?.profile?.name ?? null;
-  const customerText = inbound.text;
+  let customerText = inbound.text;
+  let persistedMedia: MessageMedia | undefined = inbound.media;
+  let transcription: MessageTranscription | undefined;
 
   // Marca como lida (feedback visual pro cliente).
   if (inbound.waMessageId) await markAsRead(wa, est.id, inbound.waMessageId);
@@ -308,18 +330,82 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     contactName,
   );
 
+  // Áudio vira texto ANTES de entrar no pipeline conversacional. O binário
+  // fica apenas em memória durante download/transcrição; o histórico recebe
+  // o transcript limpo e os metadados mínimos ligados ao wamid original.
+  if (inbound.kind === "audio") {
+    const startedAt = Date.now();
+    try {
+      const mediaId = inbound.media?.metaMediaId;
+      if (!mediaId) throw new WhatsAppMediaError("missing_media_id");
+      logStage("audio processing started", { msgId: msg.id, estId: est.id, sourceType: "audio" });
+
+      const downloaded = await downloadWhatsAppAudio(wa, est.id, mediaId);
+      persistedMedia = {
+        ...inbound.media,
+        mimeType: downloaded.mimeType,
+        fileSizeBytes: downloaded.sizeBytes,
+      };
+      logStage("audio download succeeded", {
+        msgId: msg.id,
+        estId: est.id,
+        sourceType: "audio",
+        sizeBytes: downloaded.sizeBytes,
+        mimeType: downloaded.mimeType,
+      });
+
+      const result = await transcribeAudio({ bytes: downloaded.bytes, mimeType: downloaded.mimeType });
+      customerText = result.text;
+      transcription = {
+        status: "completed",
+        text: result.text,
+        provider: result.provider,
+        model: result.model,
+        updatedAt: Date.now(),
+      };
+      logStage("audio transcription succeeded", {
+        msgId: msg.id,
+        estId: est.id,
+        sourceType: "audio",
+        transcriptLength: result.text.length,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (err) {
+      const errorCode = audioErrorCode(err);
+      transcription = { status: "failed", errorCode, updatedAt: Date.now() };
+      await appendMessage(est.id, conversation.id, "customer", inbound.text, inbound.waMessageId, {
+        kind: inbound.kind,
+        phoneNumberId: value.metadata.phone_number_id,
+        ...(persistedMedia ? { media: persistedMedia } : {}),
+        transcription,
+      });
+      logStage("audio processing failed", {
+        msgId: msg.id,
+        estId: est.id,
+        sourceType: "audio",
+        errorCode,
+        ...(err instanceof WhatsAppMediaError && err.status !== undefined ? { httpStatus: err.status } : {}),
+        durationMs: Date.now() - startedAt,
+      });
+      await replyAndLog(wa, est.id, conversation.id, contactPhone, AUDIO_FAILURE_REPLY);
+      return;
+    }
+  }
+
   // Registra a mensagem do cliente. Acontece ANTES de qualquer decisão de
   // parar o fluxo (estabelecimento inativo, handoff, humano no controle):
   // "a Livia não responde" nunca pode significar "a mensagem sumiu".
   await appendMessage(est.id, conversation.id, "customer", customerText, inbound.waMessageId, {
     kind: inbound.kind,
     phoneNumberId: value.metadata.phone_number_id,
-    ...(inbound.media ? { media: inbound.media } : {}),
+    ...(persistedMedia ? { media: persistedMedia } : {}),
+    ...(transcription ? { transcription } : {}),
   });
 
-  // V2.0 registra toda mídia, mas não a encaminha à IA, não responde e não
-  // abre PendingTask. Transcrição e tratamento multimodal ficam para V2.1+.
-  if (inbound.kind !== "text") {
+  // Imagem/documento e demais tipos continuam apenas reconhecidos e
+  // persistidos. Não há visão, OCR, parser de documento nem conteúdo
+  // inventado. Áudio transcrito segue abaixo exatamente como texto.
+  if (inbound.kind !== "text" && inbound.kind !== "audio") {
     logStage("non-text message persisted without AI", { msgId: msg.id, type: inbound.kind });
     return;
   }

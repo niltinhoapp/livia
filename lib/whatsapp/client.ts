@@ -13,6 +13,48 @@ import type { EstablishmentWhatsapp } from "@/types";
 
 const GRAPH = "https://graph.facebook.com/v22.0";
 
+export const MAX_INBOUND_AUDIO_BYTES = 16 * 1024 * 1024;
+export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
+
+const ALLOWED_AUDIO_MIME_TYPES = new Set([
+  "audio/aac",
+  "audio/amr",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/opus",
+  "audio/wav",
+  "audio/webm",
+]);
+
+export type WhatsAppMediaErrorCode =
+  | "missing_media_id"
+  | "meta_lookup_failed"
+  | "invalid_meta_response"
+  | "invalid_media_url"
+  | "meta_download_failed"
+  | "unsupported_mime"
+  | "empty_file"
+  | "file_too_large"
+  | "timeout"
+  | "network_error";
+
+export class WhatsAppMediaError extends Error {
+  constructor(
+    public readonly code: WhatsAppMediaErrorCode,
+    public readonly status?: number,
+  ) {
+    super(code);
+    this.name = "WhatsAppMediaError";
+  }
+}
+
+export interface DownloadedWhatsAppMedia {
+  bytes: Uint8Array;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 // Normaliza pro formato da Graph API (dígitos com DDI). Até 11 dígitos =
 // número BR sem DDI -> prefixa 55.
 export function normalizePhone(raw: string): string {
@@ -64,6 +106,127 @@ function resolveSendCredentials(
     throw new Error("WhatsApp conectado, mas sem accessToken cifrado — estado inconsistente.");
   }
   return { phoneNumberId: wa.phoneNumberId, accessToken: decryptToken(wa.accessToken) };
+}
+
+function baseMimeType(value: string | null | undefined): string | null {
+  const mime = value?.split(";", 1)[0]?.trim().toLowerCase();
+  return mime || null;
+}
+
+function assertAllowedAudioMime(value: string | null | undefined): string {
+  const mime = baseMimeType(value);
+  if (!mime || !ALLOWED_AUDIO_MIME_TYPES.has(mime)) {
+    throw new WhatsAppMediaError("unsupported_mime");
+  }
+  return mime;
+}
+
+function isAllowedMetaMediaUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return (
+      host === "lookaside.fbsbx.com" ||
+      host.endsWith(".facebook.com") ||
+      host.endsWith(".fbcdn.net") ||
+      host.endsWith(".fbsbx.com") ||
+      host.endsWith(".whatsapp.net")
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function withMediaTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT_MS);
+  try {
+    return await operation(controller.signal);
+  } catch (err) {
+    if (err instanceof WhatsAppMediaError) throw err;
+    if (controller.signal.aborted) throw new WhatsAppMediaError("timeout");
+    throw new WhatsAppMediaError("network_error");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readLimitedBody(response: Response): Promise<Uint8Array> {
+  const advertisedLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(advertisedLength) && advertisedLength > MAX_INBOUND_AUDIO_BYTES) {
+    throw new WhatsAppMediaError("file_too_large");
+  }
+
+  if (!response.body) throw new WhatsAppMediaError("empty_file");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.byteLength) continue;
+    total += value.byteLength;
+    if (total > MAX_INBOUND_AUDIO_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new WhatsAppMediaError("file_too_large");
+    }
+    chunks.push(value);
+  }
+  if (total === 0) throw new WhatsAppMediaError("empty_file");
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+// Fluxo oficial da Cloud API: resolve o media_id em uma URL temporária e
+// baixa essa URL com o mesmo Bearer token. O binário só existe em memória e
+// nunca é devolvido ao browser, persistido ou logado.
+export async function downloadWhatsAppAudio(
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
+  mediaId: string,
+): Promise<DownloadedWhatsAppMedia> {
+  if (!mediaId.trim()) throw new WhatsAppMediaError("missing_media_id");
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
+  const authorization = { Authorization: `Bearer ${accessToken}` };
+  const lookupUrl = `${GRAPH}/${encodeURIComponent(mediaId)}?phone_number_id=${encodeURIComponent(phoneNumberId)}`;
+
+  const metadata = await withMediaTimeout(async (signal) => {
+    const lookup = await fetch(lookupUrl, { headers: authorization, signal });
+    if (!lookup.ok) throw new WhatsAppMediaError("meta_lookup_failed", lookup.status);
+    return (await lookup.json().catch(() => null)) as
+      | { url?: unknown; mime_type?: unknown; file_size?: unknown }
+      | null;
+  });
+  if (!metadata || typeof metadata.url !== "string") {
+    throw new WhatsAppMediaError("invalid_meta_response");
+  }
+  if (!isAllowedMetaMediaUrl(metadata.url)) throw new WhatsAppMediaError("invalid_media_url");
+
+  const declaredSize = typeof metadata.file_size === "number" ? metadata.file_size : null;
+  if (declaredSize !== null && declaredSize > MAX_INBOUND_AUDIO_BYTES) {
+    throw new WhatsAppMediaError("file_too_large");
+  }
+  if (declaredSize === 0) throw new WhatsAppMediaError("empty_file");
+  const declaredMime =
+    typeof metadata.mime_type === "string" ? assertAllowedAudioMime(metadata.mime_type) : null;
+
+  return withMediaTimeout(async (signal) => {
+    const download = await fetch(metadata.url as string, { headers: authorization, signal });
+    if (!download.ok) throw new WhatsAppMediaError("meta_download_failed", download.status);
+    const responseMime = assertAllowedAudioMime(download.headers.get("content-type") ?? declaredMime);
+    if (declaredMime && responseMime !== declaredMime) {
+      throw new WhatsAppMediaError("unsupported_mime");
+    }
+    const bytes = await readLimitedBody(download);
+    return { bytes, mimeType: responseMime, sizeBytes: bytes.byteLength };
+  });
 }
 
 // Envia texto livre (só válido dentro da janela de 24h aberta pelo cliente).
