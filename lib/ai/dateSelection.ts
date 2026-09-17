@@ -54,6 +54,26 @@ export function parseDateSelection(text: string, today: string): string | null {
   const t = normalizar(text);
   if (!t.trim()) return null;
 
+  // Correções explícitas: primeiro tenta somente o trecho afirmado. Isso é
+  // propositalmente estreito — não transforma qualquer frase com "não" em
+  // correção. A forma negativa exige uma data conhecida, vírgula e uma nova
+  // afirmação; as demais exigem marcadores inequívocos de retificação.
+  const retificacao = t.match(/^(?:na verdade|quis dizer)\s*[,;:\-]?\s*(.+)$/);
+  if (retificacao) {
+    const corrigida = parseDateSelection(retificacao[1]!, today);
+    if (corrigida) return corrigida;
+  }
+
+  const entidadeDeData =
+    "(?:hoje|amanha|depois\\s+de\\s+amanha|domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:\\s*-?\\s*feira)?";
+  const negacaoComCorrecao = t.match(
+    new RegExp(`^nao(?:\\s+e)?\\s+${entidadeDeData}\\s*,\\s*(?:e\\s+)?(.+)$`),
+  );
+  if (negacaoComCorrecao) {
+    const corrigida = parseDateSelection(negacaoComCorrecao[1]!, today);
+    if (corrigida) return corrigida;
+  }
+
   const base = meiaNoiteDe(today);
   const DIA = 24 * 3600000;
 

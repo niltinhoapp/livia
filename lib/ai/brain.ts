@@ -596,6 +596,15 @@ export function composeCancelReply(outcome: CancelOutcome): string | null {
 // Estados de tarefa em que o cliente pode estar escolhendo um horário.
 const AWAITING_TIME_CHOICE = new Set<ConversationTask["state"]>(["offer_options", "confirm", "check_availability"]);
 
+function isExplicitTimeCorrection(text: string): boolean {
+  const normalized = text
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  return /^(?:quis dizer|na verdade|corrigindo)\b/.test(normalized);
+}
+
 export type BookingOutcome =
   | { kind: "created"; when: string; serviceName: string }
   | { kind: "rescheduled"; when: string; serviceName: string }
@@ -666,7 +675,12 @@ async function resolveTimeSelection(
   // "14" depois do dia. Aqui o horário já não é o começo da frase, mas
   // continua tendo que ser único e inequívoco — a mesma regra que impede
   // adivinhar dentro de uma lista de opções.
-  if (!escolhido && dataDita) escolhido = extractSingleTime(ultima.text);
+  // Uma correção explícita pode trazer só o novo horário. Fora de uma tarefa
+  // ativa este código nem roda; e, sem data já coletada, a checagem abaixo
+  // continua impedindo qualquer mutação nova.
+  if (!escolhido && (dataDita || isExplicitTimeCorrection(ultima.text))) {
+    escolhido = extractSingleTime(ultima.text);
+  }
 
   if (!escolhido && readConfirmation(ultima.text) === "yes") {
     // Confirmação sem repetir o horário ("ss", "ok", "sim" ao "Vou agendar
@@ -701,10 +715,16 @@ async function resolveTimeSelection(
   // (pelo próprio Appointment, ver lib/ai/tools.ts) — por isso não exige
   // `serviceName` coletado e é decidida antes da checagem abaixo.
   if (task.type === "reschedule_appointment") {
-    // Primeiro tenta sem alvo explícito — mantém o comportamento anterior
-    // (um único ativo é remarcado pela própria ferramenta).
-    let result = await runTool("reschedule_appointment", { newStartAt: startAt }, toolCtx);
-    toolCalls.push({ name: "reschedule_appointment", args: { newStartAt: startAt } });
+    // Um alvo já selecionado na conversa continua sendo o alvo da correção.
+    // Sem id, mantém o comportamento anterior: um único ativo é resolvido
+    // pela própria ferramenta e múltiplos seguem pela desambiguação abaixo.
+    const selectedAppointmentId =
+      typeof task.collectedData.appointmentId === "string" ? task.collectedData.appointmentId : undefined;
+    const initialArgs = selectedAppointmentId
+      ? { newStartAt: startAt, appointmentId: selectedAppointmentId }
+      : { newStartAt: startAt };
+    let result = await runTool("reschedule_appointment", initialArgs, toolCtx);
+    toolCalls.push({ name: "reschedule_appointment", args: initialArgs });
 
     // Ambíguo (vários ativos): sem isto, o cliente que pediu "remarca a
     // avaliação" ficava sem remarcação nenhuma (ou o alvo era decidido às
