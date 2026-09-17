@@ -148,7 +148,10 @@ describe("E — anexos do atendimento humano", () => {
 
     const preview = await screen.findByAltText("Imagem: foto.jpg");
     expect(preview.getAttribute("src")).toBe("/api/conversations/conv%20image/messages/msg-image/attachment");
+    expect(screen.getByText("Anexo aguardando análise")).toBeTruthy();
     expect(screen.getByText("Olha como ficou")).toBeTruthy();
+    expect(screen.getByText("Livia atendendo")).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
   it("renderiza documento com nome e acesso controlado", async () => {
@@ -167,6 +170,7 @@ describe("E — anexos do atendimento humano", () => {
 
     const filename = await screen.findByText("laudo.pdf");
     expect(filename.closest("a")?.getAttribute("href")).toBe("/api/conversations/conv-1/messages/msg-pdf/attachment");
+    expect(screen.getByText("Anexo aguardando análise")).toBeTruthy();
     expect(screen.getByText("Abrir")).toBeTruthy();
   });
 });

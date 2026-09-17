@@ -225,30 +225,32 @@ function AttachmentView({
   messageId: string;
 }) {
   const href = `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/attachment`;
-
-  if (attachment.type === "image") {
-    return (
-      <a href={href} target="_blank" rel="noreferrer" className="mb-2 block" aria-label={`Abrir ${attachment.filename}`}>
-        <img
-          src={href}
-          alt={`Imagem: ${attachment.filename}`}
-          loading="lazy"
-          className="max-h-64 w-auto max-w-full rounded-control border border-black/10 object-contain"
-        />
-      </a>
-    );
-  }
-
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="mb-2 flex items-center gap-2 rounded-control border border-black/10 bg-white/70 p-2 text-ink-800 hover:bg-white"
-    >
-      <FileText className="h-5 w-5" />
-      <span className="min-w-0 flex-1 truncate font-medium">{attachment.filename}</span>
-      <span className="text-xs font-semibold">Abrir</span>
-    </a>
+    <>
+      <div className="mb-2">
+        <StatusBadge tone="warning">Anexo aguardando análise</StatusBadge>
+      </div>
+      {attachment.type === "image" ? (
+        <a href={href} target="_blank" rel="noreferrer" className="mb-2 block" aria-label={`Abrir ${attachment.filename}`}>
+          <img
+            src={href}
+            alt={`Imagem: ${attachment.filename}`}
+            loading="lazy"
+            className="max-h-64 w-auto max-w-full rounded-control border border-black/10 object-contain"
+          />
+        </a>
+      ) : (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="mb-2 flex items-center gap-2 rounded-control border border-black/10 bg-white/70 p-2 text-ink-800 hover:bg-white"
+        >
+          <FileText className="h-5 w-5" />
+          <span className="min-w-0 flex-1 truncate font-medium">{attachment.filename}</span>
+          <span className="text-xs font-semibold">Abrir</span>
+        </a>
+      )}
+    </>
   );
 }
