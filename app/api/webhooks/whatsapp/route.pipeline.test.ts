@@ -20,6 +20,9 @@ const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationTask = vi.fn();
+const setConversationStatus = vi.fn();
+const setConversationIntent = vi.fn();
+const upsertCustomerProfile = vi.fn();
 const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
@@ -32,6 +35,9 @@ const getPendingTask = vi.fn(
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
+const downloadWhatsAppAudio = vi.fn();
+const transcribeAudio = vi.fn();
+const detectIntent = vi.fn((_text: string) => ({ type: "general_question", confidence: 0.2, entities: {} }));
 const findNextAppointment = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
 const setStatus = vi.fn();
 const deriveTaskState = vi.fn(
@@ -46,30 +52,34 @@ vi.mock("@/lib/repo", () => ({
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
-  setConversationStatus: vi.fn(),
+  setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
   closeConversation: (...a: unknown[]) => closeConversation(...a),
   tryCloseAutomatedConversation: (...a: unknown[]) => tryCloseAutomatedConversation(...a),
   reopenConversation: (...a: unknown[]) => reopenConversation(...a),
-  setConversationIntent: vi.fn(),
+  setConversationIntent: (...a: unknown[]) => setConversationIntent(...a),
   setConversationTask: (...a: unknown[]) => setConversationTask(...a),
   setConversationSummary: vi.fn(),
   getCustomerProfile: vi.fn(async () => null),
-  upsertCustomerProfile: vi.fn(),
+  upsertCustomerProfile: (...a: unknown[]) => upsertCustomerProfile(...a),
   upsertPendingTask: (...a: unknown[]) => upsertPendingTask(...a),
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   getPendingTask: (...a: unknown[]) => getPendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
 }));
 
-vi.mock("@/lib/whatsapp/client", () => ({
+vi.mock("@/lib/whatsapp/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/whatsapp/client")>()),
   sendText: (...a: unknown[]) => sendText(...a),
   markAsRead: (...a: unknown[]) => markAsRead(...a),
+  downloadWhatsAppAudio: (...a: unknown[]) => downloadWhatsAppAudio(...a),
   normalizePhone: (raw: string) => raw.replace(/\D/g, ""),
 }));
 
 vi.mock("@/lib/ai/brain", () => ({ think: (...a: unknown[]) => think(...a) }));
-vi.mock("@/lib/ai/intent", () => ({
-  detectIntent: () => ({ type: "general_question", confidence: 0.2, entities: {} }),
+vi.mock("@/lib/ai/intent", () => ({ detectIntent: (text: string) => detectIntent(text) }));
+vi.mock("@/lib/ai/transcription", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/transcription")>()),
+  transcribeAudio: (...a: unknown[]) => transcribeAudio(...a),
 }));
 vi.mock("@/lib/ai/taskState", () => ({
   deriveTaskState: (input: { existingTask?: ConversationTask | null; booked: boolean }) => deriveTaskState(input),
@@ -174,6 +184,9 @@ beforeEach(() => {
   tryCloseAutomatedConversation.mockResolvedValue(true);
   getPendingTask.mockResolvedValue(null);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
+  downloadWhatsAppAudio.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/ogg", sizeBytes: 3 });
+  transcribeAudio.mockResolvedValue({ text: "Quero marcar uma avaliação amanhã às dez", provider: "openai", model: "gpt-4o-mini-transcribe" });
+  detectIntent.mockReturnValue({ type: "general_question", confidence: 0.2, entities: {} });
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
   getEstablishment.mockResolvedValue(establishment());
   loadConversation.mockResolvedValue(conversa("bot"));
@@ -536,21 +549,168 @@ describe("1b — credenciais de App Review", () => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
-  it("áudio é persistido com phoneNumberId, mas não chama IA, envio nem cria pendência", async () => {
+  function payloadAudio(id = "wamid.1") {
     const audio = payloadMensagem({ type: "audio", omitText: true });
     const msg = audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
-    msg.audio = { id: "media.audio", mime_type: "audio/ogg", sha256: "hash", voice: true };
-    const res = await enviarPayload(audio);
+    msg.id = id;
+    msg.audio = { id: "media.audio", mime_type: "audio/ogg", sha256: "hash", file_size: 3, voice: true };
+    return audio;
+  }
+
+  it("áudio válido é transcrito e entra no mesmo pipeline textual", async () => {
+    const res = await enviarPayload(payloadAudio());
 
     expect(res.status).toBe(200);
-    expect(think).not.toHaveBeenCalled();
-    expect(sendText).not.toHaveBeenCalled();
-    expect(upsertPendingTask).not.toHaveBeenCalled();
-    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Áudio recebido]", "wamid.1", {
+    expect(downloadWhatsAppAudio).toHaveBeenCalledWith(expect.anything(), "est_odonto", "media.audio");
+    expect(transcribeAudio).toHaveBeenCalledTimes(1);
+    expect(think).toHaveBeenCalledWith(expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ text: "Quero marcar uma avaliação amanhã às dez" })]),
+    }));
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "Quero marcar uma avaliação amanhã às dez", "wamid.1", {
       kind: "audio",
       phoneNumberId: "pn_1",
-      media: { metaMediaId: "media.audio", mimeType: "audio/ogg", sha256: "hash", voice: true },
+      media: { metaMediaId: "media.audio", mimeType: "audio/ogg", sha256: "hash", fileSizeBytes: 3, voice: true },
+      transcription: expect.objectContaining({
+        status: "completed",
+        text: "Quero marcar uma avaliação amanhã às dez",
+        provider: "openai",
+        model: "gpt-4o-mini-transcribe",
+      }),
     });
+  });
+
+  it("transcript de agenda preserva o contrato de agenda e CRM", async () => {
+    detectIntent.mockReturnValue({ type: "schedule_appointment", confidence: 0.9, entities: {} } as never);
+    think.mockResolvedValueOnce({
+      reply: "Agendado.", handoff: false, booked: true, rescheduled: false, cancelled: false,
+      agendaMutationCompleted: true,
+      toolCalls: [{ name: "create_appointment", args: { serviceName: "Avaliação" } }],
+      pendingCancelAppointmentId: null, statedDate: "2026-09-18", statedService: "Avaliação",
+    });
+
+    await enviarPayload(payloadAudio("wamid.audio.agenda"));
+
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    expect(setConversationIntent).toHaveBeenCalledWith("est_odonto", PHONE, "schedule_appointment");
+    expect(upsertCustomerProfile).toHaveBeenCalledWith("est_odonto", PHONE, expect.objectContaining({
+      lastIntent: "schedule_appointment",
+      lastService: "Avaliação",
+    }));
+  });
+
+  it("transcript de handoff segue o fluxo textual existente", async () => {
+    transcribeAudio.mockResolvedValueOnce({ text: "Quero falar com uma pessoa", provider: "openai", model: "gpt-4o-mini-transcribe" });
+    detectIntent.mockReturnValue({ type: "request_human", confidence: 0.99, entities: {} } as never);
+    think.mockResolvedValueOnce({
+      reply: "Vou chamar uma pessoa.", handoff: true, booked: false, rescheduled: false, cancelled: false,
+      agendaMutationCompleted: false, toolCalls: [], pendingCancelAppointmentId: null, statedDate: null, statedService: null,
+    });
+
+    await enviarPayload(payloadAudio("wamid.audio.handoff"));
+
+    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", PHONE, "handoff");
+    expect(think).toHaveBeenCalledWith(expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ text: "Quero falar com uma pessoa" })]),
+    }));
+  });
+
+  it("áudio passivo transcrito obedece à mesma regra de silêncio", async () => {
+    transcribeAudio.mockResolvedValueOnce({ text: "ok", provider: "openai", model: "gpt-4o-mini-transcribe" });
+    loadConversation.mockResolvedValueOnce(conversa("bot", undefined, [
+      { id: "bot-1", role: "bot", text: "Seu horário foi confirmado para amanhã às 10h.", at: 1 },
+    ]));
+
+    await enviarPayload(payloadAudio("wamid.audio.ok"));
+
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("falha de transcrição persiste estado seguro, não chama IA e responde naturalmente", async () => {
+    transcribeAudio.mockRejectedValueOnce(new Error("provider secret detail"));
+
+    await enviarPayload(payloadAudio("wamid.audio.fail"));
+
+    expect(think).not.toHaveBeenCalled();
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Áudio recebido]", "wamid.audio.fail", expect.objectContaining({
+      kind: "audio",
+      transcription: expect.objectContaining({ status: "failed", errorCode: "unexpected_error" }),
+    }));
+    expect(sendText.mock.calls[0]?.[3]).toMatch(/não consegui entender esse áudio/i);
+  });
+
+  it.each(["human", "handoff"])("falha de áudio em %s preserva silêncio e fila humana", async (status) => {
+    loadConversation.mockResolvedValueOnce(conversa(status as "human" | "handoff"));
+    transcribeAudio.mockRejectedValueOnce(new Error("provider failure"));
+
+    await enviarPayload(payloadAudio(`wamid.audio.fail.${status}`));
+
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(upsertPendingTask).toHaveBeenCalledWith("est_odonto", PHONE, PHONE, {
+      type: "awaiting_human",
+      waitingFor: "responder mensagem nova do cliente",
+    });
+  });
+
+  it("media_id ausente não baixa, não transcreve e usa o fallback", async () => {
+    const audio = payloadAudio("wamid.audio.no-id");
+    (audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>).audio = { mime_type: "audio/ogg" };
+
+    await enviarPayload(audio);
+
+    expect(downloadWhatsAppAudio).not.toHaveBeenCalled();
+    expect(transcribeAudio).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText.mock.calls[0]?.[3]).toMatch(/não consegui entender esse áudio/i);
+  });
+
+  it("reentrega concorrente do mesmo áudio transcreve e responde uma vez", async () => {
+    alreadyProcessed.mockImplementation(async () => alreadyProcessed.mock.calls.length > 1);
+    let release!: () => void;
+    transcribeAudio.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ text: "Olá", provider: "openai", model: "gpt-4o-mini-transcribe" });
+    }));
+    const payload = payloadAudio("wamid.audio.concurrent");
+
+    const first = enviarPayload(payload);
+    await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(1));
+    const second = enviarPayload(payload);
+    await vi.waitFor(() => expect(alreadyProcessed).toHaveBeenCalledTimes(2));
+    release();
+    await Promise.all([first, second]);
+
+    expect(downloadWhatsAppAudio).toHaveBeenCalledTimes(1);
+    expect(transcribeAudio).toHaveBeenCalledTimes(1);
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["image", "document", "unsupported"])("%s é reconhecido sem interpretação", async (type) => {
+    const payload = payloadMensagem({ type, omitText: true, id: `wamid.${type}` });
+    const msg = payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    if (type === "image") msg.image = { id: "media.image", mime_type: "image/jpeg" };
+    if (type === "document") msg.document = { id: "media.document", mime_type: "application/pdf" };
+
+    await enviarPayload(payload);
+
+    expect(downloadWhatsAppAudio).not.toHaveBeenCalled();
+    expect(transcribeAudio).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("logs não incluem transcript completo, binário ou token", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    transcribeAudio.mockResolvedValueOnce({ text: "frase-secreta-do-cliente", provider: "openai", model: "gpt-4o-mini-transcribe" });
+
+    await enviarPayload(payloadAudio("wamid.audio.logs"));
+
+    const output = log.mock.calls.flat().join(" ");
+    expect(output).not.toContain("frase-secreta-do-cliente");
+    expect(output).not.toContain("server-secret-token");
+    expect(output).not.toContain("1,2,3");
+    log.mockRestore();
   });
 
   it("type=text mas sem corpo: mesmo tratamento, sem chamar a IA", async () => {
@@ -642,7 +802,7 @@ describe("5 — mensagem duplicada (reentrega da Meta)", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
   });
 
-  it("reentrega de mídia pelo mesmo wamid não grava duas mensagens", async () => {
+  it("reentrega de áudio pelo mesmo wamid não grava nem transcreve duas vezes", async () => {
     alreadyProcessed.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const audio = payloadMensagem({ type: "audio", omitText: true, id: "wamid.audio.dup" });
     const msg = audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
@@ -651,7 +811,9 @@ describe("5 — mensagem duplicada (reentrega da Meta)", () => {
     await enviarPayload(audio);
 
     expect(appendMessage.mock.calls.filter((c) => c[2] === "customer")).toHaveLength(1);
-    expect(think).not.toHaveBeenCalled();
+    expect(transcribeAudio).toHaveBeenCalledTimes(1);
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
   });
 });
 

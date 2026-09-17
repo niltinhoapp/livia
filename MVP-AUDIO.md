@@ -102,3 +102,36 @@ Podem ser tratados pelo backend e encaminhados para análise humana enquanto nã
 A implementação deve ser precedida por uma Pré-OT read-only para mapear o recebimento atual de mídia no webhook e encontrar o menor ponto de integração da transcrição.
 
 Não alterar fluxos estáveis de texto, agenda, CRM ou handoff apenas para acomodar áudio. O objetivo é adicionar a etapa de transcrição antes do pipeline conversacional existente.
+
+## Implementação do backend
+
+O pipeline usa o `media_id` recebido no webhook para consultar a URL
+temporária da Cloud API e baixá-la no servidor com o token cifrado do próprio
+estabelecimento. O áudio é validado antes da transcrição e mantido somente em
+memória. O arquivo original e a URL autenticada não são persistidos.
+
+Limites do MVP:
+
+- no máximo 16 MiB por áudio;
+- 10 segundos por chamada de download à Meta;
+- MIME de áudio explícito e compatível;
+- 30 segundos para transcrição, sem retry automático;
+- transcript vazio é falha segura e não chega à inteligência.
+
+A transcrição usa `OPENAI_API_KEY`, já exigida pelo backend. O modelo pode ser
+configurado com `LIVIA_TRANSCRIPTION_MODEL`; sem essa variável, o padrão é
+`gpt-4o-mini-transcribe`. Nenhum valor real deve ser colocado no repositório.
+
+## Validação manual posterior (fora de Production nesta OT)
+
+No ambiente de Preview apropriado, com webhook e credenciais próprios:
+
+1. enviar áudio curto: “Olá, queria saber como funciona a Lívia”;
+2. enviar: “Quero marcar uma avaliação amanhã às dez”;
+3. em seguida, enviar: “Não, quis dizer às onze”;
+4. enviar: “Quero falar com uma pessoa”;
+5. enviar um áudio sem fala compreensível e confirmar o fallback curto;
+6. reenviar o mesmo payload assinado, com o mesmo `wamid`, e confirmar uma
+   única transcrição, resposta e eventual mutação;
+7. conferir logs apenas por `messageId` mascarado, estabelecimento, tipo,
+   tamanho, duração e código sanitizado — nunca áudio, transcript ou token.
