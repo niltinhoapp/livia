@@ -451,3 +451,102 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
     expect(result.agendaMutationCompleted).toBe(false);
   });
 });
+
+describe("correções explícitas de data e horário", () => {
+  it.each([
+    ["quis dizer 10h", "10:00", "2026-09-09T13:00:00.000Z"],
+    ["na verdade 15h", "15:00", "2026-09-09T18:00:00.000Z"],
+    ["corrigindo, 14h", "14:00", "2026-09-09T17:00:00.000Z"],
+  ])("%s preserva a data ativa e usa %s", async (text, time, expectedIso) => {
+    runTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+      if (name === "create_appointment") {
+        return { ok: true, data: { when: `09/09 às ${time}`, serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+
+    const result = await run(text, task("schedule_appointment"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "create_appointment",
+      expect.objectContaining({ startAt: Date.parse(expectedIso) }),
+      expect.anything(),
+    );
+    expect(result.booked).toBe(true);
+    expect(result.reply).toContain(time);
+  });
+
+  it("horário corrigido sem contexto não cria ação", async () => {
+    const result = await run("quis dizer 10h", null);
+
+    expect(result.booked).toBe(false);
+    expect(
+      runTool.mock.calls.some(([name]) =>
+        ["create_appointment", "reschedule_appointment", "cancel_appointment", "confirm_appointment"].includes(name),
+      ),
+    ).toBe(false);
+  });
+
+  it("correção só de data atualiza statedDate sem causar mutação", async () => {
+    const result = await run("na verdade sexta", task("schedule_appointment"));
+
+    expect(result.statedDate).toBe("2026-09-11");
+    expect(result.booked).toBe(false);
+    expect(runTool).not.toHaveBeenCalled();
+  });
+
+  it("corrigindo dia 18 às 10 mantém o comportamento já correto", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "create_appointment") {
+        return { ok: true, data: { when: "18/09 às 10:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+
+    const result = await run("corrigindo, dia 18 às 10", task("schedule_appointment"));
+
+    expect(runTool).toHaveBeenCalledWith(
+      "create_appointment",
+      expect.objectContaining({ startAt: Date.parse("2026-09-18T13:00:00.000Z") }),
+      expect.anything(),
+    );
+    expect(result.booked).toBe(true);
+  });
+
+  it("segunda mutação continua bloqueada após correção de horário", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "create_appointment") {
+        return { ok: true, data: { when: "09/09 às 10:00", serviceName: "Limpeza" } };
+      }
+      throw new Error("a segunda mutação não deve chegar à tool");
+    });
+    modelMessages = [tool("cancel_appointment", { appointmentId: "appt-1" }), { content: "feito" }];
+
+    const result = await run("quis dizer 10h", task("schedule_appointment"));
+
+    expect(runTool.mock.calls.filter(([name]) => name === "create_appointment")).toHaveLength(1);
+    expect(runTool.mock.calls.filter(([name]) => name === "cancel_appointment")).toHaveLength(0);
+    expect(result.reply).toContain("10:00");
+  });
+
+  it("correção de horário preserva appointmentId já selecionado", async () => {
+    runTool.mockImplementation(async (name: string) => {
+      if (name === "reschedule_appointment") {
+        return { ok: true, data: { when: "09/09 às 10:00", serviceName: "Limpeza" } };
+      }
+      return { ok: true, data: {} };
+    });
+
+    const result = await run(
+      "quis dizer 10h",
+      task("reschedule_appointment", { appointmentId: "appt-alvo" }),
+    );
+
+    expect(runTool).toHaveBeenCalledWith(
+      "reschedule_appointment",
+      expect.objectContaining({ appointmentId: "appt-alvo" }),
+      expect.anything(),
+    );
+    expect(result.rescheduled).toBe(true);
+  });
+});

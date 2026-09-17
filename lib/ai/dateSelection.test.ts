@@ -106,6 +106,21 @@ describe("combinações de dia + horário", () => {
   });
 });
 
+describe("correções explícitas de data", () => {
+  it.each([
+    ["não é amanhã, é sexta", "2026-09-11"],
+    ["não amanhã, sexta", "2026-09-11"],
+    ["na verdade sexta", "2026-09-11"],
+    ["quis dizer sexta", "2026-09-11"],
+  ])("%s -> %s", (texto, esperado) => {
+    expect(parseDateSelection(texto, HOJE)).toBe(esperado);
+  });
+
+  it("preserva a precedência normal fora de uma correção explícita", () => {
+    expect(parseDateSelection("amanhã ou sexta", HOJE)).toBe("2026-09-07");
+  });
+});
+
 describe("mensagens SEM data devolvem null", () => {
   it.each([
     "as 14",
