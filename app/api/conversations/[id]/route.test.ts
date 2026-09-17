@@ -22,7 +22,7 @@ vi.mock("@/lib/repo", () => ({
   getPendingTask: (...a: unknown[]) => getPendingTask(...a),
 }));
 
-const { PATCH } = await import("@/app/api/conversations/[id]/route");
+const { GET, PATCH } = await import("@/app/api/conversations/[id]/route");
 
 const CONV = "5514991234567";
 
@@ -49,6 +49,11 @@ async function patch(action: string) {
     body: JSON.stringify({ action }),
   });
   return PATCH(req as never, { params: Promise.resolve({ id: CONV }) });
+}
+
+async function get(conversationId = CONV) {
+  const req = new Request(`https://livia.test/api/conversations/${conversationId}`);
+  return GET(req as never, { params: Promise.resolve({ id: conversationId }) });
 }
 
 beforeEach(() => {
@@ -106,6 +111,41 @@ describe("saída do handoff", () => {
     const res = await patch("retomar_automatico");
 
     expect(res.status).toBe(400);
+    expect(setConversationStatus).not.toHaveBeenCalled();
+  });
+});
+
+// OT-BETA-01: isolamento multi-tenant — obrigatório antes de liberar um
+// segundo estabelecimento real. A rota nunca lê establishmentId de outro
+// lugar além de resolveEstablishmentId(req) (ver comentário no topo de
+// route.ts); a leitura em si é sempre escopada por
+// establishments/{id}/conversations/{conversationId}, então um
+// conversationId de outro tenant simplesmente não existe nesse escopo —
+// nunca vaza dado, só retorna 404.
+describe("isolamento entre estabelecimentos (OT-BETA-01)", () => {
+  it("GET sempre consulta o repo com o establishmentId resolvido pela sessão, nunca outro", async () => {
+    await get();
+    expect(getConversation).toHaveBeenCalledWith("est_odonto", CONV);
+  });
+
+  it("conversationId que só existe em OUTRO tenant: repo retorna null (escopo errado) -> 404, sem vazar dado", async () => {
+    // Simula exatamente o que o Firestore real faz: o doc não existe dentro
+    // da subcoleção do tenant resolvido (porque pertence a outro).
+    getConversation.mockResolvedValue(null);
+
+    const res = await get("conv_de_outro_tenant");
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("est_"); // nunca ecoa establishmentId de ninguém
+  });
+
+  it("PATCH também nunca aplica ação a uma conversa que não existe no tenant resolvido", async () => {
+    getConversation.mockResolvedValue(null);
+
+    const res = await patch("assume");
+
+    expect(res.status).toBe(404);
     expect(setConversationStatus).not.toHaveBeenCalled();
   });
 });
