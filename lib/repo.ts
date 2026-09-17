@@ -55,6 +55,30 @@ export async function getEstablishment(id: string): Promise<Establishment | null
   return doc.exists ? (doc.data() as Establishment) : null;
 }
 
+// Persiste APENAS o vínculo Asaas em establishments/{id}.billing (OT-07E0),
+// sem tocar billingStatus/trialStartAt/trialEndsAt nem qualquer outro campo
+// de billing. Usa update por dot-path (mesma técnica do webhook em
+// asaasWebhookProcessing.ts) — o Firestore mescla campo a campo dentro do
+// mapa `billing`, então trial/status existentes são preservados; para um
+// establishment legado sem `billing`, o mapa nasce só com o vínculo (não
+// inventa trial — migração de legado é deliberadamente fora de escopo).
+// Não persiste CPF/CNPJ: esse dado fica só no Asaas (o vínculo local
+// necessário é o externalCustomerId). Lança se o establishment não existir
+// (o chamador autenticado sempre opera sobre o próprio tenant já criado).
+export async function linkEstablishmentBilling(
+  id: string,
+  link: { externalCustomerId?: string; externalSubscriptionId?: string },
+): Promise<void> {
+  const patch: Record<string, unknown> = { "billing.updatedAt": Date.now() };
+  if (link.externalCustomerId !== undefined) {
+    patch["billing.externalCustomerId"] = link.externalCustomerId;
+  }
+  if (link.externalSubscriptionId !== undefined) {
+    patch["billing.externalSubscriptionId"] = link.externalSubscriptionId;
+  }
+  await establishmentRef(id).update(patch);
+}
+
 // Cria (se novo) ou atualiza nome/tipo/config do bot do estabelecimento.
 export async function upsertEstablishmentConfig(
   id: string,
