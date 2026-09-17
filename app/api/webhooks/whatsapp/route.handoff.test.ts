@@ -15,6 +15,7 @@ const findEstablishmentByPhoneNumberId = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationStatus = vi.fn();
+const setAwaitingHumanOfferConfirmation = vi.fn();
 const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
@@ -31,6 +32,7 @@ vi.mock("@/lib/repo", () => ({
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
+  setAwaitingHumanOfferConfirmation: (...a: unknown[]) => setAwaitingHumanOfferConfirmation(...a),
   setConversationIntent: vi.fn(),
   setConversationTask: vi.fn(),
   setConversationSummary: vi.fn(),
@@ -82,9 +84,16 @@ function establishment(over: Partial<Establishment> = {}): Establishment {
   } as unknown as Establishment;
 }
 
-function conversa(status: "bot" | "handoff" | "human" | "closed", history: Message[] = []) {
+function conversa(
+  status: "bot" | "handoff" | "human" | "closed",
+  history: Message[] = [],
+  awaitingHumanOfferConfirmation = false,
+) {
   return {
-    conversation: { id: PHONE, establishmentId: "est_odonto", contactPhone: PHONE, contactName: "Ana", status, lastMessageAt: 0, createdAt: 0 },
+    conversation: {
+      id: PHONE, establishmentId: "est_odonto", contactPhone: PHONE, contactName: "Ana", status, lastMessageAt: 0, createdAt: 0,
+      ...(awaitingHumanOfferConfirmation ? { awaitingHumanOfferConfirmation: true } : {}),
+    },
     history,
   };
 }
@@ -294,5 +303,71 @@ describe("o cliente pode desistir do atendente e a Livia volta", () => {
 
     expect(setConversationStatus).not.toHaveBeenCalled();
     expect(think).not.toHaveBeenCalled();
+  });
+});
+
+describe("oferta de humano só transfere após aceite contextual", () => {
+  const OFERTA = "Posso chamar uma pessoa da equipe para te ajudar com isso?";
+
+  it("oferece humano sem silenciar a Lívia ou criar awaiting_human", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot"));
+    think.mockResolvedValue({
+      reply: "Vou chamar uma pessoa da equipe para te ajudar.", handoff: true,
+      booked: false, rescheduled: false, cancelled: false, toolCalls: [],
+    });
+
+    await entregar("qual o valor do tratamento?");
+
+    expect(textosEnviados()).toEqual([OFERTA]);
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, true);
+    expect(upsertPendingTask).not.toHaveBeenCalled();
+  });
+
+  it("aceite após oferta muda bot para handoff e cria awaiting_human sem chamar IA", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot", [botMessage(OFERTA, 1)], true));
+
+    await entregar("pode chamar");
+
+    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, false);
+    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", PHONE, "handoff");
+    expect(upsertPendingTask).toHaveBeenCalledWith("est_odonto", PHONE, PHONE, expect.objectContaining({ type: "awaiting_human" }));
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("recusa após oferta limpa o contexto e mantém a Lívia atendendo", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot", [botMessage(OFERTA, 1)], true));
+
+    await entregar("não precisa");
+
+    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, false);
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(think).toHaveBeenCalled();
+    expect(upsertPendingTask).not.toHaveBeenCalled();
+  });
+
+  it("sem resposta não altera bot nem cria handoff", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot", [botMessage(OFERTA, 1)], true));
+
+    // Não existe POST do cliente: o estado persistido continua apenas como
+    // oferta pendente, sem qualquer efeito de handoff automático.
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(upsertPendingTask).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it('"sim" sem oferta pendente não inicia handoff', async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("sim");
+
+    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(setAwaitingHumanOfferConfirmation).not.toHaveBeenCalled();
+    expect(think).toHaveBeenCalled();
   });
 });

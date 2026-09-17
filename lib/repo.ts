@@ -1017,6 +1017,19 @@ export async function setConversationStatus(
     .update({ status });
 }
 
+// Persiste apenas o contexto de uma OFERTA de atendimento humano. A mudança
+// para `handoff` continua sendo uma decisão separada do webhook, depois de um
+// pedido explícito ou de um aceite inequívoco do cliente.
+export async function setAwaitingHumanOfferConfirmation(
+  establishmentId: string,
+  conversationId: string,
+  awaiting: boolean,
+): Promise<void> {
+  await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .update({ awaitingHumanOfferConfirmation: awaiting });
+}
+
 // Fecha uma conversa por um motivo não concorrente (despedida social).
 export async function closeConversation(
   establishmentId: string,

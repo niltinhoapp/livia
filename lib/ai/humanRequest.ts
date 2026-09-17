@@ -71,6 +71,16 @@ export function readHumanIntent(text: string): HumanIntent {
   return "none";
 }
 
+// Estas respostas só têm significado positivo quando o webhook já sabe que a
+// Lívia acabou de oferecer ajuda humana. Fora desse contexto, "sim" ou "ok"
+// continuam sendo respostas genéricas e nunca iniciam handoff.
+const ACEITE_DE_OFERTA = /^(sim|ss|s|ok|beleza|pode|pode chamar|quero|chama|chame)$/;
+
+export function acceptsHumanOffer(text: string): boolean {
+  const t = normalizar(text);
+  return ACEITE_DE_OFERTA.test(t);
+}
+
 // A Livia ofereceu chamar alguém nesta mensagem? Serve para dar sentido a um
 // "não" seco: sozinho ele não diz nada, mas logo depois de uma oferta de
 // atendente é uma recusa clara. Mesmo padrão já usado para ler o horário

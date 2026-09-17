@@ -22,6 +22,7 @@ import {
   loadConversation,
   appendMessage,
   setConversationStatus,
+  setAwaitingHumanOfferConfirmation,
   closeConversation,
   tryCloseAutomatedConversation,
   reopenConversation,
@@ -46,7 +47,7 @@ import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/service
 import { findNextAppointment, setStatus, findCustomerNameFromAppointments } from "@/lib/scheduling";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { readConfirmation } from "@/lib/ai/confirmation";
-import { offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
+import { acceptsHumanOffer, offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { declaresAutomatedRecipient, isClearClosingReply, isClearHumanDemand, isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
@@ -321,6 +322,44 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   if (inbound.kind !== "text") {
     logStage("non-text message persisted without AI", { msgId: msg.id, type: inbound.kind });
     return;
+  }
+
+  // Uma oferta de humano não interrompe a Lívia. Só um pedido explícito ou
+  // uma confirmação inequívoca, enquanto a oferta ainda está pendente, pode
+  // mudar `bot` para `handoff`.
+  if (conversation.status === "bot" && conversation.awaitingHumanOfferConfirmation) {
+    const humanIntent = readHumanIntent(customerText);
+    const confirmation = readConfirmation(customerText);
+    const accepted = humanIntent === "asks" || confirmation === "yes" || acceptsHumanOffer(customerText);
+    const declined = humanIntent === "declines" || confirmation === "no";
+
+    if (accepted) {
+      await setAwaitingHumanOfferConfirmation(est.id, conversation.id, false);
+      await setConversationStatus(est.id, conversation.id, "handoff");
+      await upsertPendingTask(est.id, conversation.id, contactPhone, {
+        type: "awaiting_human",
+        waitingFor: "atendimento humano",
+      });
+      await replyAndLog(wa, est.id, conversation.id, contactPhone, "Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.");
+      logStage("customer accepted human offer, handoff started", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+      return;
+    }
+
+    // A recusa e qualquer nova demanda do cliente encerram o contexto da
+    // oferta. Isso impede que um "sim" de outro assunto, numa mensagem futura,
+    // seja interpretado como aceite humano fora de contexto.
+    await setAwaitingHumanOfferConfirmation(est.id, conversation.id, false);
+    if (declined) {
+      logStage("customer declined human offer, Livia continuing", {
+        msgId: msg.id,
+        estId: est.id,
+        conversationId: conversation.id,
+      });
+    }
   }
 
   // Uma conversa fechada por outro bot fica silenciosa até receber uma
@@ -613,9 +652,18 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     await setConversationTask(est.id, conversation.id, null);
   }
 
+  // `handoff` vindo do cérebro ainda pode significar apenas que a IA ofereceu
+  // ajuda humana para uma situação fora do escopo. Handoff imediato só é
+  // autorizado quando o cliente o pediu explicitamente nesta mensagem.
+  const explicitHumanRequest = readHumanIntent(customerText) === "asks";
+  const awaitingHumanOfferConfirmation = handoff && !explicitHumanRequest;
+  const replyToSend = awaitingHumanOfferConfirmation
+    ? "Posso chamar uma pessoa da equipe para te ajudar com isso?"
+    : reply;
+
   let sent: { waMessageId?: string };
   try {
-    sent = await sendText(wa, est.id, contactPhone, reply);
+    sent = await sendText(wa, est.id, contactPhone, replyToSend);
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar
@@ -631,7 +679,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     throw err;
   }
   logStage("WhatsApp send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
-  await appendMessage(est.id, conversation.id, "bot", reply, sent.waMessageId);
+  await appendMessage(est.id, conversation.id, "bot", replyToSend, sent.waMessageId);
 
   // Fase 4: deriva e persiste o próximo estado da tarefa a partir do que a
   // IA realmente fez nesta rodada — nunca do que ela disse que faria.
@@ -679,7 +727,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     lastService: bookedServiceName,
   });
 
-  if (handoff) {
+  if (awaitingHumanOfferConfirmation) {
+    await setAwaitingHumanOfferConfirmation(est.id, conversation.id, true);
+  } else if (handoff) {
     // "handoff" != "human": a Livia identificou que precisa de atendente e
     // PAROU de responder sozinha, mas ninguém assumiu ainda — só um clique
     // em "Assumir conversa" em /painel/conversas vira "human" de verdade.
@@ -693,7 +743,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // reaproveitado (id = conversationId, ver lib/repo.ts).
   const pendingDraft = derivePendingTask({
     intent: detectedIntent,
-    handoffActive: handoff,
+    handoffActive: handoff && !awaitingHumanOfferConfirmation,
     task: nextTask,
     operationCompleted,
   });
@@ -706,7 +756,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // Fase 2: resumo só nos momentos relevantes (handoff ou uma operação de
   // agendamento concluída) — nunca a cada mensagem, pelo custo de mais uma
   // chamada de IA.
-  if (handoff || operationCompleted) {
+  if ((handoff && !awaitingHumanOfferConfirmation) || operationCompleted) {
     const summary = await summarizeConversation(contactName, historyForAI, {
       kind: handoff ? "handoff" : "booked",
     });

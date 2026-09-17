@@ -227,6 +227,10 @@ export interface Conversation {
   // "human" = um atendente assumiu a conversa (assumir/devolver no painel) ·
   // "closed" = encerrada automaticamente.
   status: "bot" | "handoff" | "human" | "closed";
+  // A Lívia ofereceu atendimento humano, mas o cliente ainda não confirmou.
+  // Enquanto este marcador existir, a conversa continua em "bot": uma oferta
+  // não pode silenciar a automação nem criar uma pendência de humano.
+  awaitingHumanOfferConfirmation?: boolean;
   // A automação fica silenciosa até uma demanda humana inequívoca, avaliada
   // deterministicamente no webhook.
   closedReason?: "social_farewell" | "automated_recipient";
