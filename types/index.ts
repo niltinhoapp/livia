@@ -492,10 +492,26 @@ export type MessageKind =
 export interface MessageMedia {
   metaMediaId?: string;
   mimeType?: string;
+  filename?: string;
   sha256?: string;
   fileSizeBytes?: number;
   voice?: boolean;
   storageRef?: string;
+}
+
+export type AttachmentType = "image" | "document" | "audio";
+
+// O binário vive no Storage privado. O documento da mensagem guarda apenas
+// a referência e os metadados mínimos necessários para o painel humano.
+export interface MessageAttachment {
+  id: string;
+  type: AttachmentType;
+  mimeType: string;
+  filename: string;
+  sizeBytes: number;
+  metaMediaId: string;
+  storageRef: string;
+  createdAt: number;
 }
 
 export interface MessageTranscription {
@@ -519,5 +535,6 @@ export interface Message {
   kind?: MessageKind;
   phoneNumberId?: string;
   media?: MessageMedia;
+  attachment?: MessageAttachment;
   transcription?: MessageTranscription;
 }

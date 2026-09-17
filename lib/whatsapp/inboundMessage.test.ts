@@ -47,6 +47,15 @@ describe("parseInboundMessage", () => {
     expect(parsed).toMatchObject({ kind: type, text, media: { metaMediaId: `media.${type}` } });
   });
 
+  it("preserva apenas o filename do documento para o painel", () => {
+    const parsed = parseInboundMessage({
+      ...base,
+      type: "document",
+      document: { id: "media.document", mime_type: "application/pdf", filename: "laudo.pdf" },
+    });
+    expect(parsed.media).toMatchObject({ metaMediaId: "media.document", filename: "laudo.pdf" });
+  });
+
   it("normaliza localização sem coordenadas ou endereço", () => {
     expect(parseInboundMessage({ ...base, type: "location", location: { latitude: -22.3, longitude: -49.0 } })).toMatchObject({
       kind: "location", text: "[Localização recebida]",

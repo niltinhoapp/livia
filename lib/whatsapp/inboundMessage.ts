@@ -21,6 +21,7 @@ export interface MetaInboundMessage {
 interface MetaMedia {
   id?: string;
   mime_type?: string;
+  filename?: string;
   sha256?: string;
   file_size?: number;
   voice?: boolean;
@@ -50,6 +51,7 @@ function mediaFrom(payload: MetaMedia | undefined): MessageMedia | undefined {
   const media: MessageMedia = {
     ...(payload.id ? { metaMediaId: payload.id } : {}),
     ...(payload.mime_type ? { mimeType: payload.mime_type } : {}),
+    ...(payload.filename ? { filename: payload.filename } : {}),
     ...(payload.sha256 ? { sha256: payload.sha256 } : {}),
     ...(typeof payload.file_size === "number" ? { fileSizeBytes: payload.file_size } : {}),
     ...(typeof payload.voice === "boolean" ? { voice: payload.voice } : {}),

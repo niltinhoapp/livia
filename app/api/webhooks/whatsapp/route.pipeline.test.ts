@@ -36,6 +36,9 @@ const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
 const downloadWhatsAppAudio = vi.fn();
+const downloadWhatsAppMedia = vi.fn();
+const storeConversationAttachment = vi.fn();
+const deleteConversationAttachment = vi.fn();
 const transcribeAudio = vi.fn();
 const detectIntent = vi.fn((_text: string) => ({ type: "general_question", confidence: 0.2, entities: {} }));
 const findNextAppointment = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
@@ -72,7 +75,15 @@ vi.mock("@/lib/whatsapp/client", async (importOriginal) => ({
   sendText: (...a: unknown[]) => sendText(...a),
   markAsRead: (...a: unknown[]) => markAsRead(...a),
   downloadWhatsAppAudio: (...a: unknown[]) => downloadWhatsAppAudio(...a),
+  downloadWhatsAppMedia: (...a: unknown[]) => downloadWhatsAppMedia(...a),
   normalizePhone: (raw: string) => raw.replace(/\D/g, ""),
+}));
+vi.mock("@/lib/attachments/storage", () => ({
+  AttachmentStorageError: class AttachmentStorageError extends Error {
+    constructor(public readonly code: string) { super(code); }
+  },
+  storeConversationAttachment: (...a: unknown[]) => storeConversationAttachment(...a),
+  deleteConversationAttachment: (...a: unknown[]) => deleteConversationAttachment(...a),
 }));
 
 vi.mock("@/lib/ai/brain", () => ({ think: (...a: unknown[]) => think(...a) }));
@@ -185,6 +196,19 @@ beforeEach(() => {
   getPendingTask.mockResolvedValue(null);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
   downloadWhatsAppAudio.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/ogg", sizeBytes: 3 });
+  downloadWhatsAppMedia.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mimeType: "image/jpeg", sizeBytes: 3 });
+  storeConversationAttachment.mockImplementation(async (input: {
+    type: "image" | "document"; mimeType: string; filename?: string; metaMediaId: string;
+  }) => ({
+    id: "attachment-1",
+    type: input.type,
+    mimeType: input.mimeType,
+    filename: input.filename ?? (input.type === "image" ? "anexo.jpg" : "anexo.pdf"),
+    sizeBytes: 3,
+    metaMediaId: input.metaMediaId,
+    storageRef: `establishments/est_odonto/conversations/${PHONE}/attachments/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.${input.type === "image" ? "jpg" : "pdf"}`,
+    createdAt: 10,
+  }));
   transcribeAudio.mockResolvedValue({ text: "Quero marcar uma avaliação amanhã às dez", provider: "openai", model: "gpt-4o-mini-transcribe" });
   detectIntent.mockReturnValue({ type: "general_question", confidence: 0.2, entities: {} });
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
@@ -687,16 +711,92 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["image", "document", "unsupported"])("%s é reconhecido sem interpretação", async (type) => {
-    const payload = payloadMensagem({ type, omitText: true, id: `wamid.${type}` });
+  it("imagem é baixada, armazenada e associada à mensagem sem chegar à IA", async () => {
+    const payload = payloadMensagem({ type: "image", omitText: true, id: "wamid.image" });
     const msg = payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
-    if (type === "image") msg.image = { id: "media.image", mime_type: "image/jpeg" };
-    if (type === "document") msg.document = { id: "media.document", mime_type: "application/pdf" };
+    msg.image = { id: "media.image", mime_type: "image/jpeg", caption: "Olha como ficou" };
 
     await enviarPayload(payload);
 
-    expect(downloadWhatsAppAudio).not.toHaveBeenCalled();
+    expect(downloadWhatsAppMedia).toHaveBeenCalledWith(expect.anything(), "est_odonto", "media.image", "image");
+    expect(storeConversationAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      establishmentId: "est_odonto", conversationId: PHONE, waMessageId: "wamid.image",
+      metaMediaId: "media.image", type: "image", mimeType: "image/jpeg",
+    }));
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "Olha como ficou", "wamid.image", expect.objectContaining({
+      kind: "image",
+      attachment: expect.objectContaining({ type: "image", storageRef: expect.stringContaining("/est_odonto/") }),
+    }));
     expect(transcribeAudio).not.toHaveBeenCalled();
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("PDF preserva filename e metadata na mensagem sem chegar à IA", async () => {
+    downloadWhatsAppMedia.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), mimeType: "application/pdf", sizeBytes: 3 });
+    const payload = payloadMensagem({ type: "document", omitText: true, id: "wamid.document" });
+    const msg = payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    msg.document = { id: "media.document", mime_type: "application/pdf", filename: "laudo.pdf" };
+
+    await enviarPayload(payload);
+
+    expect(storeConversationAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      type: "document", filename: "laudo.pdf", mimeType: "application/pdf",
+    }));
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Documento recebido]", "wamid.document", expect.objectContaining({
+      media: expect.objectContaining({ filename: "laudo.pdf", storageRef: expect.any(String) }),
+      attachment: expect.objectContaining({ type: "document", filename: "laudo.pdf" }),
+    }));
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("falha de download mantém a mensagem, sem storage, IA ou resposta", async () => {
+    downloadWhatsAppMedia.mockRejectedValueOnce(new Error("Meta indisponível"));
+    const payload = payloadMensagem({ type: "image", omitText: true, id: "wamid.image.fail" });
+    (payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>).image = { id: "media.image", mime_type: "image/jpeg" };
+
+    await enviarPayload(payload);
+
+    expect(storeConversationAttachment).not.toHaveBeenCalled();
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Imagem recebida]", "wamid.image.fail", expect.not.objectContaining({ attachment: expect.anything() }));
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("falha de storage mantém a mensagem sem referência quebrada", async () => {
+    storeConversationAttachment.mockRejectedValueOnce(new Error("bucket unavailable"));
+    const payload = payloadMensagem({ type: "document", omitText: true, id: "wamid.document.fail" });
+    (payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>).document = {
+      id: "media.document", mime_type: "application/pdf", filename: "laudo.pdf",
+    };
+
+    await enviarPayload(payload);
+
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Documento recebido]", "wamid.document.fail", expect.not.objectContaining({ attachment: expect.anything() }));
+    expect(think).not.toHaveBeenCalled();
+  });
+
+  it("falha ao associar mensagem remove o objeto e não mantém storageRef órfão", async () => {
+    appendMessage.mockRejectedValueOnce(new Error("Firestore indisponível")).mockResolvedValueOnce({ id: "msg-fallback", at: 1 });
+    const payload = payloadMensagem({ type: "image", omitText: true, id: "wamid.image.partial" });
+    (payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>).image = {
+      id: "media.image", mime_type: "image/jpeg",
+    };
+
+    await enviarPayload(payload);
+
+    expect(deleteConversationAttachment).toHaveBeenCalledWith(
+      "est_odonto", PHONE, expect.stringContaining("/attachments/"),
+    );
+    expect(appendMessage).toHaveBeenCalledTimes(2);
+    expect(appendMessage.mock.calls[1]?.[5]).not.toHaveProperty("attachment");
+    expect(appendMessage.mock.calls[1]?.[5]?.media).not.toHaveProperty("storageRef");
+  });
+
+  it("unsupported continua reconhecido sem download ou interpretação", async () => {
+    await enviarPayload(payloadMensagem({ type: "unsupported", omitText: true, id: "wamid.unsupported" }));
+    expect(downloadWhatsAppMedia).not.toHaveBeenCalled();
+    expect(storeConversationAttachment).not.toHaveBeenCalled();
     expect(think).not.toHaveBeenCalled();
   });
 
@@ -815,6 +915,23 @@ describe("5 — mensagem duplicada (reentrega da Meta)", () => {
     expect(think).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledTimes(1);
   });
+
+  it("reentrega de imagem pelo mesmo wamid não baixa, armazena ou grava duas vezes", async () => {
+    alreadyProcessed.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const payload = payloadMensagem({ type: "image", omitText: true, id: "wamid.image.dup" });
+    (payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>).image = {
+      id: "media.image", mime_type: "image/jpeg",
+    };
+
+    await enviarPayload(payload);
+    await enviarPayload(payload);
+
+    expect(downloadWhatsAppMedia).toHaveBeenCalledTimes(1);
+    expect(storeConversationAttachment).toHaveBeenCalledTimes(1);
+    expect(appendMessage.mock.calls.filter((c) => c[2] === "customer")).toHaveLength(1);
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
 });
 
 describe("6 — erro da IA", () => {
@@ -930,7 +1047,7 @@ describe("múltiplas mensagens no mesmo POST (batch da Meta)", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
   });
 
-  it("mídia durante atendimento humano permanece somente registrada", async () => {
+  it("mídia durante atendimento humano é anexada sem resposta da Lívia", async () => {
     loadConversation.mockResolvedValue(conversa("human"));
     const image = payloadMensagem({ type: "image", omitText: true });
     const msg = image.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
@@ -942,8 +1059,14 @@ describe("múltiplas mensagens no mesmo POST (batch da Meta)", () => {
     expect(think).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
     expect(upsertPendingTask).not.toHaveBeenCalled();
-    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Imagem recebida]", "wamid.1", {
-      kind: "image", phoneNumberId: "pn_1", media: { metaMediaId: "media.image" },
-    });
+    expect(appendMessage).toHaveBeenCalledWith(
+      "est_odonto", PHONE, "customer", "[Imagem recebida]", "wamid.1",
+      expect.objectContaining({
+        kind: "image",
+        phoneNumberId: "pn_1",
+        media: expect.objectContaining({ metaMediaId: "media.image", storageRef: expect.any(String) }),
+        attachment: expect.objectContaining({ type: "image" }),
+      }),
+    );
   });
 });

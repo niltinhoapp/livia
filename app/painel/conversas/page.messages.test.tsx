@@ -130,3 +130,43 @@ describe("D — ação local (assumir/devolver) atualiza sem esperar o polling e
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true);
   });
 });
+
+describe("E — anexos do atendimento humano", () => {
+  it("renderiza preview autenticado de imagem associado à mensagem", async () => {
+    fetchMock.mockImplementationOnce(() => jsonResponse({
+      conversation: { status: "bot" },
+      messages: [{
+        id: "msg-image", role: "customer", text: "Olha como ficou", at: 2,
+        attachment: {
+          id: "att-image", type: "image", mimeType: "image/jpeg", filename: "foto.jpg", sizeBytes: 10,
+          metaMediaId: "media-image", storageRef: "private/image", createdAt: 2,
+        },
+      }],
+    }));
+
+    render(<ConversationDetail conversation={conversation({ id: "conv image" })} onBack={() => {}} onStatusChanged={() => {}} />);
+
+    const preview = await screen.findByAltText("Imagem: foto.jpg");
+    expect(preview.getAttribute("src")).toBe("/api/conversations/conv%20image/messages/msg-image/attachment");
+    expect(screen.getByText("Olha como ficou")).toBeTruthy();
+  });
+
+  it("renderiza documento com nome e acesso controlado", async () => {
+    fetchMock.mockImplementationOnce(() => jsonResponse({
+      conversation: { status: "human" },
+      messages: [{
+        id: "msg-pdf", role: "customer", text: "[Documento recebido]", at: 3,
+        attachment: {
+          id: "att-pdf", type: "document", mimeType: "application/pdf", filename: "laudo.pdf", sizeBytes: 20,
+          metaMediaId: "media-pdf", storageRef: "private/pdf", createdAt: 3,
+        },
+      }],
+    }));
+
+    render(<ConversationDetail conversation={conversation({ id: "conv-1", status: "human" })} onBack={() => {}} onStatusChanged={() => {}} />);
+
+    const filename = await screen.findByText("laudo.pdf");
+    expect(filename.closest("a")?.getAttribute("href")).toBe("/api/conversations/conv-1/messages/msg-pdf/attachment");
+    expect(screen.getByText("Abrir")).toBeTruthy();
+  });
+});

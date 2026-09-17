@@ -4,8 +4,8 @@
 // ConversationDetail` lá quebrava `tsc --noEmit` via .next/types). Nenhuma
 // mudança de comportamento nesta extração, só de arquivo.
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, GraduationCap, UserCheck, AlertCircle, Bot } from "lucide-react";
-import type { Conversation, Message } from "@/types";
+import { ArrowLeft, GraduationCap, UserCheck, AlertCircle, Bot, FileText } from "lucide-react";
+import type { Conversation, Message, MessageAttachment } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { Avatar } from "@/components/ui/Avatar";
@@ -128,6 +128,7 @@ export function ConversationDetail({
               <MessageBubble
                 key={m.id}
                 message={m}
+                conversationId={conversation.id}
                 // Pergunta do cliente logo antes desta resposta — pré-
                 // preenche o formulário de correção; ausente se a resposta
                 // não veio logo depois de uma mensagem do cliente.
@@ -166,10 +167,12 @@ export function ConversationDetail({
 
 function MessageBubble({
   message,
+  conversationId,
   precedingCustomerText,
   onCorrect,
 }: {
   message: Message;
+  conversationId: string;
   precedingCustomerText?: string;
   onCorrect: (question: string | undefined) => void;
 }) {
@@ -186,6 +189,13 @@ function MessageBubble({
                 : "rounded-br-sm bg-primary text-white"
           }`}
         >
+          {message.attachment && (
+            <AttachmentView
+              attachment={message.attachment}
+              conversationId={conversationId}
+              messageId={message.id}
+            />
+          )}
           <p className="whitespace-pre-wrap">{message.text}</p>
           <p className={`mt-1 text-[11px] ${fromCustomer ? "text-ink-400" : "text-white/70"}`}>
             {new Date(message.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
@@ -202,5 +212,43 @@ function MessageBubble({
         )}
       </div>
     </div>
+  );
+}
+
+function AttachmentView({
+  attachment,
+  conversationId,
+  messageId,
+}: {
+  attachment: MessageAttachment;
+  conversationId: string;
+  messageId: string;
+}) {
+  const href = `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/attachment`;
+
+  if (attachment.type === "image") {
+    return (
+      <a href={href} target="_blank" rel="noreferrer" className="mb-2 block" aria-label={`Abrir ${attachment.filename}`}>
+        <img
+          src={href}
+          alt={`Imagem: ${attachment.filename}`}
+          loading="lazy"
+          className="max-h-64 w-auto max-w-full rounded-control border border-black/10 object-contain"
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="mb-2 flex items-center gap-2 rounded-control border border-black/10 bg-white/70 p-2 text-ink-800 hover:bg-white"
+    >
+      <FileText className="h-5 w-5" />
+      <span className="min-w-0 flex-1 truncate font-medium">{attachment.filename}</span>
+      <span className="text-xs font-semibold">Abrir</span>
+    </a>
   );
 }

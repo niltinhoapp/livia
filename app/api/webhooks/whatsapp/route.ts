@@ -40,8 +40,14 @@ import {
   sendText,
   markAsRead,
   downloadWhatsAppAudio,
+  downloadWhatsAppMedia,
   WhatsAppMediaError,
 } from "@/lib/whatsapp/client";
+import {
+  AttachmentStorageError,
+  deleteConversationAttachment,
+  storeConversationAttachment,
+} from "@/lib/attachments/storage";
 import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
@@ -65,6 +71,7 @@ import type {
   ConversationTask,
   CustomerProfile,
   MessageMedia,
+  MessageAttachment,
   MessageTranscription,
 } from "@/types";
 
@@ -97,6 +104,11 @@ function logStage(stage: string, data?: Record<string, unknown>) {
 
 function audioErrorCode(err: unknown): string {
   if (err instanceof WhatsAppMediaError || err instanceof AudioTranscriptionError) return err.code;
+  return "unexpected_error";
+}
+
+function attachmentErrorCode(err: unknown): string {
+  if (err instanceof WhatsAppMediaError || err instanceof AttachmentStorageError) return err.code;
   return "unexpected_error";
 }
 
@@ -319,6 +331,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   const contactName = value.contacts?.[0]?.profile?.name ?? null;
   let customerText = inbound.text;
   let persistedMedia: MessageMedia | undefined = inbound.media;
+  let attachment: MessageAttachment | undefined;
   let transcription: MessageTranscription | undefined;
 
   // Marca como lida (feedback visual pro cliente).
@@ -329,6 +342,78 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     contactPhone,
     contactName,
   );
+
+  // Imagem/documento são anexos para atendimento humano, nunca entrada
+  // multimodal da IA. O arquivo vai ao Storage privado e a mensagem recebe
+  // só metadata + referência tenant-scoped. Em qualquer falha, a mensagem
+  // ainda é persistida sem anexo para não desaparecer da conversa.
+  if (inbound.kind === "image" || inbound.kind === "document") {
+    const startedAt = Date.now();
+    try {
+      const mediaId = inbound.media?.metaMediaId;
+      const waMessageId = inbound.waMessageId;
+      if (!mediaId) throw new WhatsAppMediaError("missing_media_id");
+      if (!waMessageId) throw new AttachmentStorageError("invalid_storage_scope");
+
+      const downloaded = await downloadWhatsAppMedia(wa, est.id, mediaId, inbound.kind);
+      attachment = await storeConversationAttachment({
+        establishmentId: est.id,
+        conversationId: conversation.id,
+        waMessageId,
+        metaMediaId: mediaId,
+        type: inbound.kind,
+        mimeType: downloaded.mimeType,
+        filename: inbound.media?.filename,
+        bytes: downloaded.bytes,
+      });
+      persistedMedia = {
+        ...inbound.media,
+        mimeType: downloaded.mimeType,
+        fileSizeBytes: downloaded.sizeBytes,
+        storageRef: attachment.storageRef,
+      };
+
+      try {
+        await appendMessage(est.id, conversation.id, "customer", inbound.text, inbound.waMessageId, {
+          kind: inbound.kind,
+          phoneNumberId: value.metadata.phone_number_id,
+          media: persistedMedia,
+          attachment,
+        });
+      } catch (err) {
+        await deleteConversationAttachment(est.id, conversation.id, attachment.storageRef);
+        const { storageRef: _removedStorageRef, ...mediaWithoutStorageRef } = persistedMedia;
+        persistedMedia = mediaWithoutStorageRef;
+        attachment = undefined;
+        throw err;
+      }
+
+      logStage("attachment stored", {
+        msgId: msg.id,
+        estId: est.id,
+        sourceType: inbound.kind,
+        sizeBytes: downloaded.sizeBytes,
+        mimeType: downloaded.mimeType,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    } catch (err) {
+      await appendMessage(est.id, conversation.id, "customer", inbound.text, inbound.waMessageId, {
+        kind: inbound.kind,
+        phoneNumberId: value.metadata.phone_number_id,
+        ...(persistedMedia ? { media: persistedMedia } : {}),
+      });
+      logStage("attachment processing failed", {
+        msgId: msg.id,
+        estId: est.id,
+        sourceType: inbound.kind,
+        errorCode: attachmentErrorCode(err),
+        ...(err instanceof WhatsAppMediaError && err.status !== undefined ? { httpStatus: err.status } : {}),
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+  }
 
   // Áudio vira texto ANTES de entrar no pipeline conversacional. O binário
   // fica apenas em memória durante download/transcrição; o histórico recebe
@@ -419,6 +504,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     kind: inbound.kind,
     phoneNumberId: value.metadata.phone_number_id,
     ...(persistedMedia ? { media: persistedMedia } : {}),
+    ...(attachment ? { attachment } : {}),
     ...(transcription ? { transcription } : {}),
   });
 
