@@ -330,9 +330,88 @@ export interface CustomerProfile {
   lastService: string | null;
   lastIntent: IntentType | null;
   notes: string | null; // observação livre, só editável manualmente (painel futuro) — nunca escrita pela IA
+  // Marketing é independente do atendimento: opt-out nunca silencia a
+  // conversa, CRM, agenda ou handoff. A ausência é legado e é tratada como
+  // inelegível até haver uma decisão explícita de elegibilidade.
+  marketingStatus?: MarketingStatus;
+  marketingStatusUpdatedAt?: number;
+  marketingOptOutAt?: number;
+  marketingOptOutReason?: string;
   lastInteractionAt: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export type MarketingStatus = "eligible" | "opted_out" | "blocked";
+
+// ---- Campanhas de marketing ----
+// Fundação tenant-scoped. Campanhas-02 não cria recipients nem envia nada.
+export type CampaignStatus = "draft" | "scheduled" | "running" | "completed" | "canceled";
+
+export interface CampaignTemplateSnapshot {
+  name: string;
+  languageCode: string;
+}
+
+export interface CampaignAudienceSnapshot {
+  // A seleção materializada e os filtros entram em Campanhas-04. Este campo
+  // só reserva o contrato para que o dispatcher nunca precise inferir a
+  // audiência a partir da UI.
+  eligibleRecipientCount: number;
+  selectedAt: number;
+}
+
+export interface CampaignCounters {
+  total: number;
+  queued: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  replied: number;
+  skipped: number;
+}
+
+export interface Campaign {
+  id: string;
+  establishmentId: string;
+  name: string;
+  status: CampaignStatus;
+  template?: CampaignTemplateSnapshot;
+  audience?: CampaignAudienceSnapshot;
+  scheduledAt: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  counters: CampaignCounters;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Contrato reservado para o dispatcher futuro. Não há escrita de recipients
+// nesta OT; o documento ficará em establishments/{id}/campaignRecipients.
+export type CampaignRecipientStatus =
+  | "queued"
+  | "leased"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "replied"
+  | "skipped";
+
+export interface CampaignRecipient {
+  id: string;
+  establishmentId: string;
+  campaignId: string;
+  customerPhone: string;
+  status: CampaignRecipientStatus;
+  metaMessageId?: string;
+  sentAt?: number;
+  deliveredAt?: number;
+  readAt?: number;
+  failedAt?: number;
+  repliedAt?: number;
+  failureReason?: string;
 }
 
 // Objetivo principal detectado numa mensagem do cliente. Classificação
