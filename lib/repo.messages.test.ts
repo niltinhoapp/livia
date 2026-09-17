@@ -41,4 +41,25 @@ describe("appendMessage V2", () => {
       }),
     ]);
   });
+
+  it("associa attachment à mensagem sem persistir binário", async () => {
+    await criarConversa();
+    await appendMessage("est", "conv", "customer", "[Documento recebido]", "wamid.document", {
+      kind: "document",
+      attachment: {
+        id: "attachment-1",
+        type: "document",
+        mimeType: "application/pdf",
+        filename: "laudo.pdf",
+        sizeBytes: 123,
+        metaMediaId: "media-1",
+        storageRef: "establishments/est/conversations/conv/attachments/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
+        createdAt: 1,
+      },
+    });
+
+    const [message] = await listMessages("est", "conv");
+    expect(message?.attachment).toMatchObject({ filename: "laudo.pdf", sizeBytes: 123 });
+    expect(JSON.stringify(message)).not.toContain("%PDF");
+  });
 });
