@@ -14,6 +14,7 @@ import type { EstablishmentWhatsapp } from "@/types";
 const GRAPH = "https://graph.facebook.com/v22.0";
 
 export const MAX_INBOUND_AUDIO_BYTES = 16 * 1024 * 1024;
+export const MAX_INBOUND_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
 
 const ALLOWED_AUDIO_MIME_TYPES = new Set([
@@ -26,6 +27,19 @@ const ALLOWED_AUDIO_MIME_TYPES = new Set([
   "audio/wav",
   "audio/webm",
 ]);
+
+const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
+
+export type DownloadableWhatsAppMediaKind = "audio" | "image" | "document";
 
 export type WhatsAppMediaErrorCode =
   | "missing_media_id"
@@ -113,9 +127,15 @@ function baseMimeType(value: string | null | undefined): string | null {
   return mime || null;
 }
 
-function assertAllowedAudioMime(value: string | null | undefined): string {
+function allowedMimeTypes(kind: DownloadableWhatsAppMediaKind): Set<string> {
+  if (kind === "audio") return ALLOWED_AUDIO_MIME_TYPES;
+  if (kind === "image") return ALLOWED_IMAGE_MIME_TYPES;
+  return ALLOWED_DOCUMENT_MIME_TYPES;
+}
+
+function assertAllowedMime(value: string | null | undefined, kind: DownloadableWhatsAppMediaKind): string {
   const mime = baseMimeType(value);
-  if (!mime || !ALLOWED_AUDIO_MIME_TYPES.has(mime)) {
+  if (!mime || !allowedMimeTypes(kind).has(mime)) {
     throw new WhatsAppMediaError("unsupported_mime");
   }
   return mime;
@@ -152,9 +172,9 @@ async function withMediaTimeout<T>(operation: (signal: AbortSignal) => Promise<T
   }
 }
 
-async function readLimitedBody(response: Response): Promise<Uint8Array> {
+async function readLimitedBody(response: Response, maxBytes: number): Promise<Uint8Array> {
   const advertisedLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(advertisedLength) && advertisedLength > MAX_INBOUND_AUDIO_BYTES) {
+  if (Number.isFinite(advertisedLength) && advertisedLength > maxBytes) {
     throw new WhatsAppMediaError("file_too_large");
   }
 
@@ -167,7 +187,7 @@ async function readLimitedBody(response: Response): Promise<Uint8Array> {
     if (done) break;
     if (!value?.byteLength) continue;
     total += value.byteLength;
-    if (total > MAX_INBOUND_AUDIO_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel().catch(() => undefined);
       throw new WhatsAppMediaError("file_too_large");
     }
@@ -187,10 +207,27 @@ async function readLimitedBody(response: Response): Promise<Uint8Array> {
 // Fluxo oficial da Cloud API: resolve o media_id em uma URL temporária e
 // baixa essa URL com o mesmo Bearer token. O binário só existe em memória e
 // nunca é devolvido ao browser, persistido ou logado.
-export async function downloadWhatsAppAudio(
+function hasPrefix(bytes: Uint8Array, prefix: number[]): boolean {
+  return prefix.every((value, index) => bytes[index] === value);
+}
+
+function validateMediaSignature(bytes: Uint8Array, mimeType: string): void {
+  const valid =
+    mimeType === "image/jpeg" ? hasPrefix(bytes, [0xff, 0xd8, 0xff]) :
+    mimeType === "image/png" ? hasPrefix(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) :
+    mimeType === "application/pdf" ? hasPrefix(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]) :
+    mimeType.includes("openxmlformats-officedocument") ? hasPrefix(bytes, [0x50, 0x4b, 0x03, 0x04]) :
+    ["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"].includes(mimeType)
+      ? hasPrefix(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+      : true;
+  if (!valid) throw new WhatsAppMediaError("unsupported_mime");
+}
+
+export async function downloadWhatsAppMedia(
   wa: EstablishmentWhatsapp,
   establishmentId: string,
   mediaId: string,
+  kind: DownloadableWhatsAppMediaKind,
 ): Promise<DownloadedWhatsAppMedia> {
   if (!mediaId.trim()) throw new WhatsAppMediaError("missing_media_id");
   const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
@@ -210,23 +247,33 @@ export async function downloadWhatsAppAudio(
   if (!isAllowedMetaMediaUrl(metadata.url)) throw new WhatsAppMediaError("invalid_media_url");
 
   const declaredSize = typeof metadata.file_size === "number" ? metadata.file_size : null;
-  if (declaredSize !== null && declaredSize > MAX_INBOUND_AUDIO_BYTES) {
+  const maxBytes = kind === "audio" ? MAX_INBOUND_AUDIO_BYTES : MAX_INBOUND_ATTACHMENT_BYTES;
+  if (declaredSize !== null && declaredSize > maxBytes) {
     throw new WhatsAppMediaError("file_too_large");
   }
   if (declaredSize === 0) throw new WhatsAppMediaError("empty_file");
   const declaredMime =
-    typeof metadata.mime_type === "string" ? assertAllowedAudioMime(metadata.mime_type) : null;
+    typeof metadata.mime_type === "string" ? assertAllowedMime(metadata.mime_type, kind) : null;
 
   return withMediaTimeout(async (signal) => {
     const download = await fetch(metadata.url as string, { headers: authorization, signal });
     if (!download.ok) throw new WhatsAppMediaError("meta_download_failed", download.status);
-    const responseMime = assertAllowedAudioMime(download.headers.get("content-type") ?? declaredMime);
+    const responseMime = assertAllowedMime(download.headers.get("content-type") ?? declaredMime, kind);
     if (declaredMime && responseMime !== declaredMime) {
       throw new WhatsAppMediaError("unsupported_mime");
     }
-    const bytes = await readLimitedBody(download);
+    const bytes = await readLimitedBody(download, maxBytes);
+    if (kind !== "audio") validateMediaSignature(bytes, responseMime);
     return { bytes, mimeType: responseMime, sizeBytes: bytes.byteLength };
   });
+}
+
+export async function downloadWhatsAppAudio(
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
+  mediaId: string,
+): Promise<DownloadedWhatsAppMedia> {
+  return downloadWhatsAppMedia(wa, establishmentId, mediaId, "audio");
 }
 
 // Envia texto livre (só válido dentro da janela de 24h aberta pelo cliente).

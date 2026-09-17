@@ -1029,7 +1029,7 @@ export async function appendMessage(
   role: MessageRole,
   text: string,
   waMessageId?: string,
-  metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "transcription">,
+  metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "attachment" | "transcription">,
 ): Promise<{ id: string; at: number }> {
   const convRef = sub(establishmentId, "conversations").doc(conversationId);
   const msgRef = convRef.collection("messages").doc();
@@ -1042,6 +1042,7 @@ export async function appendMessage(
     ...(metadata?.kind ? { kind: metadata.kind } : {}),
     ...(metadata?.phoneNumberId ? { phoneNumberId: metadata.phoneNumberId } : {}),
     ...(metadata?.media ? { media: metadata.media } : {}),
+    ...(metadata?.attachment ? { attachment: metadata.attachment } : {}),
     ...(metadata?.transcription ? { transcription: metadata.transcription } : {}),
   };
   await msgRef.set(msg);
@@ -1218,6 +1219,19 @@ export async function listMessages(
     .limit(limitCount)
     .get();
   return snap.docs.map((d) => d.data() as Message).reverse();
+}
+
+export async function getMessage(
+  establishmentId: string,
+  conversationId: string,
+  messageId: string,
+): Promise<Message | null> {
+  const doc = await sub(establishmentId, "conversations")
+    .doc(conversationId)
+    .collection("messages")
+    .doc(messageId)
+    .get();
+  return doc.exists ? (doc.data() as Message) : null;
 }
 
 // Apaga TODAS as conversas (e suas mensagens) de UM estabelecimento — usado
