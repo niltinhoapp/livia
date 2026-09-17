@@ -146,53 +146,6 @@ const getBusinessHours: ToolDefinition = {
   },
 };
 
-// ---- searchKnowledgeBase ----
-// A base de conhecimento inteira já entra no prompt (lib/ai/brain.ts:
-// knowledgeToText) — esta ferramenta não existe pra reduzir tokens, existe
-// pra dar uma resposta ESTRUTURADA (e citável) quando a IA precisa apontar
-// exatamente de onde tirou um preço/serviço/FAQ, em vez de reformular o bloco
-// de texto livre. Busca determinística (substring), sem custo de IA.
-const searchKnowledgeBase: ToolDefinition = {
-  name: "search_knowledge_base",
-  enabled: () => true,
-  schema: fn(
-    "search_knowledge_base",
-    "Busca na base de conhecimento cadastrada (serviços, FAQs, observações) por um termo. Use para confirmar um dado específico antes de afirmá-lo.",
-    {
-      type: "object",
-      properties: { query: { type: "string", description: "Termo de busca, ex.: nome de um serviço" } },
-      required: ["query"],
-    },
-  ),
-  async execute(ctx, args) {
-    const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
-    if (!query) return { ok: false, error: "query vazia" };
-    if (!ctx.kb) return { ok: true, data: { matches: [], note: "Nenhuma base de conhecimento cadastrada." } };
-
-    const matches: { source: string; text: string }[] = [];
-    for (const s of ctx.kb.services ?? []) {
-      const hay = `${s.name} ${s.description ?? ""}`.toLowerCase();
-      if (hay.includes(query)) {
-        matches.push({
-          source: "service",
-          text: [s.name, s.priceText ? `preço: ${s.priceText}` : null, s.durationText ? `duração: ${s.durationText}` : null]
-            .filter(Boolean)
-            .join(" | "),
-        });
-      }
-    }
-    for (const f of ctx.kb.faqs ?? []) {
-      if (`${f.question} ${f.answer}`.toLowerCase().includes(query)) {
-        matches.push({ source: "faq", text: `P: ${f.question}\nR: ${f.answer}` });
-      }
-    }
-    if (ctx.kb.notes?.toLowerCase().includes(query)) {
-      matches.push({ source: "notes", text: ctx.kb.notes });
-    }
-    return { ok: true, data: { matches: matches.slice(0, 5) } };
-  },
-};
-
 // ---- getCustomerProfile / updateCustomerProfile ----
 // O perfil já é injetado no prompt como fonte de verdade (Pacote 1); esta
 // ferramenta existe pra IA poder reconsultar sob demanda (ex.: depois de uma
@@ -605,7 +558,6 @@ const requestHumanHandoff: ToolDefinition = {
 
 export const TOOL_REGISTRY: ToolDefinition[] = [
   getBusinessHours,
-  searchKnowledgeBase,
   getCustomerProfileTool,
   updateCustomerProfile,
   getCustomerAppointments,
