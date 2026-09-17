@@ -137,21 +137,38 @@ Enquanto cobrança e suporte estão sendo preparados, novos clientes podem entra
 
 # 4. Billing
 
-O provedor financeiro inicial será o Asaas.
+O provedor financeiro inicial é o Asaas.
 
-A arquitetura deve manter regras comerciais dentro da Lívia e usar Asaas como provedor de pagamento.
+A arquitetura mantém regras comerciais dentro da Lívia e usa Asaas como provedor de pagamento.
 
-Preparar desde o início:
+**Decisão comercial do MVP (registrada na OT-07B):**
 
-- planos;
-- assinatura;
-- benefícios;
-- descontos;
-- período grátis/cortesia quando aplicável;
-- inadimplência;
-- suspensão;
-- reativação;
-- webhooks idempotentes.
+- um único plano contratável: **Lívia — R$ 129,00/mês**;
+- 7 dias grátis;
+- cobrança recorrente mensal;
+- libera as funcionalidades atuais da Lívia, sem feature gating entre planos nesta fase;
+- Pro e Premium permanecem apenas como apresentação visual "Em breve" no frontend, sem gerar checkout ou assinatura;
+- campanhas de marketing ainda não fazem parte deste MVP.
+
+Esta decisão é o escopo comercial válido até que uma nova OT a altere — não inventar preços, planos ou limites além do que está registrado aqui.
+
+**Já implementado (auditado na OT-07A, `main`):**
+
+- client Asaas (`lib/billing/asaas.ts`) — sandbox e produção, validação de prefixo de chave por ambiente;
+- provisioning de customer/subscription (`lib/billing/provisioning.ts`);
+- state machine de `billingStatus` (`lib/billing/stateMachine.ts`);
+- tradução de eventos Asaas → eventos de domínio (`lib/billing/asaasWebhookEvents.ts`);
+- webhook Asaas com processamento atômico e idempotente (`app/api/webhooks/asaas/route.ts` + `lib/billing/asaasWebhookProcessing.ts`);
+- homologação Sandbox do provisioning já realizada (harness administrativo, `lib/billing/asaasSandboxHarness.ts`).
+
+**Ainda pendente (não confundir com "a preparar do zero"):**
+
+- plano único do MVP (Lívia, R$129,00/mês, ciclo mensal, 7 dias grátis) ainda não existe como fluxo comercial real — hoje `app/painel/plano` é mockup visual, sem checkout;
+- inicialização automática do trial (`trialStartAt`/`trialEndsAt`) no cadastro do establishment;
+- ligação entre `billingStatus` e controle de acesso real (painel e WhatsApp) — hoje nenhuma rota consome `billingStatus`;
+- expiração automática de trial/grace period (suspensão automática) — a state machine suporta, mas nada aciona hoje;
+- homologação E2E pelo fluxo real de produto (a homologação existente usa o harness administrativo, não o caminho que um cliente percorreria);
+- ativação do Asaas Production.
 
 Não desconectar Meta/WhatsApp por inadimplência. O acesso deve ser controlado pela Lívia preservando conexão e dados.
 

@@ -96,6 +96,13 @@ Depois da fundação e do primeiro avanço funcional de atendimento:
 - suspensão e reativação dentro da Lívia;
 - preservar dados e conexão Meta/WhatsApp.
 
+Nota (OT-07B, auditoria OT-07A em `main` 56c2f127278659cb45622e017bd08ad118447842):
+integração Asaas desacoplada do domínio e webhooks idempotentes já estão
+implementados e mergeados (ver `README.md` §4), à frente desta sequência —
+a ordem acima não reflete mais o estado real de execução. `Plan`/`Subscription`/
+`Benefit` como entidades de produto, trial/cortesia/desconto e
+suspensão/reativação automáticas seguem pendentes.
+
 ## V2.3 — Imagem e documentos
 
 Expandir multimídia após o fluxo de áudio estar estabilizado:
