@@ -19,7 +19,6 @@ import {
   assertBookable,
   resolveServiceDuration,
   type NotBookableReason,
-  findNextAppointment,
   updateAppointment,
   setStatus,
   weekdayOf,
@@ -363,7 +362,7 @@ const confirmAppointment: ToolDefinition = {
       properties: {
         appointmentId: {
           type: "string",
-          description: "id vindo de get_customer_appointments. Se omitido, confirma o próximo agendamento ativo.",
+          description: "id vindo de get_customer_appointments; obrigatório quando o cliente tem mais de um agendamento ativo.",
         },
       },
     },
@@ -379,7 +378,23 @@ const confirmAppointment: ToolDefinition = {
       // vindo do modelo nunca pode alcançar o agendamento de outra pessoa.
       if (found && normalizePhone(found.contactPhone) === phone) target = found;
     } else {
-      target = await findNextAppointment(ctx.est.id, phone);
+      const ativos = await listActiveCustomerAppointments(ctx.est.id, phone, Date.now());
+      if (ativos.length > 1) {
+        return {
+          ok: false,
+          error:
+            "o cliente tem mais de um agendamento ativo; pergunte QUAL deles ele quer confirmar e chame de novo com appointmentId",
+          data: {
+            appointments: ativos.map((a) => ({
+              id: a.id,
+              serviceName: a.serviceName,
+              when: formatWhen(a.startAt, config.utcOffsetMinutes),
+              status: a.status,
+            })),
+          },
+        };
+      }
+      target = ativos[0] ?? null;
     }
 
     if (!target) return { ok: false, error: "nenhum agendamento ativo encontrado para confirmar" };

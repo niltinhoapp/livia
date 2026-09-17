@@ -18,14 +18,12 @@ const AMANHA_09H = HOJE_09H + 24 * 3600000;
 const AGORA = new Date("2026-09-03T17:00:00.000Z").getTime();
 
 const listActiveCustomerAppointments = vi.fn();
-const findNextAppointment = vi.fn();
 const getAppointment = vi.fn();
 const setStatus = vi.fn();
 
 vi.mock("@/lib/scheduling", () => ({
   listActiveCustomerAppointments: (...a: unknown[]) => listActiveCustomerAppointments(...a),
   listCustomerAppointments: vi.fn(async () => []),
-  findNextAppointment: (...a: unknown[]) => findNextAppointment(...a),
   getAppointment: (...a: unknown[]) => getAppointment(...a),
   setStatus: (...a: unknown[]) => setStatus(...a),
   getScheduleConfig: async (): Promise<ScheduleConfig> => config,
@@ -180,8 +178,8 @@ describe("get_customer_appointments — a agenda é a fonte de verdade", () => {
 });
 
 describe("confirm_appointment — pending → confirmed só via backend", () => {
-  it("(5) confirma presença chamando setStatus e reportando sucesso", async () => {
-    findNextAppointment.mockResolvedValue(appointment({ status: "pending" }));
+  it("sem id + exatamente um pending: confirma presença normalmente", async () => {
+    listActiveCustomerAppointments.mockResolvedValue([appointment({ status: "pending" })]);
 
     const result = await runTool("confirm_appointment", {}, ctx);
 
@@ -190,13 +188,59 @@ describe("confirm_appointment — pending → confirmed só via backend", () => 
     expect(result.data).toMatchObject({ confirmed: true, day: "hoje" });
   });
 
-  it("(5) sem agendamento para confirmar: falha explícita e NENHUMA mudança de status", async () => {
-    findNextAppointment.mockResolvedValue(null);
+  it("sem id + zero ativos: falha explícita e não confirma", async () => {
+    listActiveCustomerAppointments.mockResolvedValue([]);
 
     const result = await runTool("confirm_appointment", {}, ctx);
 
     expect(result.ok).toBe(false);
     expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("sem id + dois pending: devolve ambiguidade e não confirma", async () => {
+    listActiveCustomerAppointments.mockResolvedValue([
+      appointment({ id: "appt-1", serviceName: "Avaliação", status: "pending" }),
+      appointment({ id: "appt-2", serviceName: "Limpeza", startAt: AMANHA_09H, status: "pending" }),
+    ]);
+
+    const result = await runTool("confirm_appointment", {}, ctx);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/mais de um agendamento ativo/i);
+    expect(result.data).toMatchObject({
+      appointments: [
+        { id: "appt-1", serviceName: "Avaliação", status: "pending" },
+        { id: "appt-2", serviceName: "Limpeza", status: "pending" },
+      ],
+    });
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("sem id + um confirmed e um pending: permanece ambíguo e não retorna alreadyConfirmed", async () => {
+    listActiveCustomerAppointments.mockResolvedValue([
+      appointment({ id: "confirmado", status: "confirmed" }),
+      appointment({ id: "pendente", startAt: AMANHA_09H, status: "pending" }),
+    ]);
+
+    const result = await runTool("confirm_appointment", {}, ctx);
+
+    expect(result.ok).toBe(false);
+    expect(result.data).not.toMatchObject({ alreadyConfirmed: true });
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("id explícito + múltiplos ativos: confirma somente o alvo solicitado", async () => {
+    listActiveCustomerAppointments.mockResolvedValue([
+      appointment({ id: "appt-1" }),
+      appointment({ id: "appt-2", startAt: AMANHA_09H }),
+    ]);
+    getAppointment.mockResolvedValue(appointment({ id: "appt-2", startAt: AMANHA_09H }));
+
+    const result = await runTool("confirm_appointment", { appointmentId: "appt-2" }, ctx);
+
+    expect(result.ok).toBe(true);
+    expect(setStatus).toHaveBeenCalledWith("demo", "appt-2", "confirmed");
+    expect(listActiveCustomerAppointments).not.toHaveBeenCalled();
   });
 
   it("nunca confirma agendamento de outro contato, mesmo com id explícito", async () => {
@@ -209,7 +253,7 @@ describe("confirm_appointment — pending → confirmed só via backend", () => 
   });
 
   it("já confirmado não vira erro nem reconfirma", async () => {
-    findNextAppointment.mockResolvedValue(appointment({ status: "confirmed" }));
+    listActiveCustomerAppointments.mockResolvedValue([appointment({ status: "confirmed" })]);
 
     const result = await runTool("confirm_appointment", {}, ctx);
 
