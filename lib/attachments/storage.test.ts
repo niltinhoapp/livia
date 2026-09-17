@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
   bucket: vi.fn(),
 }));
 
-vi.mock("@/lib/firebase/admin", () => ({ firebaseAdminApp: {} }));
 vi.mock("firebase-admin/storage", () => ({
   getStorage: () => ({ bucket: mocks.bucket }),
 }));

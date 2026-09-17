@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { getStorage } from "firebase-admin/storage";
-import { firebaseAdminApp } from "@/lib/firebase/admin";
 import type { AttachmentType, MessageAttachment } from "@/types";
 
 export type AttachmentStorageErrorCode =
@@ -47,7 +46,10 @@ export function sanitizeAttachmentFilename(value: string | undefined, mimeType: 
 function bucket() {
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET?.trim();
   if (!bucketName) throw new AttachmentStorageError("storage_not_configured");
-  return getStorage(firebaseAdminApp).bucket(bucketName);
+  // O app default é inicializado pelo repositório Firebase no runtime. Não
+  // importe firebase/admin neste módulo: isso criaria credenciais eagerly só
+  // por importar o webhook e quebraria consumidores/testes que nem usam mídia.
+  return getStorage().bucket(bucketName);
 }
 
 function attachmentIdentity(waMessageId: string, metaMediaId: string): string {
