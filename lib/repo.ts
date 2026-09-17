@@ -11,6 +11,7 @@ import type {
   EstablishmentWhatsapp,
   EncryptedToken,
   BotConfig,
+  EstablishmentBilling,
   KnowledgeBase,
   Conversation,
   Message,
@@ -23,6 +24,21 @@ import type {
   KnowledgeCorrection,
   CorrectionCategory,
 } from "@/types";
+
+const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Billing inicial de todo NOVO establishment (OT-07C). trialStartAt e
+// trialEndsAt derivam do mesmo instante `now` — nunca recalculado depois
+// (ver comentário em EstablishmentBilling.trialEndsAt). Só usado na CRIAÇÃO;
+// updates nunca chamam isto de novo.
+export function initialTrialBilling(now: number): EstablishmentBilling {
+  return {
+    billingStatus: "trial",
+    trialStartAt: now,
+    trialEndsAt: now + TRIAL_DAYS_MS,
+    updatedAt: now,
+  };
+}
 
 export function defaultBotConfig(): BotConfig {
   return {
@@ -45,6 +61,7 @@ export async function upsertEstablishmentConfig(
   data: { name?: string; type?: EstablishmentType; bot?: BotConfig },
 ): Promise<Establishment> {
   const existing = await getEstablishment(id);
+  const now = Date.now();
   const merged: Establishment = existing
     ? {
         ...existing,
@@ -58,7 +75,8 @@ export async function upsertEstablishmentConfig(
         type: data.type ?? "outro",
         ownerUid: id, // establishmentId = uid do dono autenticado (1 estabelecimento por conta)
         status: "active",
-        createdAt: Date.now(),
+        createdAt: now,
+        billing: initialTrialBilling(now),
         bot: data.bot ?? defaultBotConfig(),
       };
   await establishmentRef(id).set(merged, { merge: true });
