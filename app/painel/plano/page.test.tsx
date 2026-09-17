@@ -63,6 +63,30 @@ describe("PlanoPage (OT-07D)", () => {
     expect(screen.queryByText("Período de teste")).toBeNull();
   });
 
+  it("card do plano mostra R$129/mês e a oferta de 7 dias grátis", async () => {
+    mockFetchOnce({ establishment: establishment(), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText("R$ 129")).toBeTruthy();
+    expect(screen.getByText(/7 dias grátis/i)).toBeTruthy();
+  });
+
+  it("trial vencido (billingStatus ainda 'trial', trialEndsAt no passado): não aparece como ativo", async () => {
+    const trialEndsAt = Date.now() - 24 * 60 * 60 * 1000;
+    mockFetchOnce({
+      establishment: establishment({
+        billing: { billingStatus: "trial", trialStartAt: trialEndsAt - 7 * 24 * 60 * 60 * 1000, trialEndsAt, updatedAt: 1 },
+      }),
+      exists: true,
+    });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText("Período de teste encerrado")).toBeTruthy();
+    expect(screen.queryByText("Período de teste")).toBeNull();
+    expect(screen.queryByText(/0 dias restantes/)).toBeNull();
+    expect(screen.queryByText(/dias restantes|dia restante/)).toBeNull();
+  });
+
   it("erro de carregamento: mostra aviso, não quebra a página", async () => {
     mockFetchOnce({}, false);
     render(<PlanoPage />);

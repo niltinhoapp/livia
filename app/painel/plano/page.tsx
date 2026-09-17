@@ -49,7 +49,9 @@ export default function PlanoPage() {
   if (loading) return <PlanoSkeleton />;
 
   const billing = establishment?.billing;
-  const isTrial = billing?.billingStatus === "trial" && typeof billing.trialEndsAt === "number";
+  const hasTrialWindow = billing?.billingStatus === "trial" && typeof billing.trialEndsAt === "number";
+  const trialActive = hasTrialWindow && billing!.trialEndsAt! > Date.now();
+  const trialExpired = hasTrialWindow && !trialActive;
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -72,14 +74,17 @@ export default function PlanoPage() {
             <div>
               <div className="flex items-center gap-2">
                 <p className="text-lg font-bold text-ink-900">Lívia</p>
-                {isTrial && <StatusBadge tone="info">Período de teste</StatusBadge>}
+                {trialActive && <StatusBadge tone="info">Período de teste</StatusBadge>}
+                {trialExpired && <StatusBadge tone="warning">Período de teste encerrado</StatusBadge>}
               </div>
-              {isTrial && billing?.trialEndsAt ? (
+              {trialActive && billing?.trialEndsAt ? (
                 <p className="mt-0.5 flex items-center gap-1.5 text-sm text-ink-500">
                   <Clock className="h-3.5 w-3.5" aria-hidden />
                   Termina em {new Date(billing.trialEndsAt).toLocaleDateString("pt-BR")} ·{" "}
                   {daysRemaining(billing.trialEndsAt)} {daysRemaining(billing.trialEndsAt) === 1 ? "dia restante" : "dias restantes"}
                 </p>
+              ) : trialExpired ? (
+                <p className="mt-0.5 text-sm text-ink-500">Seu período de teste terminou.</p>
               ) : (
                 <p className="mt-0.5 text-sm text-ink-500">Ciclo mensal</p>
               )}
@@ -88,6 +93,7 @@ export default function PlanoPage() {
           <div className="text-right">
             <p className="text-2xl font-bold text-ink-900">R$ 129</p>
             <p className="text-xs text-ink-400">por mês</p>
+            {!trialExpired && <p className="mt-1 text-xs text-ink-400">7 dias grátis para começar</p>}
           </div>
         </div>
       </Card>
