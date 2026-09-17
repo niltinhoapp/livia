@@ -3,7 +3,7 @@
 // A frase que originou tudo: a Livia ofereceu atendente, o cliente respondeu
 // "n", e a conversa ficou muda para sempre.
 import { describe, expect, it } from "vitest";
-import { announcesTransfer, offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
+import { acceptsHumanOffer, announcesTransfer, offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 
 describe("pedido explícito de humano", () => {
   it.each([
@@ -83,6 +83,16 @@ describe("reconhecer a oferta da Livia (dá sentido a um 'não' seco)", () => {
     "Os horários disponíveis são 09:00 e 09:30.",
   ])("não confunde resposta normal com oferta: %s", (texto) => {
     expect(offeredHuman(texto)).toBe(false);
+  });
+});
+
+describe("aceite contextual de oferta humana", () => {
+  it.each(["sim", "pode", "pode chamar", "quero", "chama", "ok"])("reconhece %s", (texto) => {
+    expect(acceptsHumanOffer(texto)).toBe(true);
+  });
+
+  it.each(["quero agendar", "talvez", "isso", "atendimento"])("não aceita por palpite: %s", (texto) => {
+    expect(acceptsHumanOffer(texto)).toBe(false);
   });
 });
 
