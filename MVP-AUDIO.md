@@ -93,9 +93,18 @@ Antes do lançamento, validar no fluxo real do WhatsApp pelo menos:
 
 ## Imagem e documentos
 
-Imagem e documentos continuam como evolução separada e não são requisito deste marco de áudio do MVP.
+Imagem e documentos são persistidos em Storage privado e associados à
+mensagem para análise pela equipe humana. O painel sinaliza cada mídia com
+anexo persistido como "Anexo aguardando análise". Essa sinalização é apenas
+operacional: não cria handoff, não pausa a Lívia e não muda o modo da conversa.
 
-Podem ser tratados pelo backend e encaminhados para análise humana enquanto não houver necessidade comprovada de visão multimodal no fluxo automático.
+**Decisão de produto:** a resposta da Lívia ao recebimento de mídia será
+configurável por estabelecimento e não deve ser hardcoded no backend. Cada
+estabelecimento poderá definir se aceita imagens/documentos e qual orientação
+deve ser enviada ao cliente. Essa configuração é requisito futuro e não faz
+parte da sinalização interna atual.
+
+Não há visão multimodal, OCR ou interpretação automática do conteúdo.
 
 ## Regra de implementação
 
