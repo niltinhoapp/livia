@@ -640,6 +640,20 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
     expect(sendText.mock.calls[0]?.[3]).toMatch(/não consegui entender esse áudio/i);
   });
 
+  it.each(["human", "handoff"])("falha de áudio em %s preserva silêncio e fila humana", async (status) => {
+    loadConversation.mockResolvedValueOnce(conversa(status as "human" | "handoff"));
+    transcribeAudio.mockRejectedValueOnce(new Error("provider failure"));
+
+    await enviarPayload(payloadAudio(`wamid.audio.fail.${status}`));
+
+    expect(think).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(upsertPendingTask).toHaveBeenCalledWith("est_odonto", PHONE, PHONE, {
+      type: "awaiting_human",
+      waitingFor: "responder mensagem nova do cliente",
+    });
+  });
+
   it("media_id ausente não baixa, não transcreve e usa o fallback", async () => {
     const audio = payloadAudio("wamid.audio.no-id");
     (audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>).audio = { mime_type: "audio/ogg" };

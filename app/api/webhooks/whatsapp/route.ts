@@ -387,6 +387,26 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
         ...(err instanceof WhatsAppMediaError && err.status !== undefined ? { httpStatus: err.status } : {}),
         durationMs: Date.now() - startedAt,
       });
+
+      // Falha de transcrição não pode furar as guardas já existentes: em
+      // handoff/human a Lívia permanece em silêncio e apenas mantém a fila
+      // humana atualizada. Uma conta suspensa conserva o fallback comercial
+      // já usado pelo fluxo textual, sem revelar o erro técnico de áudio.
+      if (est.status !== "active") {
+        if (!warnedServicePausedRecently(history, Date.now())) {
+          await replyAndLog(wa, est.id, conversation.id, contactPhone, SERVICE_PAUSED_REPLY);
+        }
+        return;
+      }
+      if (conversation.status === "human" || conversation.status === "handoff") {
+        await upsertPendingTask(est.id, conversation.id, contactPhone, {
+          type: "awaiting_human",
+          waitingFor: "responder mensagem nova do cliente",
+        });
+        return;
+      }
+      if (conversation.status === "closed" && conversation.closedReason === "automated_recipient") return;
+
       await replyAndLog(wa, est.id, conversation.id, contactPhone, AUDIO_FAILURE_REPLY);
       return;
     }
