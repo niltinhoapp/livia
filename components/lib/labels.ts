@@ -45,6 +45,7 @@ export const CAMPAIGN_STATUS_LABEL: Record<CampaignStatus, { label: string; tone
 };
 
 export const CAMPAIGN_RECIPIENT_STATUS_LABEL: Record<CampaignRecipientStatus, { label: string; tone: StatusTone }> = {
+  pending: { label: "Pendente", tone: "neutral" },
   queued: { label: "Na fila", tone: "neutral" },
   leased: { label: "Enviando", tone: "info" },
   sent: { label: "Enviado", tone: "info" },
