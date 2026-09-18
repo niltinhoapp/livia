@@ -1039,6 +1039,18 @@ export async function getCampaign(
   return doc.exists ? (doc.data() as Campaign) : null;
 }
 
+export async function listCampaigns(establishmentId: string): Promise<Campaign[]> {
+  const snap = await sub(establishmentId, "campaigns").orderBy("createdAt", "desc").limit(100).get();
+  return snap.docs.map((doc) => doc.data() as Campaign);
+}
+
+export async function listCampaignRecipients(establishmentId: string, campaignId: string): Promise<CampaignRecipient[]> {
+  const campaign = await getCampaign(establishmentId, campaignId);
+  if (!campaign) return [];
+  const snap = await sub(establishmentId, "campaignRecipients").where("campaignId", "==", campaignId).limit(1000).get();
+  return snap.docs.map((doc) => doc.data() as CampaignRecipient);
+}
+
 export type CampaignAudienceSelection = "all_eligible" | "selected";
 export interface PrepareCampaignAudienceInput {
   selection: CampaignAudienceSelection;

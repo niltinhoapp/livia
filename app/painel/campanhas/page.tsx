@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 // Campanhas — front preparado (OT-FRONT-CAMPANHAS-01). Backend
 // (docs/CAMPANHAS.md, CAMPANHAS-02) já define Campaign/CampaignStatus/
 // CampaignCounters em @/types, mas ainda não existe nenhuma rota de API —
@@ -17,8 +18,8 @@ import { EmptyState } from "@/components/ui/States";
 import { CampaignsTable } from "./_components/CampaignsTable";
 
 export default function CampaignsPage() {
-  // Estado real: sem endpoint ainda, a lista começa (e permanece) vazia.
-  const campaigns: Campaign[] = [];
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  useEffect(() => { fetch("/api/campaigns").then((r) => r.ok ? r.json() : Promise.reject()).then((b: { campaigns?: Campaign[] }) => setCampaigns(b.campaigns ?? [])).catch(() => setCampaigns([])); }, []);
 
   const totals = campaigns.reduce(
     (acc, c) => ({
