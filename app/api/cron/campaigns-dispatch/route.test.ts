@@ -27,6 +27,7 @@ describe("GET /api/cron/campaigns-dispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.CRON_SECRET = "s3cr3t";
+    process.env.CAMPAIGNS_SEND_ENABLED = "true";
   });
 
   it("rejeita sem o Bearer CRON_SECRET correto — nunca chama o dispatcher", async () => {
@@ -89,11 +90,20 @@ describe("GET /api/cron/campaigns-dispatch", () => {
     expect(dispatchCampaignBatch).toHaveBeenCalledWith("est-x", "camp-x", { batchSize: 20 });
   });
 
-  it("sem CRON_SECRET configurado, não bloqueia (mesmo comportamento do cron de lembretes)", async () => {
+  it("sem CRON_SECRET configurado, falha fechado", async () => {
     delete process.env.CRON_SECRET;
     dbGet.mockResolvedValue({ docs: [] });
 
     const response = await GET(req("https://example.test/api/cron/campaigns-dispatch"));
+    expect(response.status).toBe(401);
+  });
+
+  it("kill switch fechado impede qualquer leitura ou dispatcher", async () => {
+    process.env.CAMPAIGNS_SEND_ENABLED = "false";
+    const response = await GET(req("https://example.test/api/cron/campaigns-dispatch"));
     expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ enabled: false, processed: 0 });
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dispatchCampaignBatch).not.toHaveBeenCalled();
   });
 });

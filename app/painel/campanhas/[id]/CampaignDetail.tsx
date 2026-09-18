@@ -9,12 +9,15 @@
 //   - GET /api/campaigns/:id/recipients -> { recipients: CampaignRecipient[] }
 import Link from "next/link";
 import { ArrowLeft, Megaphone } from "lucide-react";
+import { useState } from "react";
 import type { Campaign, CampaignRecipient } from "@/types";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { StatCard } from "@/components/ui/StatCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState } from "@/components/ui/States";
 import { CAMPAIGN_STATUS_LABEL, CAMPAIGN_RECIPIENT_STATUS_LABEL } from "@/components/lib/labels";
+import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 function formatDateTime(ts: number | null): string {
   if (ts === null) return "—";
@@ -22,6 +25,9 @@ function formatDateTime(ts: number | null): string {
 }
 
 export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | null; recipients: CampaignRecipient[] }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
   if (!campaign) {
     return (
       <div className="mx-auto max-w-4xl">
@@ -36,6 +42,28 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
   }
 
   const status = CAMPAIGN_STATUS_LABEL[campaign.status];
+  const campaignId = campaign.id;
+  const canSendNow = campaign.status === "draft" && !!campaign.audience && !!campaign.template && recipients.length > 0;
+
+  async function confirmSend() {
+    setSending(true);
+    setActivationError(null);
+    try {
+      const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? "Não foi possível ativar a campanha.");
+      }
+      window.location.reload();
+    } catch (error) {
+      setActivationError(error instanceof Error ? error.message : "Não foi possível ativar a campanha.");
+      setSending(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -49,7 +77,10 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
           </div>
           <p className="mt-1 text-sm text-ink-500">{formatDateTime(campaign.scheduledAt ?? campaign.createdAt)}</p>
         </div>
+        {canSendNow ? <Button onClick={() => setConfirmOpen(true)}>Enviar agora</Button> : null}
       </div>
+
+      {activationError ? <p role="alert" className="mb-4 rounded-control bg-danger-bg px-3 py-2 text-sm text-danger-fg">{activationError}</p> : null}
 
       <div className="mb-6 grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <StatCard label="Enviados" value={campaign.counters.sent} tone="info" />
@@ -65,6 +96,16 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
       ) : (
         <RecipientsTable recipients={recipients} />
       )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Confirmar envio"
+        description={`Campanha “${campaign.name}”, template “${campaign.template?.name ?? "—"}”, para ${recipients.length} recipients. As mensagens serão enviadas pelo WhatsApp. Confirme que esta audiência possui consentimento válido.`}
+        confirmLabel="Confirmar envio"
+        confirmDisabled={sending}
+        onConfirm={confirmSend}
+        onCancel={() => { if (!sending) setConfirmOpen(false); }}
+      />
     </div>
   );
 }

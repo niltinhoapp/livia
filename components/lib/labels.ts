@@ -39,7 +39,7 @@ export const INTENT_LABEL: Record<IntentType, string> = {
 export const CAMPAIGN_STATUS_LABEL: Record<CampaignStatus, { label: string; tone: StatusTone }> = {
   draft: { label: "Rascunho", tone: "neutral" },
   scheduled: { label: "Agendada", tone: "info" },
-  running: { label: "Em andamento", tone: "warning" },
+  running: { label: "Enviando", tone: "warning" },
   completed: { label: "Concluída", tone: "success" },
   canceled: { label: "Cancelada", tone: "danger" },
 };

@@ -7,13 +7,16 @@
 import { randomUUID } from "node:crypto";
 import { sendTemplate } from "@/lib/whatsapp/client";
 import { marketingEligibilityOf } from "@/lib/campaigns";
+import { campaignsSendEnabled } from "@/lib/campaignConfig";
 import {
   applyCampaignRecipientOutcome,
   claimCampaignRecipients,
+  completeCampaignIfDrained,
   getCampaign,
   getCustomerProfile,
   getEstablishment,
   recordCampaignRecipientAttemptStart,
+  startDueScheduledCampaign,
 } from "@/lib/repo";
 import type { Campaign, CampaignRecipient, EstablishmentWhatsapp } from "@/types";
 
@@ -100,7 +103,7 @@ export interface DispatchCampaignBatchResult {
   skipped: number;
   failed: number;
   retryScheduled: number;
-  aborted?: "campaign_not_running" | "whatsapp_not_connected" | "missing_template" | "campaign_not_found";
+  aborted?: "send_disabled" | "campaign_not_running" | "whatsapp_not_connected" | "missing_template" | "campaign_not_found";
 }
 
 /**
@@ -118,9 +121,18 @@ export async function dispatchCampaignBatch(
 ): Promise<DispatchCampaignBatchResult> {
   const empty: DispatchCampaignBatchResult = { claimed: 0, sent: 0, skipped: 0, failed: 0, retryScheduled: 0 };
 
+  // Defesa na última camada: nenhuma chamada interna ao dispatcher pode
+  // contornar o kill switch das rotas HTTP/cron.
+  if (!campaignsSendEnabled()) return { ...empty, aborted: "send_disabled" };
+
   const campaign = await getCampaign(establishmentId, campaignId);
   if (!campaign) return { ...empty, aborted: "campaign_not_found" };
-  if (campaign.status !== "running") return { ...empty, aborted: "campaign_not_running" };
+  if (campaign.status === "scheduled") {
+    const started = await startDueScheduledCampaign(establishmentId, campaignId, options.now ?? Date.now());
+    if (!started || started.status !== "running") return { ...empty, aborted: "campaign_not_running" };
+  } else if (campaign.status !== "running") {
+    return { ...empty, aborted: "campaign_not_running" };
+  }
   if (!campaign.template?.name || !campaign.template.languageCode) return { ...empty, aborted: "missing_template" };
 
   const establishment = await getEstablishment(establishmentId);
@@ -152,6 +164,8 @@ export async function dispatchCampaignBatch(
       break;
     }
   }
+
+  await completeCampaignIfDrained(establishmentId, campaignId, now);
 
   return result;
 }

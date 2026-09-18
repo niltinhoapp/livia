@@ -78,6 +78,7 @@ function getCampaignDoc(establishmentId: string): Campaign {
 
 beforeEach(() => {
   fakeDb.reset();
+  vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "true");
   sender.sendTemplate.mockReset();
   sender.sendText.mockReset();
   seedEstablishment(A);
@@ -269,6 +270,17 @@ describe("Campanhas-06 — retry, permanente e ambíguo end-to-end", () => {
 });
 
 describe("Campanhas-06 — precondições operacionais", () => {
+  it("kill switch fechado impede chamada interna ao dispatcher", async () => {
+    vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "false");
+    seedRecipient(A, "r0", "5511999000099");
+
+    const result = await dispatchCampaignBatch(A, CAMPAIGN_ID);
+
+    expect(result.aborted).toBe("send_disabled");
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+    expect(getRecipient(A, "r0").status).toBe("pending");
+  });
+
   it("campanha fora de 'running' não processa nenhum recipient", async () => {
     seedCampaign(A, { status: "draft" });
     seedRecipient(A, "r1", "5511999000011");
@@ -304,5 +316,22 @@ describe("Campanhas-06 — precondições operacionais", () => {
     expect(sender.sendTemplate).toHaveBeenCalledTimes(20);
     expect(getCampaignDoc(A).counters.sent).toBe(20);
     expect(getCampaignDoc(A).counters.queued).toBe(25);
+  });
+
+  it("scheduled futuro não processa e scheduled vencido pode iniciar", async () => {
+    fakeDb.col(`establishments/${A}/customers`).set("5511999000013", {
+      phone: "5511999000013", establishmentId: A, name: "Cliente", marketingStatus: "eligible",
+      lastInteractionAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now(),
+    });
+    seedRecipient(A, "r1", "5511999000013");
+    seedCampaign(A, { status: "scheduled", scheduledAt: 2_000, counters: { total: 1, queued: 1, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0, skipped: 0 } });
+    const early = await dispatchCampaignBatch(A, CAMPAIGN_ID, { now: 1_000 });
+    expect(early.claimed).toBe(0);
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+
+    sender.sendTemplate.mockResolvedValue({ waMessageId: "wamid.scheduled" });
+    const due = await dispatchCampaignBatch(A, CAMPAIGN_ID, { now: 2_000 });
+    expect(due.sent).toBe(1);
+    expect(sender.sendTemplate).toHaveBeenCalledTimes(1);
   });
 });

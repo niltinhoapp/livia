@@ -1136,6 +1136,105 @@ export async function prepareCampaignAudience(
   return { campaign: updated, selected, eligible, excluded, recipientsCreated };
 }
 
+export type ActivateCampaignMode = "now" | "scheduled";
+export type ActivateCampaignResult =
+  | { kind: "activated"; campaign: Campaign }
+  | { kind: "already_activated"; campaign: Campaign }
+  | { kind: "invalid"; reason: string };
+
+/**
+ * Faz a transição única de uma campanha preparada para a fila do dispatcher.
+ * A confirmação é persistida dentro da transação da campanha: retries HTTP
+ * não podem iniciar uma segunda vez. Validações de audiência/template ficam
+ * aqui para que o endpoint e qualquer futura superfície administrativa
+ * compartilhem o mesmo contrato.
+ */
+export async function activateCampaign(
+  establishmentId: string,
+  campaignId: string,
+  options: { mode: ActivateCampaignMode; scheduledAt?: number | null; maxRecipients: number; now?: number },
+): Promise<ActivateCampaignResult> {
+  const now = options.now ?? Date.now();
+  const campaignRef = sub(establishmentId, "campaigns").doc(campaignId);
+  const recipientsCol = sub(establishmentId, "campaignRecipients");
+  const campaign = await getCampaign(establishmentId, campaignId);
+  if (!campaign) return { kind: "invalid", reason: "campaign_not_found" };
+  if (campaign.status !== "draft") return { kind: "already_activated", campaign };
+  if (!campaign.audience || campaign.audience.eligibleRecipientCount < 1) {
+    return { kind: "invalid", reason: "audience_required" };
+  }
+  if (!campaign.template || campaign.template.status !== "APPROVED" || campaign.template.senderCompatible !== true) {
+    return { kind: "invalid", reason: "approved_compatible_template_required" };
+  }
+  const recipients = await recipientsCol.where("campaignId", "==", campaignId).limit(options.maxRecipients + 1).get();
+  if (recipients.empty) return { kind: "invalid", reason: "recipients_required" };
+  if (recipients.docs.length > options.maxRecipients) return { kind: "invalid", reason: "recipient_limit_exceeded" };
+  if (recipients.docs.length !== campaign.audience.eligibleRecipientCount) {
+    return { kind: "invalid", reason: "recipient_snapshot_mismatch" };
+  }
+  const scheduledAt = options.mode === "scheduled" ? options.scheduledAt ?? null : null;
+  if (options.mode === "scheduled" && (!scheduledAt || scheduledAt <= now)) {
+    return { kind: "invalid", reason: "scheduled_at_must_be_future" };
+  }
+  const status = options.mode === "scheduled" ? "scheduled" : "running";
+  const activated = { ...campaign, status: status as Campaign["status"], scheduledAt, startedAt: status === "running" ? now : null, activatedAt: now, updatedAt: now };
+  const result = await db.runTransaction(async (tx) => {
+    const currentSnap = await tx.get(campaignRef);
+    if (!currentSnap.exists) return { kind: "invalid" as const, reason: "campaign_not_found" };
+    const current = currentSnap.data() as Campaign;
+    if (current.status !== "draft") return { kind: "already_activated" as const, campaign: current };
+    tx.update(campaignRef, activated);
+    return { kind: "activated" as const, campaign: activated };
+  });
+  return result;
+}
+
+/** Transiciona scheduled vencida sem expor a campanha a uma segunda fila. */
+export async function startDueScheduledCampaign(
+  establishmentId: string,
+  campaignId: string,
+  now = Date.now(),
+): Promise<Campaign | null> {
+  const ref = sub(establishmentId, "campaigns").doc(campaignId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const current = snap.data() as Campaign;
+    if (current.status !== "scheduled" || !current.scheduledAt || current.scheduledAt > now) return current;
+    const updated = { ...current, status: "running" as const, startedAt: current.startedAt ?? now, updatedAt: now };
+    tx.update(ref, updated);
+    return updated;
+  });
+}
+
+/** Marca completed somente quando não há recipient que ainda possa ser processado. */
+export async function completeCampaignIfDrained(
+  establishmentId: string,
+  campaignId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const campaignRef = sub(establishmentId, "campaigns").doc(campaignId);
+  return db.runTransaction(async (tx) => {
+    // A consulta precisa estar dentro da mesma transação que grava
+    // `completed`: um claim concorrente altera um documento lido pela query,
+    // fazendo o Firestore reexecutar a transação em vez de concluir cedo.
+    const recipientsSnap = await tx.get(
+      sub(establishmentId, "campaignRecipients").where("campaignId", "==", campaignId).limit(1000),
+    );
+    const currentSnap = await tx.get(campaignRef);
+    if (!currentSnap.exists) return false;
+    const current = currentSnap.data() as Campaign;
+    if (current.status !== "running") return current.status === "completed";
+    const drained = recipientsSnap.docs.every((doc) => {
+      const status = (doc.data() as CampaignRecipient).status;
+      return status !== "pending" && status !== "queued" && status !== "leased";
+    });
+    if (!drained) return false;
+    tx.update(campaignRef, { status: "completed", finishedAt: now, updatedAt: now });
+    return true;
+  });
+}
+
 // ---- Dispatcher de Campanhas (CAMPANHAS-06) ----
 // Claim/lease transacional por recipient (um documento por transação, mesmo
 // padrão de attemptId/leaseExpiresAt já usado no connect-claim do WhatsApp
@@ -1189,6 +1288,8 @@ export async function claimCampaignRecipients(
   const claimFreshTx = async (docId: string) => {
     const ref = recipientsCol.doc(docId);
     return db.runTransaction(async (tx) => {
+      const campaignSnap = await tx.get(campaignRef);
+      if (!campaignSnap.exists || (campaignSnap.data() as Campaign).status !== "running") return null;
       const snap = await tx.get(ref);
       if (!snap.exists) return null;
       const recipient = snap.data() as CampaignRecipient;
@@ -1217,6 +1318,8 @@ export async function claimCampaignRecipients(
     if (claimed.length >= batchSize) break;
     const ref = recipientsCol.doc(doc.id);
     const result = await db.runTransaction(async (tx) => {
+      const campaignSnap = await tx.get(campaignRef);
+      if (!campaignSnap.exists || (campaignSnap.data() as Campaign).status !== "running") return null;
       const recipientSnap = await tx.get(ref);
       if (!recipientSnap.exists) return null;
       const recipient = recipientSnap.data() as CampaignRecipient;
