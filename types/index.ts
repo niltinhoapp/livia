@@ -387,15 +387,20 @@ export interface MarketingImportResult {
 export type CampaignStatus = "draft" | "scheduled" | "running" | "completed" | "canceled";
 
 export interface CampaignTemplateSnapshot {
+  id?: string;
   name: string;
   languageCode: string;
+  status?: string;
+  category?: string;
+  components?: Record<string, unknown>[];
+  senderCompatible?: boolean;
 }
 
 export interface CampaignAudienceSnapshot {
-  // A seleção materializada e os filtros entram em Campanhas-04. Este campo
-  // só reserva o contrato para que o dispatcher nunca precise inferir a
-  // audiência a partir da UI.
+  selectedCount: number;
   eligibleRecipientCount: number;
+  excludedCount: number;
+  selection: "all_eligible" | "selected";
   selectedAt: number;
 }
 
@@ -428,6 +433,7 @@ export interface Campaign {
 // Contrato reservado para o dispatcher futuro. Não há escrita de recipients
 // nesta OT; o documento ficará em establishments/{id}/campaignRecipients.
 export type CampaignRecipientStatus =
+  | "pending"
   | "queued"
   | "leased"
   | "sent"
@@ -442,7 +448,10 @@ export interface CampaignRecipient {
   establishmentId: string;
   campaignId: string;
   customerPhone: string;
+  customerName?: string;
   status: CampaignRecipientStatus;
+  attempts?: number;
+  createdAt: number;
   metaMessageId?: string;
   sentAt?: number;
   deliveredAt?: number;
