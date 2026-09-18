@@ -36,6 +36,8 @@ import {
   resolvePendingTask,
   getPendingTask,
   alreadyProcessed,
+  applyCampaignDeliveryStatus,
+  correlateCampaignReply,
 } from "@/lib/repo";
 import {
   sendText,
@@ -227,6 +229,38 @@ function logStatusUpdates(value: WebhookValue | undefined): void {
   }
 }
 
+function mapMetaDeliveryStatus(raw: string | undefined): "sent" | "delivered" | "read" | "failed" | null {
+  return raw === "sent" || raw === "delivered" || raw === "read" || raw === "failed" ? raw : null;
+}
+
+// CAMPANHAS-07: mesmo webhook, sem novo endpoint. Correlaciona cada status
+// pelo wamid (`s.id`) a um CampaignRecipient — só chega aqui depois de
+// logStatusUpdates já ter registrado o evento bruto. O tenant vem SEMPRE de
+// findEstablishmentByPhoneNumberId (nunca de um establishmentId no corpo do
+// payload, que nem existe no formato real da Meta). Um wamid desconhecido
+// (não é de nenhuma campanha) é um no-op silencioso — a imensa maioria das
+// mensagens da Lívia não é campanha.
+async function correlateCampaignStatusUpdates(value: WebhookValue | undefined): Promise<void> {
+  const statuses = value?.statuses ?? [];
+  const phoneNumberId = value?.metadata?.phone_number_id;
+  if (statuses.length === 0 || !phoneNumberId) return;
+
+  const est = await findEstablishmentByPhoneNumberId(phoneNumberId);
+  if (!est) return;
+
+  for (const s of statuses) {
+    const status = mapMetaDeliveryStatus(s.status);
+    if (!s.id || !status) continue;
+    const error = s.errors?.[0];
+    await applyCampaignDeliveryStatus(
+      est.id,
+      s.id,
+      status,
+      error ? { code: error.code, title: error.title ?? error.message } : undefined,
+    );
+  }
+}
+
 async function handleWebhook(body: WebhookBody): Promise<void> {
   // A Meta pode enviar mais de um entry/change/message no mesmo POST (ex.:
   // duas mensagens do cliente em rápida sucessão chegam batched). O código
@@ -244,6 +278,13 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       }
       if (kind === "status") {
         logStatusUpdates(change.value);
+        try {
+          await correlateCampaignStatusUpdates(change.value);
+        } catch (err) {
+          console.error("[livia webhook] campaign status correlation failed", {
+            errorType: err instanceof Error ? err.name : "unknown",
+          });
+        }
         continue;
       }
 
@@ -347,6 +388,20 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     contactPhone,
     contactName,
   );
+
+  // CAMPANHAS-07: qualquer mensagem inbound aceita (texto, áudio, mídia) pode
+  // ser resposta a uma campanha — roda ANTES de qualquer branch/early-return
+  // abaixo para nunca ser pulado, e nunca pode afetar o fluxo normal da
+  // Lívia: correlação e persistência ficam isoladas em campaignRecipients,
+  // nunca tocam conversation/customerProfile, e uma falha aqui nunca impede
+  // a resposta ao cliente.
+  try {
+    await correlateCampaignReply(est.id, contactPhone);
+  } catch (err) {
+    console.error("[livia webhook] campaign reply correlation failed", {
+      errorType: err instanceof Error ? err.name : "unknown",
+    });
+  }
 
   // Imagem/documento são anexos para atendimento humano, nunca entrada
   // multimodal da IA. O arquivo vai ao Storage privado e a mensagem recebe

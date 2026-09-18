@@ -22,6 +22,8 @@ const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const applyCampaignDeliveryStatus = vi.fn(async (..._a: unknown[]) => "not_found");
+const correlateCampaignReply = vi.fn(async (..._a: unknown[]) => "no_match");
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
@@ -50,6 +52,8 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: vi.fn(),
   getPendingTask: vi.fn(async () => null),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  applyCampaignDeliveryStatus: (...a: unknown[]) => applyCampaignDeliveryStatus(...a),
+  correlateCampaignReply: (...a: unknown[]) => correlateCampaignReply(...a),
 }));
 
 vi.mock("@/lib/whatsapp/client", () => ({
@@ -200,7 +204,11 @@ describe("Observabilidade de status do WhatsApp", () => {
 
     expect(res.status).toBe(200);
     expect(alreadyProcessed).not.toHaveBeenCalled();
-    expect(findEstablishmentByPhoneNumberId).not.toHaveBeenCalled();
+    // CAMPANHAS-07: agora resolve o tenant para tentar correlacionar o
+    // status a um CampaignRecipient (findEstablishmentByPhoneNumberId), mas
+    // isso continua sem tocar dedupe/IA/persistência de conversa.
+    expect(findEstablishmentByPhoneNumberId).toHaveBeenCalledWith("pn_1");
+    expect(applyCampaignDeliveryStatus).toHaveBeenCalledWith("est_odonto", "wamid.a", "sent", undefined);
     expect(think).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
     expect(appendMessage).not.toHaveBeenCalled();
