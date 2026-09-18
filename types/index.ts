@@ -335,6 +335,10 @@ export interface CustomerProfile {
   // inelegível até haver uma decisão explícita de elegibilidade.
   marketingStatus?: MarketingStatus;
   marketingStatusUpdatedAt?: number;
+  marketingOptInAt?: number;
+  marketingOptInSource?: MarketingOptInSource;
+  marketingOptInDeclarationAt?: number;
+  marketingOptInDeclarationVersion?: "whatsapp_marketing_consent_v1";
   marketingOptOutAt?: number;
   marketingOptOutReason?: string;
   lastInteractionAt: number;
@@ -343,6 +347,40 @@ export interface CustomerProfile {
 }
 
 export type MarketingStatus = "eligible" | "opted_out" | "blocked";
+
+export type MarketingOptInSource =
+  | "website_form"
+  | "landing_page"
+  | "checkout"
+  | "physical_store"
+  | "qr_code"
+  | "whatsapp"
+  | "crm_import"
+  | "other";
+
+export interface MarketingImportContact {
+  phone: string;
+  name?: string;
+}
+
+// A confirmação é uma declaração do estabelecimento, não uma validação
+// externa inexistente. Ela é gravada no CustomerProfile elegível para manter
+// a evidência junto ao contato e ao tenant a que o consentimento pertence.
+export interface MarketingImportDeclaration {
+  confirmedMarketingOptIn: true;
+  source: MarketingOptInSource;
+}
+
+export interface MarketingImportResult {
+  received: number;
+  unique: number;
+  duplicates: number;
+  created: number;
+  enriched: number;
+  eligible: number;
+  alreadyEligible: number;
+  protected: number;
+}
 
 // ---- Campanhas de marketing ----
 // Fundação tenant-scoped. Campanhas-02 não cria recipients nem envia nada.

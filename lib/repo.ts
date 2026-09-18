@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { isMarketingOptInSource, normalizeMarketingImportPhone } from "@/lib/campaigns";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
 import type {
@@ -18,6 +19,9 @@ import type {
   MessageRole,
   CustomerProfile,
   Campaign,
+  MarketingImportContact,
+  MarketingImportDeclaration,
+  MarketingImportResult,
   ConversationTask,
   IntentType,
   PendingTask,
@@ -1063,6 +1067,137 @@ export async function optOutCustomerFromMarketing(
     });
     return "opted_out";
   });
+}
+
+const MAX_MARKETING_IMPORT_CONTACTS = 200;
+
+type NormalizedImportContact = { phone: string; name: string | null };
+
+function normalizeMarketingImport(
+  contacts: readonly MarketingImportContact[],
+): { contacts: NormalizedImportContact[]; duplicates: number } {
+  if (!Array.isArray(contacts) || contacts.length === 0 || contacts.length > MAX_MARKETING_IMPORT_CONTACTS) {
+    throw new Error(`Importação deve conter entre 1 e ${MAX_MARKETING_IMPORT_CONTACTS} contatos.`);
+  }
+
+  const unique = new Map<string, NormalizedImportContact>();
+  for (const contact of contacts) {
+    const phone = normalizeMarketingImportPhone(contact?.phone);
+    if (!phone) throw new Error("Telefone de importação inválido.");
+    if (contact.name !== undefined && typeof contact.name !== "string") {
+      throw new Error("Nome de importação inválido.");
+    }
+    const name = contact.name?.trim().slice(0, 160) || null;
+    const prior = unique.get(phone);
+    // Duplicatas não criam outro perfil; aproveita um nome presente sem nunca
+    // permitir que a repetição sobrescreva um nome já escolhido antes.
+    if (!prior || (!prior.name && name)) unique.set(phone, { phone, name });
+  }
+
+  return { contacts: [...unique.values()], duplicates: contacts.length - unique.size };
+}
+
+// Importa/enriquece a coleção customers do próprio tenant. A declaração
+// explícita do estabelecimento é obrigatória: `crm_import` identifica a
+// origem operacional, mas não substitui `confirmedMarketingOptIn: true`.
+// O lote é deliberadamente limitado; bases grandes precisam de uma etapa
+// assíncrona própria, nunca de uma request longa e parcialmente executada.
+export async function importMarketingContacts(
+  establishmentId: string,
+  input: { contacts: readonly MarketingImportContact[]; declaration: MarketingImportDeclaration },
+): Promise<MarketingImportResult> {
+  if (input.declaration?.confirmedMarketingOptIn !== true || !isMarketingOptInSource(input.declaration?.source)) {
+    throw new Error("Declaração explícita de opt-in é obrigatória.");
+  }
+  const normalized = normalizeMarketingImport(input.contacts);
+  const result: MarketingImportResult = {
+    received: input.contacts.length,
+    unique: normalized.contacts.length,
+    duplicates: normalized.duplicates,
+    created: 0,
+    enriched: 0,
+    eligible: 0,
+    alreadyEligible: 0,
+    protected: 0,
+  };
+
+  for (const contact of normalized.contacts) {
+    const outcome = await db.runTransaction(async (tx) => {
+      const ref = sub(establishmentId, "customers").doc(contact.phone);
+      const snap = await tx.get(ref);
+      const now = Date.now();
+
+      if (!snap.exists) {
+        const profile: CustomerProfile = {
+          phone: contact.phone,
+          establishmentId,
+          name: contact.name,
+          preferredProfessional: null,
+          preferredTime: null,
+          frequentAddress: null,
+          lastService: null,
+          lastIntent: null,
+          notes: null,
+          marketingStatus: "eligible",
+          marketingStatusUpdatedAt: now,
+          marketingOptInAt: now,
+          marketingOptInSource: input.declaration.source,
+          marketingOptInDeclarationAt: now,
+          marketingOptInDeclarationVersion: "whatsapp_marketing_consent_v1",
+          // Perfil importado ainda não conversou; createdAt é o melhor valor
+          // disponível para a ordenação existente até uma interação real.
+          lastInteractionAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.create(ref, profile);
+        return "created_eligible" as const;
+      }
+
+      const profile = snap.data() as CustomerProfile;
+      if (profile.marketingStatus === "opted_out" || profile.marketingStatus === "blocked") {
+        return "protected" as const;
+      }
+
+      const patch: Record<string, unknown> = {};
+      if (!profile.name && contact.name) patch.name = contact.name;
+      if (profile.marketingStatus === "eligible") {
+        if (Object.keys(patch).length === 0) return "already_eligible" as const;
+        patch.updatedAt = now;
+        tx.update(ref, patch);
+        return "enriched_eligible" as const;
+      }
+
+      patch.marketingStatus = "eligible";
+      patch.marketingStatusUpdatedAt = now;
+      patch.marketingOptInAt = now;
+      patch.marketingOptInSource = input.declaration.source;
+      patch.marketingOptInDeclarationAt = now;
+      patch.marketingOptInDeclarationVersion = "whatsapp_marketing_consent_v1";
+      patch.updatedAt = now;
+      const enriched = Object.prototype.hasOwnProperty.call(patch, "name");
+      tx.update(ref, patch);
+      return enriched ? "eligible_enriched" as const : "eligible" as const;
+    });
+
+    if (outcome === "created_eligible") {
+      result.created++;
+      result.eligible++;
+    } else if (outcome === "eligible") {
+      result.eligible++;
+    } else if (outcome === "eligible_enriched") {
+      result.eligible++;
+      result.enriched++;
+    } else if (outcome === "enriched_eligible") {
+      result.enriched++;
+    } else if (outcome === "already_eligible") {
+      result.alreadyEligible++;
+    } else {
+      result.protected++;
+    }
+  }
+
+  return result;
 }
 
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens
