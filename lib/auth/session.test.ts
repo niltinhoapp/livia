@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 const verifySessionCookie = vi.fn();
 const getTenant = vi.fn();
+const runTransaction = vi.fn();
 
 vi.mock("firebase-admin/auth", () => ({
   getAuth: () => ({ verifySessionCookie }),
@@ -10,6 +11,7 @@ vi.mock("firebase-admin/auth", () => ({
 vi.mock("@/lib/firebase/admin", () => ({
   firebaseAdminApp: {},
   db: {
+    runTransaction,
     collection: () => ({
       where: () => ({
         limit: () => ({ get: () => getTenant() }),
@@ -31,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   verifySessionCookie.mockResolvedValue({ uid: "owner" });
   getTenant.mockResolvedValue(tenant("est-1", "allowed"));
+  runTransaction.mockResolvedValue("owner");
 });
 
 describe("panelAccess server-side", () => {
@@ -68,8 +71,20 @@ describe("panelAccess server-side", () => {
     });
   });
 
-  it("conta autenticada sem estabelecimento vinculado não ganha acesso", async () => {
+  it("primeira conta nova pode ocupar uma vaga do piloto", async () => {
     getTenant.mockResolvedValueOnce({ empty: true, docs: [] });
+    runTransaction.mockResolvedValueOnce("owner");
+
+    await expect(resolvePanelAccess("valid-cookie")).resolves.toEqual({
+      status: "allowed",
+      establishmentId: "owner",
+      legacy: false,
+    });
+  });
+
+  it("conta nova fica bloqueada quando as dez vagas do piloto acabaram", async () => {
+    getTenant.mockResolvedValueOnce({ empty: true, docs: [] });
+    runTransaction.mockResolvedValueOnce(null);
 
     await expect(resolvePanelAccess("valid-cookie")).resolves.toEqual({ status: "blocked" });
   });
