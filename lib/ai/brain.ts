@@ -183,6 +183,7 @@ function buildSystemPrompt(
     "Responda SOMENTE com base nas informações do estabelecimento abaixo.",
     "Se a informação não estiver aqui, NÃO invente: ofereça transferir para um atendente.",
     "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
+    "Quando a pessoa chegar demonstrando interesse em conhecer a própria Lívia, explique a Lívia diretamente nesta conversa. NÃO envie espontaneamente o link da landing page/site da Lívia como resposta ou próximo passo, pois a pessoa pode já ter vindo dessa página. Só envie o link do site/landing page se a pessoa pedir explicitamente o link, site, página ou endereço da web.",
     "Nunca invente preços, horários, endereços ou disponibilidade.",
     // Regra estrutural: perguntas sobre um agendamento JÁ EXISTENTE só podem
     // ser respondidas com o retorno da ferramenta. A memória da conversa, o
