@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import CampaignDetailPage, { CampaignDetail } from "./page";
+import CampaignDetailPage from "./page";
+import { CampaignDetail } from "./CampaignDetail";
 import { DEMO_CAMPAIGNS, DEMO_RECIPIENTS } from "../_fixtures";
 
 afterEach(() => {
