@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { sendTemplate } from "@/lib/whatsapp/client";
 import { marketingEligibilityOf } from "@/lib/campaigns";
+import { campaignsSendEnabled } from "@/lib/campaignConfig";
 import {
   applyCampaignRecipientOutcome,
   claimCampaignRecipients,
@@ -102,7 +103,7 @@ export interface DispatchCampaignBatchResult {
   skipped: number;
   failed: number;
   retryScheduled: number;
-  aborted?: "campaign_not_running" | "whatsapp_not_connected" | "missing_template" | "campaign_not_found";
+  aborted?: "send_disabled" | "campaign_not_running" | "whatsapp_not_connected" | "missing_template" | "campaign_not_found";
 }
 
 /**
@@ -119,6 +120,10 @@ export async function dispatchCampaignBatch(
   options: DispatchCampaignBatchOptions = {},
 ): Promise<DispatchCampaignBatchResult> {
   const empty: DispatchCampaignBatchResult = { claimed: 0, sent: 0, skipped: 0, failed: 0, retryScheduled: 0 };
+
+  // Defesa na última camada: nenhuma chamada interna ao dispatcher pode
+  // contornar o kill switch das rotas HTTP/cron.
+  if (!campaignsSendEnabled()) return { ...empty, aborted: "send_disabled" };
 
   const campaign = await getCampaign(establishmentId, campaignId);
   if (!campaign) return { ...empty, aborted: "campaign_not_found" };

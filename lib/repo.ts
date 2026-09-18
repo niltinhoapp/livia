@@ -1214,17 +1214,22 @@ export async function completeCampaignIfDrained(
   now = Date.now(),
 ): Promise<boolean> {
   const campaignRef = sub(establishmentId, "campaigns").doc(campaignId);
-  const snap = await sub(establishmentId, "campaignRecipients").where("campaignId", "==", campaignId).limit(1000).get();
-  const drained = snap.docs.every((doc) => {
-    const status = (doc.data() as CampaignRecipient).status;
-    return status !== "pending" && status !== "queued" && status !== "leased";
-  });
-  if (!drained) return false;
   return db.runTransaction(async (tx) => {
+    // A consulta precisa estar dentro da mesma transação que grava
+    // `completed`: um claim concorrente altera um documento lido pela query,
+    // fazendo o Firestore reexecutar a transação em vez de concluir cedo.
+    const recipientsSnap = await tx.get(
+      sub(establishmentId, "campaignRecipients").where("campaignId", "==", campaignId).limit(1000),
+    );
     const currentSnap = await tx.get(campaignRef);
     if (!currentSnap.exists) return false;
     const current = currentSnap.data() as Campaign;
     if (current.status !== "running") return current.status === "completed";
+    const drained = recipientsSnap.docs.every((doc) => {
+      const status = (doc.data() as CampaignRecipient).status;
+      return status !== "pending" && status !== "queued" && status !== "leased";
+    });
+    if (!drained) return false;
     tx.update(campaignRef, { status: "completed", finishedAt: now, updatedAt: now });
     return true;
   });
@@ -1283,6 +1288,8 @@ export async function claimCampaignRecipients(
   const claimFreshTx = async (docId: string) => {
     const ref = recipientsCol.doc(docId);
     return db.runTransaction(async (tx) => {
+      const campaignSnap = await tx.get(campaignRef);
+      if (!campaignSnap.exists || (campaignSnap.data() as Campaign).status !== "running") return null;
       const snap = await tx.get(ref);
       if (!snap.exists) return null;
       const recipient = snap.data() as CampaignRecipient;
@@ -1311,6 +1318,8 @@ export async function claimCampaignRecipients(
     if (claimed.length >= batchSize) break;
     const ref = recipientsCol.doc(doc.id);
     const result = await db.runTransaction(async (tx) => {
+      const campaignSnap = await tx.get(campaignRef);
+      if (!campaignSnap.exists || (campaignSnap.data() as Campaign).status !== "running") return null;
       const recipientSnap = await tx.get(ref);
       if (!recipientSnap.exists) return null;
       const recipient = recipientSnap.data() as CampaignRecipient;

@@ -61,6 +61,20 @@ beforeEach(() => {
 });
 
 describe("Campanhas-06 — claim/lease", () => {
+  it("worker que começou antes de completed não reivindica recipient depois da conclusão", async () => {
+    seedRecipient(A, "r1");
+    fakeDb.col(`establishments/${A}/campaigns`).set(CAMPAIGN_ID, {
+      ...getCampaignDoc(A, CAMPAIGN_ID),
+      status: "completed",
+      finishedAt: 2_000,
+    } as unknown as Record<string, unknown>);
+
+    const claimed = await claimCampaignRecipients(A, CAMPAIGN_ID, "worker-a", { now: 2_001 });
+
+    expect(claimed).toHaveLength(0);
+    expect(getRecipient(A, "r1").status).toBe("pending");
+  });
+
   it("dois workers disputando o mesmo recipient: só um vence", async () => {
     seedRecipient(A, "r1");
 

@@ -78,6 +78,7 @@ function getCampaignDoc(establishmentId: string): Campaign {
 
 beforeEach(() => {
   fakeDb.reset();
+  vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "true");
   sender.sendTemplate.mockReset();
   sender.sendText.mockReset();
   seedEstablishment(A);
@@ -269,6 +270,17 @@ describe("Campanhas-06 — retry, permanente e ambíguo end-to-end", () => {
 });
 
 describe("Campanhas-06 — precondições operacionais", () => {
+  it("kill switch fechado impede chamada interna ao dispatcher", async () => {
+    vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "false");
+    seedRecipient(A, "r0", "5511999000099");
+
+    const result = await dispatchCampaignBatch(A, CAMPAIGN_ID);
+
+    expect(result.aborted).toBe("send_disabled");
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+    expect(getRecipient(A, "r0").status).toBe("pending");
+  });
+
   it("campanha fora de 'running' não processa nenhum recipient", async () => {
     seedCampaign(A, { status: "draft" });
     seedRecipient(A, "r1", "5511999000011");
