@@ -1,5 +1,4 @@
-// Fixtures de DEMONSTRAÇÃO VISUAL — só para teste de componente, nunca
-// default real (ver _types.ts: nenhum contrato de backend existe ainda).
+// Fixtures de demonstração visual, usadas somente nos testes de componente.
 import type { Template } from "./_types";
 
 export const DEMO_TEMPLATES: Template[] = [
@@ -10,14 +9,16 @@ export const DEMO_TEMPLATES: Template[] = [
     languageCode: "pt_BR",
     status: "approved",
     previewBody: "Olá {{1}}! Sentimos sua falta. Que tal agendar um horário essa semana? 😊",
+    components: [{ type: "BODY", text: "Olá {{1}}!" }], senderCompatible: true,
   },
   {
     id: "t2",
     name: "aviso_feriado",
     category: "Utilidade",
     languageCode: "pt_BR",
-    status: "in_review",
+    status: "pending",
     previewBody: "Olá! Informamos que não abriremos no feriado de {{1}}. Voltamos no dia seguinte!",
+    components: [{ type: "BODY", text: "Olá!" }], senderCompatible: true,
   },
   {
     id: "t3",
@@ -26,5 +27,6 @@ export const DEMO_TEMPLATES: Template[] = [
     languageCode: "pt_BR",
     status: "rejected",
     previewBody: "Aproveite nossa promoção imperdível!!! Corra!!!",
+    components: [{ type: "BODY", text: "Oferta" }], senderCompatible: false,
   },
 ];
