@@ -1,7 +1,8 @@
 // Rótulos de exibição — só para o frontend. O valor real (EstablishmentType)
 // continua definido em types/index.ts; este mapa nunca deve virar fonte de
 // verdade de dado, só de texto.
-import type { EstablishmentType, IntentType } from "@/types";
+import type { EstablishmentType, IntentType, CampaignStatus, CampaignRecipientStatus } from "@/types";
+import type { StatusTone } from "@/components/ui/StatusBadge";
 
 export const ESTABLISHMENT_TYPE_LABELS: Record<EstablishmentType, string> = {
   clinica: "Clínica",
@@ -29,6 +30,30 @@ export const INTENT_LABEL: Record<IntentType, string> = {
   human_handoff: "Pediu atendente",
   complaint: "Reclamação",
   general_question: "Pergunta geral",
+};
+
+// Campanhas — CampaignStatus/CampaignRecipientStatus vêm do domínio real
+// (types/index.ts, fundação de CAMPANHAS-02). Sem "failed" em
+// CampaignStatus de propósito: falha é sempre por destinatário
+// (CampaignRecipientStatus.failed), nunca da campanha inteira.
+export const CAMPAIGN_STATUS_LABEL: Record<CampaignStatus, { label: string; tone: StatusTone }> = {
+  draft: { label: "Rascunho", tone: "neutral" },
+  scheduled: { label: "Agendada", tone: "info" },
+  running: { label: "Em andamento", tone: "warning" },
+  completed: { label: "Concluída", tone: "success" },
+  canceled: { label: "Cancelada", tone: "danger" },
+};
+
+export const CAMPAIGN_RECIPIENT_STATUS_LABEL: Record<CampaignRecipientStatus, { label: string; tone: StatusTone }> = {
+  pending: { label: "Pendente", tone: "neutral" },
+  queued: { label: "Na fila", tone: "neutral" },
+  leased: { label: "Enviando", tone: "info" },
+  sent: { label: "Enviado", tone: "info" },
+  delivered: { label: "Entregue", tone: "info" },
+  read: { label: "Lido", tone: "success" },
+  replied: { label: "Respondeu", tone: "success" },
+  failed: { label: "Falhou", tone: "danger" },
+  skipped: { label: "Ignorado", tone: "neutral" },
 };
 
 export const WEEKDAY_LABELS: { key: string; label: string; short: string }[] = [
