@@ -305,4 +305,21 @@ describe("Campanhas-06 — precondições operacionais", () => {
     expect(getCampaignDoc(A).counters.sent).toBe(20);
     expect(getCampaignDoc(A).counters.queued).toBe(25);
   });
+
+  it("scheduled futuro não processa e scheduled vencido pode iniciar", async () => {
+    fakeDb.col(`establishments/${A}/customers`).set("5511999000013", {
+      phone: "5511999000013", establishmentId: A, name: "Cliente", marketingStatus: "eligible",
+      lastInteractionAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now(),
+    });
+    seedRecipient(A, "r1", "5511999000013");
+    seedCampaign(A, { status: "scheduled", scheduledAt: 2_000, counters: { total: 1, queued: 1, sent: 0, delivered: 0, read: 0, failed: 0, replied: 0, skipped: 0 } });
+    const early = await dispatchCampaignBatch(A, CAMPAIGN_ID, { now: 1_000 });
+    expect(early.claimed).toBe(0);
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+
+    sender.sendTemplate.mockResolvedValue({ waMessageId: "wamid.scheduled" });
+    const due = await dispatchCampaignBatch(A, CAMPAIGN_ID, { now: 2_000 });
+    expect(due.sent).toBe(1);
+    expect(sender.sendTemplate).toHaveBeenCalledTimes(1);
+  });
 });

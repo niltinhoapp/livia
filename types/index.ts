@@ -425,6 +425,7 @@ export interface Campaign {
   scheduledAt: number | null;
   startedAt: number | null;
   finishedAt: number | null;
+  activatedAt?: number;
   counters: CampaignCounters;
   createdAt: number;
   updatedAt: number;

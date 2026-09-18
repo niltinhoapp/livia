@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase/admin";
 import { dispatchCampaignBatch } from "@/lib/campaignDispatcher";
 import { listCampaigns } from "@/lib/repo";
+import { campaignsSendEnabled } from "@/lib/campaignConfig";
 import type { Establishment } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -23,8 +24,11 @@ export const dynamic = "force-dynamic";
 const DEFAULT_BATCH_SIZE = 20;
 
 export async function GET(req: NextRequest) {
+  if (!campaignsSendEnabled()) {
+    return NextResponse.json({ enabled: false, processed: 0, results: [], errors: [] });
+  }
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "não autorizado" }, { status: 401 });
   }
 

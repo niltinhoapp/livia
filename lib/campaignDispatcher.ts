@@ -10,10 +10,12 @@ import { marketingEligibilityOf } from "@/lib/campaigns";
 import {
   applyCampaignRecipientOutcome,
   claimCampaignRecipients,
+  completeCampaignIfDrained,
   getCampaign,
   getCustomerProfile,
   getEstablishment,
   recordCampaignRecipientAttemptStart,
+  startDueScheduledCampaign,
 } from "@/lib/repo";
 import type { Campaign, CampaignRecipient, EstablishmentWhatsapp } from "@/types";
 
@@ -120,7 +122,12 @@ export async function dispatchCampaignBatch(
 
   const campaign = await getCampaign(establishmentId, campaignId);
   if (!campaign) return { ...empty, aborted: "campaign_not_found" };
-  if (campaign.status !== "running") return { ...empty, aborted: "campaign_not_running" };
+  if (campaign.status === "scheduled") {
+    const started = await startDueScheduledCampaign(establishmentId, campaignId, options.now ?? Date.now());
+    if (!started || started.status !== "running") return { ...empty, aborted: "campaign_not_running" };
+  } else if (campaign.status !== "running") {
+    return { ...empty, aborted: "campaign_not_running" };
+  }
   if (!campaign.template?.name || !campaign.template.languageCode) return { ...empty, aborted: "missing_template" };
 
   const establishment = await getEstablishment(establishmentId);
@@ -152,6 +159,8 @@ export async function dispatchCampaignBatch(
       break;
     }
   }
+
+  await completeCampaignIfDrained(establishmentId, campaignId, now);
 
   return result;
 }
