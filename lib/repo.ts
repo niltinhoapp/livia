@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
-import { isMarketingOptInSource, normalizeMarketingImportPhone } from "@/lib/campaigns";
+import { isMarketingOptInSource, normalizeMarketingImportPhone, marketingEligibilityOf } from "@/lib/campaigns";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
 import type {
@@ -19,6 +19,8 @@ import type {
   MessageRole,
   CustomerProfile,
   Campaign,
+  CampaignTemplateSnapshot,
+  CampaignAudienceSnapshot,
   MarketingImportContact,
   MarketingImportDeclaration,
   MarketingImportResult,
@@ -28,6 +30,7 @@ import type {
   PendingTaskType,
   KnowledgeCorrection,
   CorrectionCategory,
+  CampaignRecipient,
 } from "@/types";
 
 const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1034,6 +1037,90 @@ export async function getCampaign(
 ): Promise<Campaign | null> {
   const doc = await sub(establishmentId, "campaigns").doc(campaignId).get();
   return doc.exists ? (doc.data() as Campaign) : null;
+}
+
+export type CampaignAudienceSelection = "all_eligible" | "selected";
+export interface PrepareCampaignAudienceInput {
+  selection: CampaignAudienceSelection;
+  phones?: string[];
+  template: CampaignTemplateSnapshot;
+}
+
+export interface PrepareCampaignAudienceResult {
+  campaign: Campaign;
+  selected: number;
+  eligible: number;
+  excluded: number;
+  recipientsCreated: number;
+}
+
+const MAX_SYNCHRONOUS_AUDIENCE = 200;
+
+/** Materializa uma audiência pequena e idempotente. O recipient é snapshot
+ * operacional, não autorização: o dispatcher deve revalidar o CustomerProfile
+ * imediatamente antes do envio. */
+export async function prepareCampaignAudience(
+  establishmentId: string,
+  campaignId: string,
+  input: PrepareCampaignAudienceInput,
+): Promise<PrepareCampaignAudienceResult> {
+  const campaign = await getCampaign(establishmentId, campaignId);
+  if (!campaign || campaign.status !== "draft") throw new Error("Campanha não encontrada ou não está em rascunho.");
+  if (input.template.status !== "APPROVED" || input.template.senderCompatible !== true) {
+    throw new Error("Template não aprovado ou incompatível com o sender atual.");
+  }
+  const customers = await sub(establishmentId, "customers").get();
+  const byPhone = new Map<string, CustomerProfile>();
+  for (const doc of customers.docs) {
+    const profile = doc.data() as CustomerProfile;
+    const phone = normalizeMarketingImportPhone(doc.id) ?? normalizeMarketingImportPhone(profile.phone);
+    if (phone) byPhone.set(phone, profile);
+  }
+  const requested = input.selection === "all_eligible"
+    ? [...byPhone.keys()]
+    : [...new Set((input.phones ?? []).map((phone) => normalizeMarketingImportPhone(phone)).filter((phone): phone is string => !!phone))];
+  if (requested.length > MAX_SYNCHRONOUS_AUDIENCE) throw new Error("Audiência excede o limite síncrono; use processamento em lotes.");
+  const selected = requested.length;
+  let eligible = 0;
+  let excluded = 0;
+  let recipientsCreated = 0;
+  for (const phone of requested) {
+    const profile = byPhone.get(phone);
+    if (!profile || !marketingEligibilityOf(profile).eligible) { excluded++; continue; }
+    eligible++;
+    const recipientId = `${campaignId}_${phone}`;
+    const recipient: CampaignRecipient = {
+      id: recipientId,
+      establishmentId,
+      campaignId,
+      customerPhone: phone,
+      ...(profile.name ? { customerName: profile.name } : {}),
+      status: "pending",
+      attempts: 0,
+      createdAt: Date.now(),
+    };
+    const ref = sub(establishmentId, "campaignRecipients").doc(recipientId);
+    try { await ref.create(recipient); recipientsCreated++; } catch (error) {
+      if (!(error instanceof Error && "code" in error && (error as Error & { code?: number }).code === 6)) throw error;
+    }
+  }
+  const now = Date.now();
+  const snapshot: CampaignAudienceSnapshot = {
+    selectedCount: selected,
+    eligibleRecipientCount: eligible,
+    excludedCount: excluded,
+    selection: input.selection,
+    selectedAt: now,
+  };
+  const updated: Campaign = {
+    ...campaign,
+    template: input.template,
+    audience: snapshot,
+    counters: { ...campaign.counters, total: eligible, queued: eligible },
+    updatedAt: now,
+  };
+  await sub(establishmentId, "campaigns").doc(campaignId).set(updated);
+  return { campaign: updated, selected, eligible, excluded, recipientsCreated };
 }
 
 export type MarketingOptOutResult = "opted_out" | "already_opted_out" | "blocked" | "customer_not_found";
