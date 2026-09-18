@@ -10,6 +10,7 @@
 //   - GET /api/campaigns/templates -> { templates: Template[] } (status "approved" apenas selecionável)
 //   - POST /api/campaigns -> cria em draft/scheduled
 import { useState } from "react";
+import { useEffect } from "react";
 import Link from "next/link";
 import { Megaphone, Users, FileText, ClipboardCheck, Check, ArrowLeft } from "lucide-react";
 import { Card } from "@/components/ui/Card";
@@ -28,6 +29,10 @@ export default function NewCampaignPage() {
   const [name, setName] = useState("");
   const [audience, setAudience] = useState<Audience>("all");
   const [templateId, setTemplateId] = useState("");
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string; language: string; status: string; components: Record<string, unknown>[]; senderCompatible: boolean }>>([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { fetch("/api/campaigns/templates").then((r) => r.ok ? r.json() : Promise.reject()).then((b: { templates?: typeof templates }) => setTemplates(b.templates ?? [])).catch(() => setTemplates([])); }, []);
+  const selectedTemplate = templates.find((template) => template.id === templateId);
 
   const canContinueStep0 = name.trim().length > 0;
 
@@ -137,13 +142,13 @@ export default function NewCampaignPage() {
         {step === 2 && (
           <Card>
             <StepHeader icon={<FileText className="h-5 w-5" />} title="Template" />
-            {/* BACKEND CONTRACT NEEDED: GET /api/campaigns/templates (só "approved" selecionável) */}
             <Label>Template aprovado</Label>
-            <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)} disabled>
-              <option value="">Nenhum template disponível ainda</option>
+            <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+              <option value="">Selecione um template</option>
+              {templates.filter((template) => template.status === "APPROVED" && template.senderCompatible).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
             </Select>
             <p className="mt-1.5 text-xs text-ink-400">
-              Conecte-se à Meta para importar templates aprovados —{" "}
+              Templates devem estar aprovados e compatíveis com o sender —{" "}
               <Link href="/painel/campanhas/templates" className="font-semibold text-primary hover:underline">
                 ver Templates
               </Link>
@@ -151,14 +156,14 @@ export default function NewCampaignPage() {
             </p>
 
             <div className="mt-4 rounded-control border border-dashed border-line p-4 text-center text-sm text-ink-400">
-              Prévia da mensagem aparece aqui quando um template for selecionado.
+              {selectedTemplate ? "Template aprovado e compatível selecionado." : "Prévia da mensagem aparece aqui quando um template for selecionado."}
             </div>
 
             <div className="mt-6 flex gap-3">
               <Button variant="secondary" className="flex-1" onClick={() => setStep(1)}>
                 Voltar
               </Button>
-              <Button className="flex-1" disabled title="Selecione um template para continuar">
+              <Button className="flex-1" disabled={!selectedTemplate} onClick={() => setStep(3)} title="Selecione um template para continuar">
                 Continuar
               </Button>
             </div>
@@ -183,11 +188,14 @@ export default function NewCampaignPage() {
               <Button variant="secondary" className="flex-1" onClick={() => setStep(2)}>
                 Voltar
               </Button>
-              <Button className="flex-1" disabled title="Disponível quando o envio estiver conectado">
+              <Button className="flex-1" disabled title="Envio será habilitado em Campanhas-06">
                 Enviar agora
               </Button>
-              <Button variant="secondary" className="flex-1" disabled title="Disponível quando o envio estiver conectado">
+              <Button variant="secondary" className="flex-1" disabled title="Agendamento será habilitado em Campanhas-06">
                 Agendar
+              </Button>
+              <Button variant="secondary" className="flex-1" disabled={saving || !selectedTemplate} onClick={async () => { setSaving(true); try { const created = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => r.json()); await fetch(`/api/campaigns/${created.campaign.id}/audience`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selection: "all_eligible", template: { id: selectedTemplate!.id, name: selectedTemplate!.name, languageCode: selectedTemplate!.language, status: selectedTemplate!.status, components: selectedTemplate!.components, senderCompatible: selectedTemplate!.senderCompatible } }) }); window.location.href = `/painel/campanhas/${created.campaign.id}`; } finally { setSaving(false); } }}>
+                {saving ? "Preparando…" : "Salvar e preparar"}
               </Button>
             </div>
           </Card>

@@ -34,7 +34,7 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     expect(continueBtn.disabled).toBe(true);
   });
 
-  it("passo Template: nenhum template real disponível, select desabilitado, sem chamada a API Meta", () => {
+  it("passo Template: consulta templates reais e mantém avanço bloqueado sem seleção", () => {
     render(<NewCampaignPage />);
     fireEvent.change(screen.getByPlaceholderText(/reativação de clientes/i), { target: { value: "X" } });
     fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
@@ -42,8 +42,8 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
 
     expect(screen.getByRole("heading", { name: "Template" })).toBeTruthy();
     const select = screen.getByRole("combobox") as HTMLSelectElement;
-    expect(select.disabled).toBe(true);
-    expect(screen.getByText(/nenhum template disponível ainda/i)).toBeTruthy();
+    expect(select.disabled).toBe(false);
+    expect(screen.getByText(/templates devem estar aprovados/i)).toBeTruthy();
 
     // Sem template real (nenhum contrato de backend ainda), o avanço para
     // Revisão fica estruturalmente travado — mesmo padrão de "gate por
