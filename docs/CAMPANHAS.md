@@ -95,3 +95,69 @@ da Meta — próxima OT).
 **Não conectado ao painel.** O endpoint existe mas não está em
 `vercel.json` `crons` nem é chamado pelo botão "Enviar agora" — habilitar
 qualquer um dos dois é uma decisão explícita de uma OT futura, não desta.
+
+## Status Meta + Replies (CAMPANHAS-07)
+
+Fecha a observabilidade usando o MESMO webhook do WhatsApp
+(`app/api/webhooks/whatsapp/route.ts`) — nenhum endpoint novo. Dois hooks,
+ambos em `lib/repo.ts`:
+
+- `applyCampaignDeliveryStatus` — correlaciona um status callback da Meta
+  (`change.value.statuses[]`, já classificado como `"status"` por
+  `classifyWebhookChange`) ao `CampaignRecipient` dono do `metaMessageId`.
+- `correlateCampaignReply` — quando chega uma mensagem inbound normal,
+  procura um `CampaignRecipient` recente para aquele telefone e marca
+  `replied`.
+
+Em ambos os casos o tenant vem SEMPRE de `findEstablishmentByPhoneNumberId`
+(resolvido a partir de `metadata.phone_number_id`, o mesmo caminho já usado
+por `processMessage`) — nunca de qualquer campo do corpo do webhook, que
+nem carrega establishmentId no formato real da Meta.
+
+**Monotonicidade.** `sent`(1) → `delivered`(2) → `read`(3) é uma ordem
+estrita: só aplica se o novo status tiver rank maior que o atual — um
+evento atrasado ou duplicado nunca regride nem duplica counters (não há
+`_processed_*` novo; a própria checagem de rank já torna a operação
+idempotente). "read" sem um "delivered" prévio credita OS DOIS counters de
+uma vez (`read` implica `delivered`/`sent` conceitualmente). `failed`
+pós-envio só se aplica a partir de status "sent" puro (nunca regride
+delivered/read) e soma em `counters.failed` SEM subtrair de `counters.sent`
+— o envio de fato aconteceu; `sent`/`delivered`/`read` são um funil aditivo
+(cada estágio é um fato histórico, não um "bucket" que se esvazia), diferente
+do `queued→sent/failed/skipped` do dispatcher (esse sim uma partição
+mutuamente exclusiva). `failureReason` guarda só `code`+`title` sanitizados
+da Meta, nunca o payload bruto.
+
+**Correlação de reply.** Um `CampaignRecipient` é elegível para virar
+`replied` se `status` é `sent`/`delivered`/`read` (já foi enviado, ainda não
+respondido) e `sentAt` está dentro de uma janela de 7 dias
+(`REPLY_CORRELATION_WINDOW_MS`) — campanha mais antiga que isso nunca
+recebe a resposta, mesmo sem nenhum candidato mais novo. Se houver mais de
+um candidato elegível para o mesmo telefone (o cliente recebeu duas
+campanhas recentes), vence o de `sentAt` mais recente (critério
+determinístico; `id` como desempate estável) — nunca "cai" para uma
+campanha mais antiga só porque a mais nova já foi respondida antes.
+`replied` é terminal: uma segunda resposta encontra o recipient já
+`replied` e não incrementa `counters.replied` de novo.
+
+**Nunca interfere no fluxo normal.** O hook de reply roda logo após
+`loadConversation` (antes de qualquer branch/early-return do webhook) e
+está isolado em `try/catch` — uma falha na correlação nunca impede a
+resposta da IA, a persistência da conversa, handoff, agenda ou CRM. O
+mesmo vale para o hook de status: roda dentro do próprio `try/catch` do
+laço de classificação de `handleWebhook`, nunca propaga erro para o resto
+do payload.
+
+**Frontend.** Nenhuma mudança foi necessária: `/api/campaigns` e
+`/api/campaigns/:id` já devolvem `Campaign`/`CampaignRecipient` reais e sem
+transformação, e `CampaignDetail`/`CampaignsTable` (OT-FRONT-CAMPANHAS-01)
+já renderizam `counters.sent/delivered/read/replied/failed` diretamente —
+os novos valores aparecem no painel assim que persistidos, sem nenhum
+código novo de UI.
+
+**Gaps para CAMPANHAS-08.** Reconciliação de recipients `ambiguous: true`
+(CAMPANHAS-06) continua não implementada. Não há vínculo
+`CampaignRecipient` → `conversationId` (a linha "Ver conversa" do painel
+continua um placeholder inerte). O `wamid` do "Ver conversa" ou de uma
+futura auditoria de mensagens não é persistido em `Message` — só em
+`CampaignRecipient.metaMessageId`.

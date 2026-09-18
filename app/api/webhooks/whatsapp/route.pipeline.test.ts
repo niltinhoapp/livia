@@ -68,6 +68,8 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   getPendingTask: (...a: unknown[]) => getPendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  applyCampaignDeliveryStatus: vi.fn(async () => "not_found"),
+  correlateCampaignReply: vi.fn(async () => "no_match"),
 }));
 
 vi.mock("@/lib/whatsapp/client", async (importOriginal) => ({

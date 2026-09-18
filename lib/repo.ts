@@ -31,6 +31,7 @@ import type {
   KnowledgeCorrection,
   CorrectionCategory,
   CampaignRecipient,
+  CampaignRecipientStatus,
 } from "@/types";
 
 const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1361,6 +1362,165 @@ export async function recordCampaignRecipientAttemptStart(
       updatedAt: now,
     });
     return true;
+  });
+}
+
+// ---- Status Meta + Replies (CAMPANHAS-07) ----
+// Fecha a observabilidade do dispatcher usando o MESMO webhook do WhatsApp
+// (nenhum webhook novo): status de entrega (sent/delivered/read/failed)
+// correlacionado por metaMessageId, e resposta do cliente correlacionada por
+// telefone dentro de uma janela determinística. Estratégia completa
+// documentada em docs/CAMPANHAS.md, seção "Status Meta + Replies".
+
+export type CampaignDeliveryStatus = "sent" | "delivered" | "read" | "failed";
+export type ApplyCampaignDeliveryStatusResult = "applied" | "not_found" | "no_change";
+
+// Progressão só nesta direção — nunca regride (evento atrasado/duplicado é
+// no-op). "failed" pós-envio só se aplica a partir de "sent" puro: uma vez
+// delivered/read, a Meta não teria motivo real para reportar failed depois,
+// e mesmo que reportasse, preferimos preservar o estado mais avançado.
+const DELIVERY_STATUS_RANK: Partial<Record<CampaignRecipientStatus, number>> = {
+  sent: 1,
+  delivered: 2,
+  read: 3,
+};
+
+function sanitizeMetaStatusError(error?: { code?: number; title?: string }): string {
+  if (!error) return "delivery_failed";
+  const parts = [`code=${error.code ?? "?"}`];
+  if (error.title) parts.push(error.title.slice(0, 120));
+  return parts.join(" ").slice(0, 300);
+}
+
+/**
+ * Correlaciona um status callback da Meta (sent/delivered/read/failed) ao
+ * CampaignRecipient dono do `metaMessageId`, dentro do tenant já resolvido
+ * pelo chamador (nunca aceita establishmentId do corpo do webhook).
+ *
+ * `sent`→`delivered`→`read` é um funil aditivo nos counters (ver
+ * docs/CAMPANHAS.md): "read" sem um "delivered" prévio credita os DOIS
+ * counters de uma vez, porque ler implica ter sido entregue. `counters.sent`
+ * nunca é decrementado aqui — já foi incrementado pelo dispatcher ao
+ * despachar; um "failed" pós-envio (Meta aceitou mas não entregou) soma em
+ * `counters.failed` sem subtrair de `sent`, porque o envio de fato aconteceu.
+ */
+export async function applyCampaignDeliveryStatus(
+  establishmentId: string,
+  metaMessageId: string,
+  status: CampaignDeliveryStatus,
+  error?: { code?: number; title?: string },
+  now = Date.now(),
+): Promise<ApplyCampaignDeliveryStatusResult> {
+  const snap = await sub(establishmentId, "campaignRecipients").where("metaMessageId", "==", metaMessageId).limit(1).get();
+  if (snap.empty) return "not_found";
+  const recipientRef = sub(establishmentId, "campaignRecipients").doc(snap.docs[0]!.id);
+
+  return db.runTransaction(async (tx) => {
+    const recipientSnap = await tx.get(recipientRef);
+    if (!recipientSnap.exists) return "not_found";
+    const recipient = recipientSnap.data() as CampaignRecipient;
+    const currentRank = DELIVERY_STATUS_RANK[recipient.status] ?? 0;
+    // Não é sent/delivered/read (ex.: já replied, failed, skipped, ou nunca
+    // chegou a ser enviado): nunca regride um estado terminal/anterior.
+    if (currentRank === 0) return "no_change";
+
+    const campaignRef = sub(establishmentId, "campaigns").doc(recipient.campaignId);
+
+    if (status === "failed") {
+      if (recipient.status !== "sent") return "no_change";
+      const campaignSnap = await tx.get(campaignRef);
+      if (!campaignSnap.exists) return "no_change";
+      const campaign = campaignSnap.data() as Campaign;
+      tx.update(recipientRef, {
+        status: "failed",
+        failedAt: now,
+        failureReason: sanitizeMetaStatusError(error),
+        updatedAt: now,
+      });
+      tx.update(campaignRef, {
+        counters: { ...campaign.counters, failed: campaign.counters.failed + 1 },
+        updatedAt: now,
+      });
+      return "applied";
+    }
+
+    const newRank = DELIVERY_STATUS_RANK[status] ?? 0;
+    if (newRank <= currentRank) return "no_change";
+
+    const campaignSnap = await tx.get(campaignRef);
+    if (!campaignSnap.exists) return "no_change";
+    let counters = (campaignSnap.data() as Campaign).counters;
+    const patch: Record<string, unknown> = { status, updatedAt: now };
+    if (newRank >= 2 && currentRank < 2) {
+      counters = { ...counters, delivered: counters.delivered + 1 };
+      patch.deliveredAt = now;
+    }
+    if (newRank >= 3 && currentRank < 3) {
+      counters = { ...counters, read: counters.read + 1 };
+      patch.readAt = now;
+    }
+    tx.update(recipientRef, patch);
+    tx.update(campaignRef, { counters, updatedAt: now });
+    return "applied";
+  });
+}
+
+export type CorrelateCampaignReplyResult = "applied" | "already_replied" | "no_match";
+
+const REPLY_CORRELATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
+
+/**
+ * Quando o cliente responde, procura o CampaignRecipient mais recente e
+ * elegível (status sent/delivered/read, `sentAt` dentro da janela de 7 dias)
+ * para aquele telefone NESTE tenant e marca `replied` uma única vez. Nunca
+ * atribui uma resposta a uma campanha fora da janela, e se houver mais de
+ * um candidato, o mais recente por `sentAt` vence (critério determinístico;
+ * `id` como desempate estável). Não altera Conversation/CustomerProfile —
+ * quem chama continua o fluxo normal da Lívia independentemente do
+ * resultado aqui.
+ */
+export async function correlateCampaignReply(
+  establishmentId: string,
+  customerPhone: string,
+  now = Date.now(),
+): Promise<CorrelateCampaignReplyResult> {
+  const phone = normalizePhone(customerPhone);
+  const snap = await sub(establishmentId, "campaignRecipients").where("customerPhone", "==", phone).limit(50).get();
+
+  // Inclui "replied" na seleção (não só sent/delivered/read): se o candidato
+  // mais recente já foi respondido antes, o resultado precisa ser
+  // "already_replied" — nunca cair silenciosamente para uma campanha mais
+  // antiga só porque a mais recente já está resolvida.
+  const candidates = snap.docs
+    .map((doc) => doc.data() as CampaignRecipient)
+    .filter(
+      (r) =>
+        (r.status === "sent" || r.status === "delivered" || r.status === "read" || r.status === "replied") &&
+        typeof r.sentAt === "number" &&
+        now - r.sentAt <= REPLY_CORRELATION_WINDOW_MS,
+    )
+    .sort((a, b) => (b.sentAt ?? 0) - (a.sentAt ?? 0) || b.id.localeCompare(a.id));
+
+  if (candidates.length === 0) return "no_match";
+  const chosen = candidates[0]!;
+
+  const recipientRef = sub(establishmentId, "campaignRecipients").doc(chosen.id);
+  const campaignRef = sub(establishmentId, "campaigns").doc(chosen.campaignId);
+
+  return db.runTransaction(async (tx) => {
+    const recipientSnap = await tx.get(recipientRef);
+    if (!recipientSnap.exists) return "no_match";
+    const recipient = recipientSnap.data() as CampaignRecipient;
+    if (recipient.status === "replied") return "already_replied";
+    if (recipient.status !== "sent" && recipient.status !== "delivered" && recipient.status !== "read") return "no_match";
+
+    const campaignSnap = await tx.get(campaignRef);
+    if (!campaignSnap.exists) return "no_match";
+    const campaign = campaignSnap.data() as Campaign;
+
+    tx.update(recipientRef, { status: "replied", repliedAt: now, updatedAt: now });
+    tx.update(campaignRef, { counters: { ...campaign.counters, replied: campaign.counters.replied + 1 }, updatedAt: now });
+    return "applied";
   });
 }
 
