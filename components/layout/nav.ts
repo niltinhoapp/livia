@@ -1,4 +1,4 @@
-import { LayoutDashboard, CalendarDays, BookOpen, Settings, MessageCircle, MessagesSquare, Users, CreditCard } from "lucide-react";
+import { LayoutDashboard, CalendarDays, BookOpen, Settings, MessageCircle, MessagesSquare, Users, CreditCard, Megaphone } from "lucide-react";
 
 export type NavGroup = "operacao" | "ajustes";
 
@@ -24,6 +24,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/painel/agenda", label: "Agenda", mobileLabel: "Agenda", icon: CalendarDays, group: "operacao" },
   { href: "/painel/conversas", label: "Conversas", mobileLabel: "Chat", icon: MessagesSquare, group: "operacao" },
   { href: "/painel/clientes", label: "Clientes", mobileLabel: "Clientes", icon: Users, group: "operacao" },
+  { href: "/painel/campanhas", label: "Campanhas", mobileLabel: "Campanhas", icon: Megaphone, group: "operacao" },
   { href: "/painel/whatsapp", label: "WhatsApp", mobileLabel: "WhatsApp", icon: MessageCircle, group: "ajustes" },
   { href: "/painel/conhecimento", label: "Conhecimento", mobileLabel: "Saber", icon: BookOpen, group: "ajustes" },
   { href: "/painel/plano", label: "Plano e cobrança", mobileLabel: "Plano", icon: CreditCard, group: "ajustes" },
