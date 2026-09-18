@@ -452,6 +452,7 @@ export interface CampaignRecipient {
   status: CampaignRecipientStatus;
   attempts?: number;
   createdAt: number;
+  updatedAt?: number;
   metaMessageId?: string;
   sentAt?: number;
   deliveredAt?: number;
@@ -459,6 +460,26 @@ export interface CampaignRecipient {
   failedAt?: number;
   repliedAt?: number;
   failureReason?: string;
+  // ---- Dispatcher (CAMPANHAS-06) ----
+  // Lease exclusivo enquanto status === "leased" (mesmo padrão de
+  // attemptId/leaseExpiresAt já usado em EstablishmentWhatsapp). leaseOwner
+  // identifica o worker; leaseExpiresAt permite recuperar após crash.
+  leaseOwner?: string;
+  leaseExpiresAt?: number;
+  // true a partir do instante em que o worker chama a Graph API dentro do
+  // lease atual — persistido ANTES da chamada de rede. Se o lease expirar
+  // com esta flag true, o worker morreu depois de possivelmente já ter
+  // enviado; nunca reclamamos esse recipient automaticamente (ver
+  // docs/CAMPANHAS.md, seção Dispatcher).
+  leaseAttemptStarted?: boolean;
+  lastAttemptAt?: number;
+  // Retry: quando status volta a "queued" após erro retryable/rate-limit,
+  // define quando o recipient volta a ficar elegível para claim.
+  nextAttemptAt?: number;
+  // true quando o resultado do envio é indeterminado (sem resposta HTTP
+  // confirmada da Meta) — recipient fica "failed" mas marcado à parte para
+  // reconciliação manual, nunca reenviado automaticamente.
+  ambiguous?: boolean;
 }
 
 // Objetivo principal detectado numa mensagem do cliente. Classificação

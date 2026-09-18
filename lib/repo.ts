@@ -1135,6 +1135,235 @@ export async function prepareCampaignAudience(
   return { campaign: updated, selected, eligible, excluded, recipientsCreated };
 }
 
+// ---- Dispatcher de Campanhas (CAMPANHAS-06) ----
+// Claim/lease transacional por recipient (um documento por transação, mesmo
+// padrão de attemptId/leaseExpiresAt já usado no connect-claim do WhatsApp
+// em EstablishmentWhatsapp) + finalização idempotente dos counters. A
+// estratégia completa (lease, crash pós-Meta, retry/backoff, rate control)
+// está documentada em docs/CAMPANHAS.md, seção "Dispatcher". Esta camada só
+// cuida de dados; elegibilidade e chamada à Meta ficam em
+// lib/campaignDispatcher.ts — nunca aqui.
+
+export const CAMPAIGN_DISPATCH_DEFAULT_LEASE_TTL_MS = 2 * 60 * 1000;
+export const CAMPAIGN_DISPATCH_MAX_BATCH = 50;
+
+function bumpCampaignCounters(
+  counters: Campaign["counters"],
+  bucket: "sent" | "failed" | "skipped",
+): Campaign["counters"] {
+  return { ...counters, queued: Math.max(0, counters.queued - 1), [bucket]: counters[bucket] + 1 };
+}
+
+export interface ClaimCampaignRecipientsOptions {
+  batchSize?: number;
+  leaseTtlMs?: number;
+  now?: number;
+}
+
+/**
+ * Adquire lease exclusivo num pequeno lote de recipients pending/queued
+ * (com nextAttemptAt já vencido) e recupera leases "leased" expirados.
+ *
+ * Um lease expirado só é reclamado se `leaseAttemptStarted` nunca chegou a
+ * `true` durante ele. Se chegou, o worker anterior pode ter morrido DEPOIS
+ * de a Meta já ter aceitado o envio — nesse caso o recipient é finalizado
+ * direto como failed+ambiguous (counters avançam) e NUNCA é reclamado de
+ * novo automaticamente, para nunca reenviar mensagem duplicada.
+ */
+export async function claimCampaignRecipients(
+  establishmentId: string,
+  campaignId: string,
+  workerId: string,
+  options: ClaimCampaignRecipientsOptions = {},
+): Promise<CampaignRecipient[]> {
+  const now = options.now ?? Date.now();
+  const leaseTtlMs = options.leaseTtlMs ?? CAMPAIGN_DISPATCH_DEFAULT_LEASE_TTL_MS;
+  const batchSize = Math.max(1, Math.min(options.batchSize ?? 20, CAMPAIGN_DISPATCH_MAX_BATCH));
+  const recipientsCol = sub(establishmentId, "campaignRecipients");
+  const campaignRef = sub(establishmentId, "campaigns").doc(campaignId);
+  const overFetch = batchSize * 4;
+
+  const claimed: CampaignRecipient[] = [];
+
+  const claimFreshTx = async (docId: string) => {
+    const ref = recipientsCol.doc(docId);
+    return db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const recipient = snap.data() as CampaignRecipient;
+      if (recipient.status !== "pending" && recipient.status !== "queued") return null;
+      if (recipient.nextAttemptAt && recipient.nextAttemptAt > now) return null;
+
+      const patch = {
+        status: "leased" as const,
+        leaseOwner: workerId,
+        leaseExpiresAt: now + leaseTtlMs,
+        leaseAttemptStarted: false,
+        updatedAt: now,
+      };
+      tx.update(ref, patch);
+      return { ...recipient, ...patch };
+    });
+  };
+
+  // Passo 1: recuperar (ou finalizar como ambíguo) leases "leased" vencidos.
+  const leasedSnap = await recipientsCol
+    .where("campaignId", "==", campaignId)
+    .where("status", "==", "leased")
+    .limit(overFetch)
+    .get();
+  for (const doc of leasedSnap.docs) {
+    if (claimed.length >= batchSize) break;
+    const ref = recipientsCol.doc(doc.id);
+    const result = await db.runTransaction(async (tx) => {
+      const recipientSnap = await tx.get(ref);
+      if (!recipientSnap.exists) return null;
+      const recipient = recipientSnap.data() as CampaignRecipient;
+      if (recipient.status !== "leased" || !recipient.leaseExpiresAt || recipient.leaseExpiresAt > now) return null;
+
+      if (recipient.leaseAttemptStarted) {
+        const campaignSnap = await tx.get(campaignRef);
+        if (!campaignSnap.exists) return null;
+        const campaign = campaignSnap.data() as Campaign;
+        tx.update(ref, {
+          status: "failed",
+          ambiguous: true,
+          failureReason: "lease_expired_after_send_attempt",
+          failedAt: now,
+          updatedAt: now,
+        });
+        tx.update(campaignRef, { counters: bumpCampaignCounters(campaign.counters, "failed"), updatedAt: now });
+        return null; // finalizado como falha; não entra no lote reclamado
+      }
+
+      const patch = {
+        status: "leased" as const,
+        leaseOwner: workerId,
+        leaseExpiresAt: now + leaseTtlMs,
+        leaseAttemptStarted: false,
+        updatedAt: now,
+      };
+      tx.update(ref, patch);
+      return { ...recipient, ...patch };
+    });
+    if (result) claimed.push(result);
+  }
+
+  // Passo 2: reivindicar recipients ainda não tentados (pending) ou já
+  // agendados para retry (queued, nextAttemptAt vencido). Duas queries de
+  // igualdade em vez de um único `in` — mesma filosofia do resto do repo:
+  // nenhum índice composto novo.
+  for (const status of ["pending", "queued"] as const) {
+    if (claimed.length >= batchSize) break;
+    const snap = await recipientsCol
+      .where("campaignId", "==", campaignId)
+      .where("status", "==", status)
+      .limit(overFetch)
+      .get();
+    for (const doc of snap.docs) {
+      if (claimed.length >= batchSize) break;
+      const result = await claimFreshTx(doc.id);
+      if (result) claimed.push(result);
+    }
+  }
+
+  return claimed;
+}
+
+export type CampaignRecipientOutcome =
+  | { kind: "sent"; metaMessageId?: string }
+  | { kind: "skipped"; reason: string }
+  | { kind: "failed"; reason: string; ambiguous?: boolean }
+  | { kind: "retry"; reason: string; nextAttemptAt: number };
+
+export type ApplyCampaignRecipientOutcomeResult = "applied" | "stale_lease";
+
+/**
+ * Finaliza (ou reagenda) um recipient que ESTE worker tem em lease. Só
+ * escreve se o documento ainda está `leased` por `workerId` — se outro
+ * worker já reclamou ou finalizou (lease perdido/roubado), a chamada é um
+ * no-op seguro (`"stale_lease"`), nunca sobrescreve o trabalho de outro
+ * worker nem duplica os counters da campanha.
+ */
+export async function applyCampaignRecipientOutcome(
+  establishmentId: string,
+  campaignId: string,
+  recipientId: string,
+  workerId: string,
+  outcome: CampaignRecipientOutcome,
+  now = Date.now(),
+): Promise<ApplyCampaignRecipientOutcomeResult> {
+  const recipientRef = sub(establishmentId, "campaignRecipients").doc(recipientId);
+  const campaignRef = sub(establishmentId, "campaigns").doc(campaignId);
+
+  return db.runTransaction(async (tx) => {
+    const recipientSnap = await tx.get(recipientRef);
+    if (!recipientSnap.exists) return "stale_lease";
+    const recipient = recipientSnap.data() as CampaignRecipient;
+    if (recipient.status !== "leased" || recipient.leaseOwner !== workerId) return "stale_lease";
+
+    if (outcome.kind === "retry") {
+      tx.update(recipientRef, {
+        status: "queued",
+        nextAttemptAt: outcome.nextAttemptAt,
+        failureReason: outcome.reason.slice(0, 300),
+        updatedAt: now,
+      });
+      return "applied"; // ainda não é terminal: counters não avançam
+    }
+
+    const campaignSnap = await tx.get(campaignRef);
+    if (!campaignSnap.exists) return "stale_lease";
+    const campaign = campaignSnap.data() as Campaign;
+
+    const bucket = outcome.kind;
+    const patch: Record<string, unknown> = { status: bucket, updatedAt: now };
+    if (outcome.kind === "sent") {
+      patch.sentAt = now;
+      if (outcome.metaMessageId) patch.metaMessageId = outcome.metaMessageId;
+    } else {
+      patch.failureReason = outcome.reason.slice(0, 300);
+      if (outcome.kind === "failed") {
+        patch.failedAt = now;
+        if (outcome.ambiguous) patch.ambiguous = true;
+      }
+    }
+    tx.update(recipientRef, patch);
+    tx.update(campaignRef, { counters: bumpCampaignCounters(campaign.counters, bucket), updatedAt: now });
+    return "applied";
+  });
+}
+
+/**
+ * Registra o INÍCIO da tentativa de envio (attempts++, leaseAttemptStarted
+ * = true) ANTES de chamar a Graph API. É esta escrita que permite ao claim
+ * distinguir, depois de um crash, "nunca cheguei a chamar a Meta" (lease
+ * reclamável) de "cheguei a chamar, não sei se ela recebeu" (ambíguo,
+ * finalizado sem retry automático). Só aplica se o lease ainda for deste
+ * worker.
+ */
+export async function recordCampaignRecipientAttemptStart(
+  establishmentId: string,
+  recipientId: string,
+  workerId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const ref = sub(establishmentId, "campaignRecipients").doc(recipientId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const recipient = snap.data() as CampaignRecipient;
+    if (recipient.status !== "leased" || recipient.leaseOwner !== workerId) return false;
+    tx.update(ref, {
+      attempts: (recipient.attempts ?? 0) + 1,
+      lastAttemptAt: now,
+      leaseAttemptStarted: true,
+      updatedAt: now,
+    });
+    return true;
+  });
+}
+
 export type MarketingOptOutResult = "opted_out" | "already_opted_out" | "blocked" | "customer_not_found";
 
 // Opt-out é uma operação terminal para marketing, mas não altera Conversation,
