@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { isMarketingOptInSource, normalizeMarketingImportPhone, marketingEligibilityOf } from "@/lib/campaigns";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
 import type {
@@ -18,12 +19,18 @@ import type {
   MessageRole,
   CustomerProfile,
   Campaign,
+  CampaignTemplateSnapshot,
+  CampaignAudienceSnapshot,
+  MarketingImportContact,
+  MarketingImportDeclaration,
+  MarketingImportResult,
   ConversationTask,
   IntentType,
   PendingTask,
   PendingTaskType,
   KnowledgeCorrection,
   CorrectionCategory,
+  CampaignRecipient,
 } from "@/types";
 
 const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1032,6 +1039,90 @@ export async function getCampaign(
   return doc.exists ? (doc.data() as Campaign) : null;
 }
 
+export type CampaignAudienceSelection = "all_eligible" | "selected";
+export interface PrepareCampaignAudienceInput {
+  selection: CampaignAudienceSelection;
+  phones?: string[];
+  template: CampaignTemplateSnapshot;
+}
+
+export interface PrepareCampaignAudienceResult {
+  campaign: Campaign;
+  selected: number;
+  eligible: number;
+  excluded: number;
+  recipientsCreated: number;
+}
+
+const MAX_SYNCHRONOUS_AUDIENCE = 200;
+
+/** Materializa uma audiência pequena e idempotente. O recipient é snapshot
+ * operacional, não autorização: o dispatcher deve revalidar o CustomerProfile
+ * imediatamente antes do envio. */
+export async function prepareCampaignAudience(
+  establishmentId: string,
+  campaignId: string,
+  input: PrepareCampaignAudienceInput,
+): Promise<PrepareCampaignAudienceResult> {
+  const campaign = await getCampaign(establishmentId, campaignId);
+  if (!campaign || campaign.status !== "draft") throw new Error("Campanha não encontrada ou não está em rascunho.");
+  if (input.template.status !== "APPROVED" || input.template.senderCompatible !== true) {
+    throw new Error("Template não aprovado ou incompatível com o sender atual.");
+  }
+  const customers = await sub(establishmentId, "customers").get();
+  const byPhone = new Map<string, CustomerProfile>();
+  for (const doc of customers.docs) {
+    const profile = doc.data() as CustomerProfile;
+    const phone = normalizeMarketingImportPhone(doc.id) ?? normalizeMarketingImportPhone(profile.phone);
+    if (phone) byPhone.set(phone, profile);
+  }
+  const requested = input.selection === "all_eligible"
+    ? [...byPhone.keys()]
+    : [...new Set((input.phones ?? []).map((phone) => normalizeMarketingImportPhone(phone)).filter((phone): phone is string => !!phone))];
+  if (requested.length > MAX_SYNCHRONOUS_AUDIENCE) throw new Error("Audiência excede o limite síncrono; use processamento em lotes.");
+  const selected = requested.length;
+  let eligible = 0;
+  let excluded = 0;
+  let recipientsCreated = 0;
+  for (const phone of requested) {
+    const profile = byPhone.get(phone);
+    if (!profile || !marketingEligibilityOf(profile).eligible) { excluded++; continue; }
+    eligible++;
+    const recipientId = `${campaignId}_${phone}`;
+    const recipient: CampaignRecipient = {
+      id: recipientId,
+      establishmentId,
+      campaignId,
+      customerPhone: phone,
+      ...(profile.name ? { customerName: profile.name } : {}),
+      status: "pending",
+      attempts: 0,
+      createdAt: Date.now(),
+    };
+    const ref = sub(establishmentId, "campaignRecipients").doc(recipientId);
+    try { await ref.create(recipient); recipientsCreated++; } catch (error) {
+      if (!(error instanceof Error && "code" in error && (error as Error & { code?: number }).code === 6)) throw error;
+    }
+  }
+  const now = Date.now();
+  const snapshot: CampaignAudienceSnapshot = {
+    selectedCount: selected,
+    eligibleRecipientCount: eligible,
+    excludedCount: excluded,
+    selection: input.selection,
+    selectedAt: now,
+  };
+  const updated: Campaign = {
+    ...campaign,
+    template: input.template,
+    audience: snapshot,
+    counters: { ...campaign.counters, total: eligible, queued: eligible },
+    updatedAt: now,
+  };
+  await sub(establishmentId, "campaigns").doc(campaignId).set(updated);
+  return { campaign: updated, selected, eligible, excluded, recipientsCreated };
+}
+
 export type MarketingOptOutResult = "opted_out" | "already_opted_out" | "blocked" | "customer_not_found";
 
 // Opt-out é uma operação terminal para marketing, mas não altera Conversation,
@@ -1063,6 +1154,137 @@ export async function optOutCustomerFromMarketing(
     });
     return "opted_out";
   });
+}
+
+const MAX_MARKETING_IMPORT_CONTACTS = 200;
+
+type NormalizedImportContact = { phone: string; name: string | null };
+
+function normalizeMarketingImport(
+  contacts: readonly MarketingImportContact[],
+): { contacts: NormalizedImportContact[]; duplicates: number } {
+  if (!Array.isArray(contacts) || contacts.length === 0 || contacts.length > MAX_MARKETING_IMPORT_CONTACTS) {
+    throw new Error(`Importação deve conter entre 1 e ${MAX_MARKETING_IMPORT_CONTACTS} contatos.`);
+  }
+
+  const unique = new Map<string, NormalizedImportContact>();
+  for (const contact of contacts) {
+    const phone = normalizeMarketingImportPhone(contact?.phone);
+    if (!phone) throw new Error("Telefone de importação inválido.");
+    if (contact.name !== undefined && typeof contact.name !== "string") {
+      throw new Error("Nome de importação inválido.");
+    }
+    const name = contact.name?.trim().slice(0, 160) || null;
+    const prior = unique.get(phone);
+    // Duplicatas não criam outro perfil; aproveita um nome presente sem nunca
+    // permitir que a repetição sobrescreva um nome já escolhido antes.
+    if (!prior || (!prior.name && name)) unique.set(phone, { phone, name });
+  }
+
+  return { contacts: [...unique.values()], duplicates: contacts.length - unique.size };
+}
+
+// Importa/enriquece a coleção customers do próprio tenant. A declaração
+// explícita do estabelecimento é obrigatória: `crm_import` identifica a
+// origem operacional, mas não substitui `confirmedMarketingOptIn: true`.
+// O lote é deliberadamente limitado; bases grandes precisam de uma etapa
+// assíncrona própria, nunca de uma request longa e parcialmente executada.
+export async function importMarketingContacts(
+  establishmentId: string,
+  input: { contacts: readonly MarketingImportContact[]; declaration: MarketingImportDeclaration },
+): Promise<MarketingImportResult> {
+  if (input.declaration?.confirmedMarketingOptIn !== true || !isMarketingOptInSource(input.declaration?.source)) {
+    throw new Error("Declaração explícita de opt-in é obrigatória.");
+  }
+  const normalized = normalizeMarketingImport(input.contacts);
+  const result: MarketingImportResult = {
+    received: input.contacts.length,
+    unique: normalized.contacts.length,
+    duplicates: normalized.duplicates,
+    created: 0,
+    enriched: 0,
+    eligible: 0,
+    alreadyEligible: 0,
+    protected: 0,
+  };
+
+  for (const contact of normalized.contacts) {
+    const outcome = await db.runTransaction(async (tx) => {
+      const ref = sub(establishmentId, "customers").doc(contact.phone);
+      const snap = await tx.get(ref);
+      const now = Date.now();
+
+      if (!snap.exists) {
+        const profile: CustomerProfile = {
+          phone: contact.phone,
+          establishmentId,
+          name: contact.name,
+          preferredProfessional: null,
+          preferredTime: null,
+          frequentAddress: null,
+          lastService: null,
+          lastIntent: null,
+          notes: null,
+          marketingStatus: "eligible",
+          marketingStatusUpdatedAt: now,
+          marketingOptInAt: now,
+          marketingOptInSource: input.declaration.source,
+          marketingOptInDeclarationAt: now,
+          marketingOptInDeclarationVersion: "whatsapp_marketing_consent_v1",
+          // Perfil importado ainda não conversou; createdAt é o melhor valor
+          // disponível para a ordenação existente até uma interação real.
+          lastInteractionAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.create(ref, profile);
+        return "created_eligible" as const;
+      }
+
+      const profile = snap.data() as CustomerProfile;
+      if (profile.marketingStatus === "opted_out" || profile.marketingStatus === "blocked") {
+        return "protected" as const;
+      }
+
+      const patch: Record<string, unknown> = {};
+      if (!profile.name && contact.name) patch.name = contact.name;
+      if (profile.marketingStatus === "eligible") {
+        if (Object.keys(patch).length === 0) return "already_eligible" as const;
+        patch.updatedAt = now;
+        tx.update(ref, patch);
+        return "enriched_eligible" as const;
+      }
+
+      patch.marketingStatus = "eligible";
+      patch.marketingStatusUpdatedAt = now;
+      patch.marketingOptInAt = now;
+      patch.marketingOptInSource = input.declaration.source;
+      patch.marketingOptInDeclarationAt = now;
+      patch.marketingOptInDeclarationVersion = "whatsapp_marketing_consent_v1";
+      patch.updatedAt = now;
+      const enriched = Object.prototype.hasOwnProperty.call(patch, "name");
+      tx.update(ref, patch);
+      return enriched ? "eligible_enriched" as const : "eligible" as const;
+    });
+
+    if (outcome === "created_eligible") {
+      result.created++;
+      result.eligible++;
+    } else if (outcome === "eligible") {
+      result.eligible++;
+    } else if (outcome === "eligible_enriched") {
+      result.eligible++;
+      result.enriched++;
+    } else if (outcome === "enriched_eligible") {
+      result.enriched++;
+    } else if (outcome === "already_eligible") {
+      result.alreadyEligible++;
+    } else {
+      result.protected++;
+    }
+  }
+
+  return result;
 }
 
 // Recupera (ou cria) a conversa do contato e devolve as últimas mensagens

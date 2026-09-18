@@ -16,6 +16,7 @@ const GRAPH = "https://graph.facebook.com/v22.0";
 export const MAX_INBOUND_AUDIO_BYTES = 16 * 1024 * 1024;
 export const MAX_INBOUND_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
+export const MESSAGE_TEMPLATES_PAGE_LIMIT = 10;
 
 const ALLOWED_AUDIO_MIME_TYPES = new Set([
   "audio/aac",
@@ -60,6 +61,33 @@ export class WhatsAppMediaError extends Error {
   ) {
     super(code);
     this.name = "WhatsAppMediaError";
+  }
+}
+
+export type MetaTemplateComponent = {
+  type: string;
+  format?: string;
+  text?: string;
+  buttons?: unknown[];
+  example?: unknown;
+  [key: string]: unknown;
+};
+
+export type WhatsAppTemplate = {
+  id: string;
+  name: string;
+  language: string;
+  status: string;
+  category?: string;
+  components: MetaTemplateComponent[];
+  approved: boolean;
+  senderCompatible: boolean;
+};
+
+export class WhatsAppTemplateError extends Error {
+  constructor(public readonly code: "not_connected" | "missing_waba" | "meta_error" | "invalid_response" | "timeout" | "network_error", public readonly status?: number) {
+    super(code);
+    this.name = "WhatsAppTemplateError";
   }
 }
 
@@ -352,6 +380,74 @@ export async function sendTemplate(
   }
   const data = (await res.json().catch(() => ({}))) as { messages?: { id: string }[] };
   return { waMessageId: data.messages?.[0]?.id };
+}
+
+/** Lista templates da WABA do próprio estabelecimento, sem persistir nem
+ * devolver credenciais. APPROVED e compatibilidade do sender são sinais
+ * distintos: o sender atual só monta BODY/text parameters. */
+export async function listMessageTemplates(
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
+): Promise<WhatsAppTemplate[]> {
+  if (wa.status !== "connected") throw new WhatsAppTemplateError("not_connected");
+  if (!wa.wabaId?.trim()) throw new WhatsAppTemplateError("missing_waba");
+  const { accessToken } = resolveSendCredentials(wa, establishmentId);
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  let nextUrl = `${GRAPH}/${encodeURIComponent(wa.wabaId)}/message_templates?fields=id,name,language,status,category,components&limit=100`;
+  const result: WhatsAppTemplate[] = [];
+  for (let page = 0; page < MESSAGE_TEMPLATES_PAGE_LIMIT && nextUrl; page++) {
+    const response = await withTemplateTimeout((signal) => fetch(nextUrl, { headers, signal }));
+    if (!response.ok) throw new WhatsAppTemplateError("meta_error", response.status);
+    const payload = (await response.json().catch(() => null)) as {
+      data?: unknown;
+      paging?: { next?: unknown };
+    } | null;
+    if (!payload || !Array.isArray(payload.data)) throw new WhatsAppTemplateError("invalid_response");
+    for (const raw of payload.data) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.id !== "string" || typeof item.name !== "string" || typeof item.language !== "string" || typeof item.status !== "string") continue;
+      const components = Array.isArray(item.components)
+        ? item.components.filter((component): component is MetaTemplateComponent => !!component && typeof component === "object" && typeof (component as Record<string, unknown>).type === "string")
+        : [];
+      const status = item.status.toUpperCase();
+      result.push({
+        id: item.id,
+        name: item.name,
+        language: item.language,
+        status: item.status,
+        ...(typeof item.category === "string" ? { category: item.category } : {}),
+        components,
+        approved: status === "APPROVED",
+        senderCompatible: components.every((component) => component.type.toUpperCase() === "BODY"),
+      });
+    }
+    nextUrl = typeof payload.paging?.next === "string" && isAllowedMetaApiUrl(payload.paging.next) ? payload.paging.next : "";
+  }
+  return result;
+}
+
+async function withTemplateTimeout(operation: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT_MS);
+  try {
+    return await operation(controller.signal);
+  } catch (error) {
+    if (error instanceof WhatsAppTemplateError) throw error;
+    if (controller.signal.aborted) throw new WhatsAppTemplateError("timeout");
+    throw new WhatsAppTemplateError("network_error");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isAllowedMetaApiUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.hostname === "graph.facebook.com";
+  } catch {
+    return false;
+  }
 }
 
 // Extrai só os campos de diagnóstico do erro da Graph API. Nunca devolve o
