@@ -10,6 +10,10 @@ export type EstablishmentType =
   | "oficina"
   | "academia"
   | "imobiliaria"
+  | "restaurante"
+  | "lanchonete"
+  | "pizzaria"
+  | "hamburgueria"
   | "outro";
 
 export interface Establishment {
@@ -162,11 +166,29 @@ export interface BotConfig {
   tone: string;
   // Se true, o bot pode sugerir/registrar agendamentos (fase 2).
   bookingEnabled: boolean;
+  // Pedidos é uma capacidade independente da agenda. Ausência em tenants
+  // antigos significa desligado, para nunca alterar o comportamento legado.
+  ordersEnabled?: boolean;
   // Palavras/intenções que forçam transferência pra humano.
   handoffKeywords: string[];
   // Se true, o bot NUNCA dá orientação clínica/médica (trava p/ clínicas).
   medicalGuardrail: boolean;
 }
+
+// ---- Cardápio e pedidos ----
+// Valores monetários são sempre inteiros em centavos; nenhum preço operacional
+// vem da KnowledgeBase, que continua sendo texto informativo para a IA.
+export interface MenuCategory { id: string; name: string; active: boolean; sortOrder: number; createdAt: number; updatedAt: number; }
+export interface MenuModifierOption { id: string; name: string; priceDeltaCents: number; active: boolean; }
+export interface MenuModifierGroup { id: string; name: string; required: boolean; minSelections: number; maxSelections: number; options: MenuModifierOption[]; }
+export interface MenuVariant { id: string; name: string; priceDeltaCents: number; active: boolean; }
+export interface MenuProduct { id: string; categoryId: string; name: string; description: string | null; basePriceCents: number; active: boolean; variants: MenuVariant[]; modifierGroups: MenuModifierGroup[]; createdAt: number; updatedAt: number; }
+export type DeliveryFeeRule = { kind: "fixed"; feeCents: number } | { kind: "neighborhood"; neighborhood: string; feeCents: number };
+export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolean; deliveryRules: DeliveryFeeRule[]; acceptedPaymentMethods: Array<"pix" | "cash" | "credit_card" | "debit_card">; pixInstructions: string | null; }
+export type OrderStatus = "draft" | "awaiting_confirmation" | "confirmed" | "accepted" | "preparing" | "ready_for_pickup" | "out_for_delivery" | "completed" | "cancelled" | "rejected";
+export type OrderPaymentMethod = "pix" | "cash" | "credit_card" | "debit_card";
+export interface OrderItem { id: string; productId: string; productName: string; variantId: string | null; variantName: string | null; quantity: number; unitPriceCents: number; modifiers: Array<{ optionId: string; name: string; priceDeltaCents: number }>; notes: string | null; lineTotalCents: number; }
+export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; createdAt: number; updatedAt: number; confirmedAt: number | null; }
 
 // ---- Base de conhecimento do estabelecimento ----
 // É o que a IA consulta pra responder. Sem isso, ela não inventa.
@@ -250,6 +272,9 @@ export interface Conversation {
   // Etapa da tarefa em andamento (ex.: agendamento) — ausente quando não há
   // tarefa ativa.
   task?: ConversationTask;
+  // Rascunho de pedido ativo, quando pedidos estão habilitados. Não substitui
+  // ConversationTask da agenda e é removido ao confirmar/cancelar o pedido.
+  activeOrderId?: string;
   // Resumo curto e estruturado, gerado só em momentos relevantes (handoff ou
   // agendamento concluído — nunca a cada mensagem, por custo). Alimenta o
   // atendimento humano e a continuidade numa próxima conversa.

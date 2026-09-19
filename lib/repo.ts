@@ -55,6 +55,7 @@ export function defaultBotConfig(): BotConfig {
     personaName: "Livia",
     tone: "acolhedora e objetiva",
     bookingEnabled: false,
+    ordersEnabled: false,
     handoffKeywords: ["falar com atendente", "atendente", "humano"],
     medicalGuardrail: false,
   };

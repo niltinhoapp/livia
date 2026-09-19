@@ -204,7 +204,7 @@ function buildSystemPrompt(
   // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
   // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
   rules.push(...knowledgeGuidanceToText(kb));
-  if (bot.bookingEnabled) {
+    if (bot.bookingEnabled) {
     rules.push(
       "Você PODE agendar, remarcar e cancelar. Regras:",
       "- Descubra o serviço desejado e o dia de preferência.",
@@ -219,6 +219,16 @@ function buildSystemPrompt(
     );
   } else {
     rules.push("Você ainda não fecha agendamentos; para marcar, oriente a pessoa a falar com a equipe.");
+  }
+  if (bot.ordersEnabled) {
+    rules.push(
+      "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
+      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte search_menu/get_menu_product e o resumo do pedido.",
+      "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
+      "- Antes de pedir confirmação, consulte get_order_draft e apresente exclusivamente o resumo retornado.",
+      "- Só use confirm_order depois de o cliente confirmar explicitamente e usando orderId/version do resumo.",
+      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa."
+    );
   }
   rules.push(
     `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
@@ -890,6 +900,9 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
   "cancel_appointment",
   "confirm_appointment",
 ]);
+const ORDER_MUTATION_TOOLS = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order",
+]);
 
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
   if (mutation.kind === "created") return "create_appointment";
@@ -1005,8 +1018,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Compartilhado pela resolução determinística pré-loop e pelo loop do
   // modelo. Só uma escrita BEM-SUCEDIDA consome o turno; falhas continuam
   // permitindo que o modelo faça uma tentativa válida.
-  let agendaMutation: AgendaMutation | null = null;
-  let blockedAgendaMutation: ToolName | null = null;
+    let agendaMutation: AgendaMutation | null = null;
+    let blockedAgendaMutation: ToolName | null = null;
+    let orderMutation = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -1114,11 +1128,16 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           });
           continue;
         }
+        if (ORDER_MUTATION_TOOLS.has(name) && orderMutation) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation already completed this turn" }) });
+          continue;
+        }
 
         toolCalls.push({ name, args });
 
         const result = await runTool(name, args, toolCtx);
-        if (result.ok) {
+          if (result.ok) {
+            if (ORDER_MUTATION_TOOLS.has(name)) orderMutation = true;
           if (name === "create_appointment") {
             booked = true;
             const data = result.data as { when?: string; serviceName?: string } | undefined;

@@ -14,6 +14,7 @@ const TYPES: EstablishmentType[] = [
   "oficina",
   "academia",
   "imobiliaria",
+  "restaurante", "lanchonete", "pizzaria", "hamburgueria",
   "outro",
 ];
 
@@ -47,6 +48,7 @@ export async function PUT(req: NextRequest) {
         personaName: String(raw.bot.personaName ?? base.personaName).trim() || base.personaName,
         tone: String(raw.bot.tone ?? base.tone).trim() || base.tone,
         bookingEnabled: Boolean(raw.bot.bookingEnabled),
+        ordersEnabled: Boolean(raw.bot.ordersEnabled),
         medicalGuardrail: Boolean(raw.bot.medicalGuardrail),
         handoffKeywords: Array.isArray(raw.bot.handoffKeywords)
           ? raw.bot.handoffKeywords.map((k) => String(k).trim().toLowerCase()).filter(Boolean)

@@ -22,7 +22,18 @@ export type ToolName =
   | "confirm_appointment"
   | "reschedule_appointment"
   | "cancel_appointment"
-  | "request_human_handoff";
+  | "request_human_handoff"
+  | "search_menu"
+  | "get_menu_product"
+  | "get_order_draft"
+  | "add_order_item"
+  | "update_order_item"
+  | "remove_order_item"
+  | "set_order_fulfillment"
+  | "set_order_address"
+  | "set_order_payment"
+  | "confirm_order"
+  | "get_order_status";
 
 export interface ToolCallRecord {
   name: ToolName;

@@ -13,6 +13,10 @@ export const ESTABLISHMENT_TYPE_LABELS: Record<EstablishmentType, string> = {
   oficina: "Oficina mecânica",
   academia: "Academia",
   imobiliaria: "Imobiliária",
+  restaurante: "Restaurante",
+  lanchonete: "Lanchonete",
+  pizzaria: "Pizzaria",
+  hamburgueria: "Hamburgueria",
   outro: "Outro",
 };
 
