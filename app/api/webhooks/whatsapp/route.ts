@@ -859,6 +859,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       customerProfile,
       task: existingTask,
       intent: detectedIntent,
+      hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
     });
   } catch (err) {
     // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).

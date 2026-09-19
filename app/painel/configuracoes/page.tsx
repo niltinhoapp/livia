@@ -121,8 +121,8 @@ export default function ConfigPanel() {
           </div>
 
           <div className="divide-y divide-line">
-            <Toggle
-              checked={bot.bookingEnabled}
+              <Toggle
+                checked={bot.bookingEnabled}
               onChange={(v) => setBot({ ...bot, bookingEnabled: v })}
               title="Permitir agendamento pela IA"
               desc="A Livia consulta horários livres e marca sozinha na conversa."
@@ -211,6 +211,12 @@ export default function ConfigPanel() {
                 value={sched.reminderTemplateName ?? ""}
                 onChange={(e) => setSched({ ...sched, reminderTemplateName: e.target.value.trim() || null })}
                 placeholder="ex.: lembrete_agendamento"
+              />
+              <Toggle
+                checked={Boolean(bot.ordersEnabled)}
+                onChange={(v) => setBot({ ...bot, ordersEnabled: v })}
+                title="Permitir pedidos pela IA"
+                desc="A Lívia consulta o cardápio e monta pedidos com valores calculados no servidor."
               />
               <FieldHelp>Nome de um template aprovado na WABA. Sem ele, o lembrete não é enviado.</FieldHelp>
             </div>
