@@ -70,6 +70,15 @@ export interface EstablishmentBilling {
   suspendedAt?: number;
   externalCustomerId?: string;
   externalSubscriptionId?: string;
+  // Geração lógica da assinatura em lib/billing/provisioning.ts (ver
+  // logicalSubscriptionExternalReference). Ausência = geração 1, compatível
+  // com todo establishment já provisionado antes deste campo existir. Só
+  // avança quando o establishment recontrata genuinamente depois de
+  // "canceled" — nunca em retomada normal da mesma tentativa (isso é
+  // resolvido preservando o nextDueDate da geração atual, não trocando de
+  // geração). Escrito só no sucesso do provisionamento, junto de
+  // externalSubscriptionId.
+  subscriptionGeneration?: number;
   // Timestamp do PRÓPRIO evento do Asaas (não o de recebimento) — usado para
   // descartar eventos de webhook fora de ordem. Fora de escopo nesta OT
   // (nenhum webhook existe ainda); o campo já nasce no tipo para não exigir

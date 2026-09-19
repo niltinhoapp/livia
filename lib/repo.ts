@@ -78,7 +78,7 @@ export async function getEstablishment(id: string): Promise<Establishment | null
 // (o chamador autenticado sempre opera sobre o próprio tenant já criado).
 export async function linkEstablishmentBilling(
   id: string,
-  link: { externalCustomerId?: string; externalSubscriptionId?: string },
+  link: { externalCustomerId?: string; externalSubscriptionId?: string; subscriptionGeneration?: number },
 ): Promise<void> {
   const patch: Record<string, unknown> = { "billing.updatedAt": Date.now() };
   if (link.externalCustomerId !== undefined) {
@@ -86,6 +86,9 @@ export async function linkEstablishmentBilling(
   }
   if (link.externalSubscriptionId !== undefined) {
     patch["billing.externalSubscriptionId"] = link.externalSubscriptionId;
+  }
+  if (link.subscriptionGeneration !== undefined) {
+    patch["billing.subscriptionGeneration"] = link.subscriptionGeneration;
   }
   await establishmentRef(id).update(patch);
 }

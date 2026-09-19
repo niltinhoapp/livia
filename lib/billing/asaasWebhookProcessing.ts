@@ -238,7 +238,31 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
         // documentada em stateMachine.ts — cancelamento não deve ser
         // revertido automaticamente por um webhook de pagamento. Marker
         // definitivo continua correto aqui.
-        const transition = nextBillingStatus(billing.billingStatus, { type: params.domainEvent });
+        //
+        // ÚNICA exceção, deliberada (OT de recontratação): payment_confirmed
+        // é reescrito para "reactivate" antes de entrar na state machine —
+        // stateMachine.ts continua sem saber o que é "geração" (não é
+        // alterado; o guard "canceled nunca reativa por payment_confirmed"
+        // nele permanece intacto para o caso normal: replay/atraso de
+        // webhook da geração já cancelada). O que muda aqui é só a tradução
+        // do evento de entrada, e SÓ quando as duas condições provam
+        // reprovisionamento genuíno:
+        //   1. params.generation >= 2 — geração 1 nunca é escrita
+        //      explicitamente (só existe via "?? 1"), então nunca pode, por
+        //      si só, provar recontratação deliberada;
+        //   2. params.generation === billing.subscriptionGeneration — a
+        //      geração do evento é EXATAMENTE a que subscribe/route.ts
+        //      gravou ao criar a nova subscription (síncrono, antes do
+        //      pagamento). Um replay de uma geração ANTIGA (já superada por
+        //      um cancelamento+recontratação posterior) nunca bate aqui,
+        //      porque subscriptionGeneration já avançou.
+        const isGenuineRecontracting =
+          params.domainEvent === "payment_confirmed" &&
+          billing.billingStatus === "canceled" &&
+          params.generation >= 2 &&
+          params.generation === (billing.subscriptionGeneration ?? 1);
+        const effectiveDomainEvent = isGenuineRecontracting ? "reactivate" : params.domainEvent;
+        const transition = nextBillingStatus(billing.billingStatus, { type: effectiveDomainEvent });
         if (!transition.ok) {
           tx.create(dedupRef, { at: now, outcome: "invalid_transition" });
           return {
