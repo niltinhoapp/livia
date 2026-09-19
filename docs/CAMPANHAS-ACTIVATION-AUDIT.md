@@ -18,7 +18,8 @@ Base auditada: `a10cdb2ae4b3ad67063a73dfdc624ca0d6174244`.
    chama Meta.
 2. A transição ocorre uma única vez em transação. `scheduledAt` futuro usa
    `scheduled`; o dispatcher promove quando vence.
-3. `CAMPAIGNS_SEND_ENABLED=false` é o default e bloqueia ativação e cron.
+3. `CAMPAIGNS_SEND_ENABLED=false` bloqueia ativação e cron; após a liberação
+   operacional, a ausência da variável mantém o envio ativo.
    `CAMPAIGNS_MAX_RECIPIENTS_PER_CAMPAIGN` tem default 5 e teto 200.
 4. O dispatcher existente foi apenas conectado à promoção de agendamento e à
    conclusão após não haver `pending`, `queued` ou `leased`.
