@@ -24,6 +24,8 @@ import {
   getOrder,
   removeOrderItem,
   saveMenuProduct,
+  saveOrderSettings,
+  setOrderAddress,
   setOrderFulfillment,
   setOrderPayment,
   updateOrderItem,
@@ -60,7 +62,7 @@ async function readyToConfirm(product: MenuProduct) {
 describe("Idempotência persistente — retry/reexecução da mesma operação lógica", () => {
   it("mesma operationId aplicada duas vezes (retry sequencial) não duplica o item", async () => {
     const product = await seedProduct();
-    const opId = "wamid.A1:add_order_item";
+    const opId = "toolcall.A1:add_order_item";
     const first = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, opId);
     const second = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, opId);
     expect(second.items.length).toBe(first.items.length);
@@ -71,7 +73,7 @@ describe("Idempotência persistente — retry/reexecução da mesma operação l
   it("mesma operationId disparada CONCORRENTEMENTE (reentrega simultânea) aplica só uma vez", async () => {
     const product = await seedProduct();
     await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1); // estabelece o draft antes, isola a variável testada
-    const opId = "wamid.A2:add_order_item";
+    const opId = "toolcall.A2:add_order_item";
     const [a, b] = await Promise.all([
       addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, opId),
       addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, opId),
@@ -84,8 +86,8 @@ describe("Idempotência persistente — retry/reexecução da mesma operação l
 
   it("operationIds DIFERENTES para o mesmo produto/quantidade aplicam cada uma — repetição intencional do cliente não é confundida com retry", async () => {
     const product = await seedProduct();
-    const first = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, "wamid.B1:add_order_item");
-    const second = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, "wamid.B2:add_order_item");
+    const first = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, "toolcall.B1:add_order_item");
+    const second = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, null, "toolcall.B2:add_order_item");
     expect(second.items.length).toBe(first.items.length + 1); // cliente pediu de novo numa mensagem nova — soma
     expect(second.totalCents).toBe(first.totalCents * 2);
   });
@@ -95,17 +97,35 @@ describe("Idempotência persistente — retry/reexecução da mesma operação l
     const created = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1);
     const itemId = created.items[0]!.id;
 
-    const opUpdate = "wamid.C1:update_order_item";
+    const opUpdate = "toolcall.C1:update_order_item";
     const u1 = await updateOrderItem(EST, CONV, PHONE, NAME, itemId, { quantity: 3 }, opUpdate);
     const u2 = await updateOrderItem(EST, CONV, PHONE, NAME, itemId, { quantity: 3 }, opUpdate); // retry
     expect(u2.items[0]!.quantity).toBe(3);
     expect(u2.version).toBe(u1.version);
 
-    const opRemove = "wamid.C2:remove_order_item";
+    const opRemove = "toolcall.C2:remove_order_item";
     const r1 = await removeOrderItem(EST, CONV, PHONE, NAME, itemId, opRemove);
     const r2 = await removeOrderItem(EST, CONV, PHONE, NAME, itemId, opRemove); // retry pós-remoção: não deveria lançar "item não encontrado"
     expect(r1.items).toHaveLength(0);
     expect(r2.version).toBe(r1.version);
+  });
+
+  it("fulfillment, endereço e pagamento também persistem a operationId na mesma transação", async () => {
+    const product = await seedProduct();
+    await saveOrderSettings(EST, { deliveryEnabled: true, deliveryRules: [{ kind: "fixed", feeCents: 500 }] });
+    await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1);
+
+    const f1 = await setOrderFulfillment(EST, CONV, PHONE, NAME, "delivery", "toolcall.D1:fulfillment");
+    const f2 = await setOrderFulfillment(EST, CONV, PHONE, NAME, "delivery", "toolcall.D1:fulfillment");
+    expect(f2.version).toBe(f1.version);
+
+    const a1 = await setOrderAddress(EST, CONV, PHONE, NAME, "Rua A, 1", null, null, "toolcall.D2:address");
+    const a2 = await setOrderAddress(EST, CONV, PHONE, NAME, "Rua A, 1", null, null, "toolcall.D2:address");
+    expect(a2.version).toBe(a1.version);
+
+    const p1 = await setOrderPayment(EST, CONV, PHONE, NAME, "cash", null, "toolcall.D3:payment");
+    const p2 = await setOrderPayment(EST, CONV, PHONE, NAME, "cash", null, "toolcall.D3:payment");
+    expect(p2.version).toBe(p1.version);
   });
 
   it("sem operationId (ausência, ex.: mensagem sem waMessageId): comportamento antigo preservado — cada chamada aplica", async () => {

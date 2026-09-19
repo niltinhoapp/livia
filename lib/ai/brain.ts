@@ -1138,7 +1138,6 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
         toolCalls.push({ name, args });
 
-        toolCtx.operationId = ORDER_MUTATION_TOOLS.has(name) && typeof args.__operationId === "string" ? args.__operationId : undefined;
         const result = await runTool(name, args, toolCtx);
           if (result.ok) {
             if (ORDER_MUTATION_TOOLS.has(name)) orderMutation = true;
