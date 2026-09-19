@@ -123,8 +123,19 @@ describe("PlanoPage (OT-07D)", () => {
     expect(screen.queryByText("Período de teste")).toBeNull();
   });
 
-  it("card do plano mostra R$129/mês e a oferta de 7 dias grátis", async () => {
+  it("card do plano mostra R$129/mês sempre, mesmo sem billing (legado)", async () => {
     mockFetchOnce({ establishment: establishment(), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText("R$ 129")).toBeTruthy();
+  });
+
+  it("card do plano mostra a oferta de 7 dias grátis só enquanto ainda dentro da janela antes do pagamento liberar", async () => {
+    const trialEndsAt = Date.now() + 6 * 24 * 3600000; // bem antes de trialEndsAt-24h
+    mockFetchOnce({
+      establishment: establishment({ billing: { billingStatus: "trial", trialStartAt: Date.now(), trialEndsAt, updatedAt: 1 } }),
+      exists: true,
+    });
     render(<PlanoPage />);
 
     expect(await screen.findByText("R$ 129")).toBeTruthy();
@@ -432,5 +443,86 @@ describe("PlanoPage — contratação via cartão de crédito (Hosted Checkout)"
     for (const call of fetchMock.mock.calls) {
       expect(JSON.stringify(call)).not.toMatch(/aact_(hmlg|prod)_/i);
     }
+  });
+});
+
+describe("PlanoPage — janela do trial (regra definitiva de produto)", () => {
+  const DAY = 24 * 3600000;
+
+  function trialEstablishment(trialEndsAt: number) {
+    return establishment({ billing: { billingStatus: "trial", trialStartAt: trialEndsAt - 7 * DAY, trialEndsAt, updatedAt: 1 } });
+  }
+
+  it("antes de trialEndsAt-24h: 'período gratuito está ativo', PIX e cartão OCULTOS", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() + 6 * DAY), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/período gratuito está ativo/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /pagar com pix/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /cartão de crédito/i })).toBeNull();
+  });
+
+  it("exatamente em trialEndsAt-24h: pagamento liberado (PIX e cartão visíveis)", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() + DAY), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("no último dia do trial: 'termina em breve', PIX e cartão visíveis", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() + 60_000), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/termina em breve/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("exatamente em trialEndsAt: 'período gratuito terminou', NÃO mostra suspensão, PIX e cartão visíveis", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now()), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/período gratuito terminou/i)).toBeTruthy();
+    expect(screen.queryByText(/assinatura suspensa/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("durante as 24h de tolerância: até 24 horas para regularizar, acesso e pagamento disponíveis", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() - 12 * 3600000), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/até 24 horas para regularizar/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("1ms antes do fim da tolerância de 24h: ainda não trata como expirado", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() - DAY + 1000), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/até 24 horas para regularizar/i)).toBeTruthy();
+  });
+
+  it("depois de trialEndsAt+24h (billingStatus ainda 'trial', cron ainda não rodou): trata como expirado, pagamento continua disponível", async () => {
+    mockFetchOnce({ establishment: trialEstablishment(Date.now() - DAY - 10 * DAY), exists: true });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/período gratuito terminou\. regularize/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("billingStatus 'suspended' de verdade (cron já rodou): copy de suspensão existente, PIX e cartão continuam disponíveis", async () => {
+    mockFetchOnce({
+      establishment: establishment({ billing: { billingStatus: "suspended", externalSubscriptionId: "sub_x", suspendedAt: Date.now(), updatedAt: 1 } }),
+      exists: true,
+    });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText(/assinatura suspensa/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /ver cobrança pix pendente/i })).toBeTruthy(); // externalSubscriptionId já existe -> hasPendingSubscription
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
   });
 });

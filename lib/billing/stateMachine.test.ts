@@ -34,8 +34,23 @@ describe("canUseService — 2) trial", () => {
     expect(canUseService(est, NOW)).toBe(true);
   });
 
-  it("depois de trialEndsAt (1ms) → bloqueado", () => {
+  it("depois de trialEndsAt (1ms), ainda dentro da tolerância de 24h → permitido (regra definitiva de produto, ver trialWindow.ts)", () => {
     const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW - 1 });
+    expect(canUseService(est, NOW)).toBe(true);
+  });
+
+  it("1ms antes do fim da tolerância de 24h pós-trialEndsAt → ainda permitido", () => {
+    const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW - DAY_MS + 1 });
+    expect(canUseService(est, NOW)).toBe(true);
+  });
+
+  it("exatamente no fim da tolerância (now === trialEndsAt + 24h) → bloqueado", () => {
+    const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW - DAY_MS });
+    expect(canUseService(est, NOW)).toBe(false);
+  });
+
+  it("bem depois da tolerância → bloqueado", () => {
+    const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW - 10 * DAY_MS });
     expect(canUseService(est, NOW)).toBe(false);
   });
 
@@ -208,10 +223,11 @@ describe("14) determinismo", () => {
   });
 
   it("canUseService não depende de nenhum estado global — chamadas intercaladas com now diferentes não vazam entre si", () => {
-    const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW });
-    expect(canUseService(est, NOW - 1)).toBe(true);
-    expect(canUseService(est, NOW + 1)).toBe(false);
-    expect(canUseService(est, NOW - 1)).toBe(true);
+    // trialEndsAt + 24h (fim real da tolerância) cai exatamente em NOW.
+    const est = billingOf({ billingStatus: "trial", trialEndsAt: NOW - DAY_MS });
+    expect(canUseService(est, NOW - 1)).toBe(true); // 1ms antes do fim da tolerância
+    expect(canUseService(est, NOW + 1)).toBe(false); // 1ms depois -> expirado
+    expect(canUseService(est, NOW - 1)).toBe(true); // volta a ser true -> nenhum estado vazou
   });
 });
 
