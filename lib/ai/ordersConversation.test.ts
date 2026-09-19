@@ -416,37 +416,36 @@ describe("19) confirmação explícita", () => {
 });
 
 describe("20) mensagem trivial pós-confirmação não cria pedido/mutação indevida", () => {
-  it("PASS/FAIL: 'ok'/emoji sem tool call — nenhum pedido novo, nenhuma mutação", async () => {
+  it.each(["ok", "👍", "obrigado"])("PASS/FAIL: %s bloqueia uma tool indevida antes de criar novo draft", async (text) => {
     const { history, task, order: draft } = await montarPedidoCompleto();
     modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv1"), say("Confirmado!")];
     const t1 = await turn("confirmo", history, task);
 
-    modelScript = [say("De nada! Qualquer coisa é só chamar 🙂")]; // comportamento correto: sem tool call
-    await turn("👍", t1.history, t1.task);
+    modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, `trivial-${text}`), say("Adicionei o suco.")];
+    const followUp = await turn(text, t1.history, t1.task);
 
-    expect(await activeOrder()).toBeNull(); // nenhum draft novo nasceu de uma mensagem trivial
+    expect(toolNames(followUp.result)).toEqual([]);
+    expect(await activeOrder()).toBeNull();
     const stored = await order(draft.id);
-    expect(stored?.status).toBe("confirmed"); // pedido confirmado intocado
+    expect(stored?.status).toBe("confirmed");
+    expect(stored?.items).toHaveLength(1);
   });
 
-  it("PASS/FAIL (achado): se o modelo AINDA ASSIM chamar uma tool de pedido após confirmar, um draft órfão novo nasce silenciosamente", async () => {
+  it("PASS/FAIL: intenção explícita de novo pedido pode iniciar outro draft", async () => {
     const { history, task, order: draft } = await montarPedidoCompleto();
     modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv2"), say("Confirmado!")];
     const t1 = await turn("confirmo", history, task);
 
-    // cenário adverso: modelo erroneamente tenta add_order_item de novo
-    // (ex.: interpretou mal "ok, e um suco também" como parte do pedido já
-    // confirmado). activeOrderId já foi limpo pelo confirm — draftFor()
-    // não vê erro nenhum: silenciosamente começa um pedido NOVO e vazio-mais-
-    // -suco, órfão, sem o cliente saber que virou um segundo pedido.
-    modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, "triv3"), say("Adicionei o suco também.")];
-    await turn("e um suco", t1.history, t1.task);
+    modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, "triv3"), say("Adicionei o suco ao novo pedido.")];
+    const followUp = await turn("quero fazer outro pedido", t1.history, t1.task);
 
     const novoDraft = await activeOrder();
-    expect(novoDraft).not.toBeNull(); // achado: nasce um SEGUNDO pedido, não um erro nem uma mutação no confirmado
+    expect(toolNames(followUp.result)).toEqual(["add_order_item"]);
+    expect(novoDraft).not.toBeNull();
     expect(novoDraft?.id).not.toBe(draft.id);
     const confirmado = await order(draft.id);
-    expect(confirmado?.items).toHaveLength(1); // o pedido confirmado permanece intacto — não é uma duplicação nele
+    expect(confirmado?.status).toBe("confirmed");
+    expect(confirmado?.items).toHaveLength(1);
   });
 });
 

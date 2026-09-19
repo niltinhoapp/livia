@@ -16,6 +16,8 @@ import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
+import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
+import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -906,6 +908,20 @@ const ORDER_MUTATION_TOOLS = new Set<ToolName>([
 // Diferente da agenda, um pedido pode exigir várias linhas numa única
 // mensagem. O teto limita tool loops sem bloquear um pedido composto.
 const MAX_ORDER_MUTATIONS_PER_TURN = 8;
+const ORDER_DRAFT_MUTATION_TOOLS = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment",
+]);
+
+function isTrivialPostOrderConfirmation(
+  customerText: string,
+  intent: Intent,
+  task: ConversationTask | null,
+  history: Message[],
+): boolean {
+  const lastBot = [...history].reverse().find((message) => message.role === "bot");
+  if (!lastBot || !/\b(?:pedido\s+)?confirmad[oa]\b/i.test(lastBot.text)) return false;
+  return isSilentAcknowledgement(customerText, intent, task, history) || isPureSocialFarewell(customerText);
+}
 
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
   if (mutation.kind === "created") return "create_appointment";
@@ -996,6 +1012,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Serviço citado pelo cliente nesta mensagem (nome canônico da base). Mesmo
   // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
   const statedService = ultimaDoCliente ? parseServiceSelection(ultimaDoCliente.text, kb?.services) : null;
+  const trivialPostOrderConfirmation = ultimaDoCliente
+    ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, history)
+    : false;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
 
   // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
@@ -1137,6 +1156,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         }
         if (ORDER_MUTATION_TOOLS.has(name) && orderConfirmedThisTurn) {
           messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order already confirmed this turn" }) });
+          continue;
+        }
+        if (ORDER_DRAFT_MUTATION_TOOLS.has(name) && trivialPostOrderConfirmation) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "trivial post-confirmation message cannot start a new order" }) });
           continue;
         }
         if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
