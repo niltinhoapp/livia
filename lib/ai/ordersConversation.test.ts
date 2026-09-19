@@ -195,7 +195,7 @@ describe("6) cliente tenta continuar sem escolher um adicional obrigatório", ()
 });
 
 describe("7) cliente pede dois ou mais itens numa única mensagem", () => {
-  it("PASS/FAIL: só a PRIMEIRA mutação da mensagem se aplica — a segunda é bloqueada no mesmo turno", async () => {
+  it("PASS/FAIL: todas as adições legítimas do mesmo turno são persistidas", async () => {
     modelScript = [
       toolBatch({ name: "add_order_item", args: { productId: burger.id, quantity: 1 }, id: "batch-1" }, { name: "add_order_item", args: { productId: suco.id, quantity: 1 }, id: "batch-2" }),
       say("Adicionei o x-burger e o suco."),
@@ -203,17 +203,10 @@ describe("7) cliente pede dois ou mais itens numa única mensagem", () => {
     const t1 = await turn("quero um x-burger e um suco", [], null);
 
     const o = await activeOrder();
-    // achado: a política de "uma mutação de pedido por turno" (mesma regra
-    // já aplicada à agenda) significa que só UM dos dois itens pedidos na
-    // mesma mensagem é realmente adicionado — mesmo que o texto do modelo
-    // (scriptado aqui) afirme os dois. Ver relatório final.
-    expect(o?.items.length).toBe(1);
+    expect(toolNames(t1.result)).toEqual(["add_order_item", "add_order_item"]);
+    expect(o?.items).toHaveLength(2);
     expect(o?.items[0]?.productId).toBe(burger.id);
-
-    // o segundo item só entra numa mensagem SEPARADA.
-    modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, "batch-3"), say("Suco também adicionado.")];
-    await turn("e o suco?", t1.history, t1.task);
-    expect((await activeOrder())?.items.length).toBe(2);
+    expect(o?.items[1]?.productId).toBe(suco.id);
   });
 });
 

@@ -903,6 +903,9 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
 const ORDER_MUTATION_TOOLS = new Set<ToolName>([
   "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order",
 ]);
+// Diferente da agenda, um pedido pode exigir várias linhas numa única
+// mensagem. O teto limita tool loops sem bloquear um pedido composto.
+const MAX_ORDER_MUTATIONS_PER_TURN = 8;
 
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
   if (mutation.kind === "created") return "create_appointment";
@@ -1020,7 +1023,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // permitindo que o modelo faça uma tentativa válida.
     let agendaMutation: AgendaMutation | null = null;
     let blockedAgendaMutation: ToolName | null = null;
-    let orderMutation = false;
+    let orderMutationAttempts = 0;
+    let orderConfirmedThisTurn = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -1131,16 +1135,21 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           });
           continue;
         }
-        if (ORDER_MUTATION_TOOLS.has(name) && orderMutation) {
-          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation already completed this turn" }) });
+        if (ORDER_MUTATION_TOOLS.has(name) && orderConfirmedThisTurn) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order already confirmed this turn" }) });
+          continue;
+        }
+        if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn" }) });
           continue;
         }
 
         toolCalls.push({ name, args });
+        if (ORDER_MUTATION_TOOLS.has(name)) orderMutationAttempts++;
 
         const result = await runTool(name, args, toolCtx);
           if (result.ok) {
-            if (ORDER_MUTATION_TOOLS.has(name)) orderMutation = true;
+            if (name === "confirm_order") orderConfirmedThisTurn = true;
           if (name === "create_appointment") {
             booked = true;
             const data = result.data as { when?: string; serviceName?: string } | undefined;
