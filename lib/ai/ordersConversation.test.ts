@@ -27,6 +27,7 @@ import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { deriveTaskState } from "@/lib/ai/taskState";
 import { saveMenuCategory, saveMenuProduct, saveOrderSettings, getOrder, getActiveOrder } from "@/lib/orders";
+import { getConversation } from "@/lib/repo";
 import { createAppointment, saveScheduleConfig, defaultScheduleConfig } from "@/lib/scheduling";
 import type { ConversationTask, Establishment, FoodOrder, KnowledgeBase, Message, MenuProduct } from "@/types";
 
@@ -55,7 +56,8 @@ const say = (text: string): ModelMessage => ({ content: text });
 async function turn(text: string, history: Message[], task: ConversationTask | null, establishment: Establishment = est()) {
   const intent = detectIntent(text);
   const historyForAI = [...history, { id: `c${history.length}`, role: "customer" as const, text, at: NOW }];
-  const r = await think({ est: establishment, kb: kb(), history: historyForAI, contactPhone: PHONE, contactName: "Cliente Teste", customerProfile: null, task, intent });
+  const conversation = await getConversation(EST, CONV);
+  const r = await think({ est: establishment, kb: kb(), history: historyForAI, contactPhone: PHONE, contactName: "Cliente Teste", customerProfile: null, task, intent, hasLastConfirmedOrder: Boolean(conversation?.lastConfirmedOrderId) });
   const nextTask = deriveTaskState({ existingTask: task, intent, toolCalls: r.toolCalls, booked: r.booked, statedDate: r.statedDate, statedService: r.statedService });
   history.push({ id: `c${history.length}`, role: "customer", text, at: NOW });
   history.push({ id: `b${history.length}`, role: "bot", text: r.reply, at: NOW });
@@ -416,9 +418,9 @@ describe("19) confirmação explícita", () => {
 });
 
 describe("20) mensagem trivial pós-confirmação não cria pedido/mutação indevida", () => {
-  it.each(["ok", "👍", "obrigado"])("PASS/FAIL: %s bloqueia uma tool indevida antes de criar novo draft", async (text) => {
+  it.each(["ok", "👍", "obrigado", "valeu", "até mais"])("PASS/FAIL: %s bloqueia uma tool indevida antes de criar novo draft", async (text) => {
     const { history, task, order: draft } = await montarPedidoCompleto();
-    modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv1"), say("Confirmado!")];
+    modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv1"), say("Pedido recebido. Vou encaminhar para a cozinha.")];
     const t1 = await turn("confirmo", history, task);
 
     modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, `trivial-${text}`), say("Adicionei o suco.")];
@@ -433,7 +435,7 @@ describe("20) mensagem trivial pós-confirmação não cria pedido/mutação ind
 
   it("PASS/FAIL: intenção explícita de novo pedido pode iniciar outro draft", async () => {
     const { history, task, order: draft } = await montarPedidoCompleto();
-    modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv2"), say("Confirmado!")];
+    modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "triv2"), say("Pedido recebido. Vou encaminhar para a cozinha.")];
     const t1 = await turn("confirmo", history, task);
 
     modelScript = [toolCall("add_order_item", { productId: suco.id, quantity: 1 }, "triv3"), say("Adicionei o suco ao novo pedido.")];

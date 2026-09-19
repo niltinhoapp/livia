@@ -844,6 +844,9 @@ export interface BrainInput {
   // Passo 3, já calculado pelo webhook (determinístico) — reaproveitado aqui
   // pro Passo 7 (checagem de confiança), sem recalcular nem gastar IA.
   intent: Intent;
+  // Fato persistido pela confirmação transacional do pedido. Evita decidir
+  // sobre um novo draft a partir do texto variável da resposta da IA.
+  hasLastConfirmedOrder?: boolean;
 }
 
 export interface BrainResult {
@@ -916,11 +919,10 @@ function isTrivialPostOrderConfirmation(
   customerText: string,
   intent: Intent,
   task: ConversationTask | null,
-  history: Message[],
+  hasLastConfirmedOrder: boolean,
 ): boolean {
-  const lastBot = [...history].reverse().find((message) => message.role === "bot");
-  if (!lastBot || !/\b(?:pedido\s+)?confirmad[oa]\b/i.test(lastBot.text)) return false;
-  return isSilentAcknowledgement(customerText, intent, task, history) || isPureSocialFarewell(customerText);
+  if (!hasLastConfirmedOrder) return false;
+  return isSilentAcknowledgement(customerText, intent, task, []) || isPureSocialFarewell(customerText);
 }
 
 function explicitlyStartsOrder(text: string): boolean {
@@ -989,7 +991,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
@@ -1021,7 +1023,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
   const statedService = ultimaDoCliente ? parseServiceSelection(ultimaDoCliente.text, kb?.services) : null;
   const trivialPostOrderConfirmation = ultimaDoCliente
-    ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, history)
+    ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, hasLastConfirmedOrder)
     : false;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
 
