@@ -40,4 +40,20 @@ describe("POST /api/customers/import", () => {
     expect(res.status).toBe(400);
     expect(importMarketingContacts).not.toHaveBeenCalled();
   });
+
+  it("não aceita consentimento falso como elegibilidade", async () => {
+    const req = new Request("http://localhost/api/customers/import", {
+      method: "POST",
+      body: JSON.stringify({
+        contacts: [{ phone: "5514996447132" }],
+        declaration: { confirmedMarketingOptIn: false, source: "whatsapp" },
+      }),
+    });
+    importMarketingContacts.mockRejectedValueOnce(new Error("Declaração explícita de opt-in é obrigatória."));
+    const res = await POST(req as never);
+    expect(res.status).toBe(400);
+    expect(importMarketingContacts).toHaveBeenCalledWith("establishment-a", expect.objectContaining({
+      declaration: { confirmedMarketingOptIn: false, source: "whatsapp" },
+    }));
+  });
 });
