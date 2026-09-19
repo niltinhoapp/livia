@@ -28,7 +28,7 @@ describe("Clientes — contatos para campanhas", () => {
   it("envia opt-in somente após confirmação e atualiza o status elegível", async () => {
     let customersReads = 0;
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (url === "/api/customers/import") return Promise.resolve({ ok: true, json: async () => ({ result: { created: 1, eligible: 1 } }) });
+      if (url === "/api/customers/import") return Promise.resolve({ ok: true, json: async () => ({ result: { created: 1, eligible: 1, protected: 1 } }) });
       customersReads++;
       return Promise.resolve({ ok: true, json: async () => ({ customers: customersReads > 1 ? [eligibleCustomer] : [legacyCustomer] }) });
     });
@@ -47,6 +47,7 @@ describe("Clientes — contatos para campanhas", () => {
       contacts: [{ name: "Contato controlado", phone: "(14) 99644-7132" }],
       declaration: { confirmedMarketingOptIn: true, source: "whatsapp" },
     });
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/1 protegido\(s\).*mantido\(s\) sem alteração/i));
     await waitFor(() => expect(screen.getByText("Elegível")).toBeTruthy());
   });
 });

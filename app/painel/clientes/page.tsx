@@ -265,7 +265,15 @@ function ContactImportForm({ onImported, onClose }: { onImported: () => void; on
       const body = await response.json().catch(() => ({})) as { error?: string; result?: { created?: number; eligible?: number; alreadyEligible?: number; duplicates?: number; protected?: number } };
       if (!response.ok) throw new Error(body.error ?? "Não foi possível adicionar os contatos.");
       const imported = body.result;
-      setResult(`${imported?.eligible ?? 0} contato(s) elegível(is); ${imported?.created ?? 0} novo(s). Duplicados e contatos protegidos não são reenviados.`);
+      const newlyEligible = imported?.eligible ?? 0;
+      const alreadyEligible = imported?.alreadyEligible ?? 0;
+      const protectedContacts = imported?.protected ?? 0;
+      const details = [
+        `${newlyEligible} novo(s) ou atualizado(s)`,
+        ...(alreadyEligible ? [`${alreadyEligible} já elegível(is)`] : []),
+        ...(protectedContacts ? [`${protectedContacts} protegido(s) mantido(s) sem alteração`] : []),
+      ];
+      setResult(`${newlyEligible + alreadyEligible} contato(s) elegível(is) após a importação: ${details.join("; ")}.`);
       setRows([emptyRow()]);
       setConfirmedMarketingOptIn(false);
       onImported();
