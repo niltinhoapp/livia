@@ -12,29 +12,85 @@
 // devolver o QR/copia-e-cola só dá ao cliente uma forma de pagar, não prova
 // pagamento. Só o webhook (app/api/webhooks/asaas/route.ts, já homologado)
 // aplica essa transição.
+//
+// RECONTRATAÇÃO/RETOMADA (OT de correção do provisionamento): a geração e o
+// nextDueDate usados NUNCA são fixos/recalculados às cegas — ver
+// resolveTargetGeneration/resolveNextDueDate abaixo. Isso é o que permite
+// retomar a MESMA tentativa em outro dia sem identity_conflict, e recontratar
+// de verdade depois de "canceled" sem travar contra uma subscription morta.
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, linkEstablishmentBilling } from "@/lib/repo";
 import { resolveOrCreateAsaasCustomer } from "@/lib/billing/customerIdentity";
-import { provisionAsaasSubscription } from "@/lib/billing/provisioning";
+import { provisionAsaasSubscription, getBillingProvisioningIntent } from "@/lib/billing/provisioning";
 import { resolvePixPaymentForSubscription } from "@/lib/billing/pixPayment";
 import { createAsaasClient, type AsaasClient, type AsaasEnvironment } from "@/lib/billing/asaas";
+import type { EstablishmentBilling } from "@/types";
 
 const PLAN_VALUE = 129;
 const PLAN_CYCLE = "MONTHLY" as const;
 const PLAN_BILLING_TYPE = "PIX" as const;
 
-// Única geração de assinatura suportada nesta OT: o produto ainda não tem
-// fluxo de "nova assinatura após cancelamento" (que exigiria bump de
-// generation — fora de escopo). provisionAsaasSubscription é idempotente
-// por establishmentId+generation: chamadas repetidas convergem para a
-// mesma intent, nunca duplicam customer nem subscription.
-const SUBSCRIPTION_GENERATION = 1;
-
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
+
+// Geração alvo desta chamada. Ausência de subscriptionGeneration = geração
+// 1 (todo establishment provisionado antes deste campo existir). Só avança
+// quando billingStatus já é "canceled": a state machine nunca reativa
+// canceled por payment_confirmed (é deliberado, ver stateMachine.ts), então
+// reusar a MESMA geração de uma assinatura cancelada travaria para sempre
+// em known_subscription_inactive/subscription_inactive. Para qualquer outro
+// status (trial/past_due/suspended), a geração atual é reaproveitada — é
+// assim que uma retomada normal da mesma tentativa não vira recontratação.
+function resolveTargetGeneration(billing: EstablishmentBilling | undefined): number {
+  const currentGeneration = billing?.subscriptionGeneration ?? 1;
+  return billing?.billingStatus === "canceled" ? currentGeneration + 1 : currentGeneration;
+}
+
+// nextDueDate É PARTE do fingerprint que identifica uma tentativa
+// (subscriptionFingerprint, lib/billing/provisioning.ts) — recalculá-lo a
+// cada chamada faz qualquer retomada em outro dia calendário virar
+// identity_conflict, mesmo sendo a MESMA tentativa. Resolve isto lendo o
+// intent já existente para (establishmentId, generation): se existe,
+// reusa o nextDueDate ali gravado (não importa a fase — mesmo um intent
+// "conflict" de uma geração ANTERIOR já foi abandonado por
+// resolveTargetGeneration, nunca revisitado); só calcula hoje() quando
+// esta é a primeira chamada desta geração.
+async function resolveNextDueDate(establishmentId: string, generation: number): Promise<string> {
+  const existing = await getBillingProvisioningIntent(establishmentId, generation);
+  return existing?.terms.nextDueDate ?? todayIsoDate();
+}
+
+// Motivos de falha do provisionamento que uma retentativa imediata resolve
+// sozinha (corrida de concorrência já resolvida no lado que venceu, ou
+// instabilidade pontual da API da Asaas) — tratados como "processing", o
+// mesmo 202 já usado para reserved/creating/reconciling. Qualquer outro
+// motivo é estrutural: retry cego nunca resolve (ver SUBSCRIPTION_CONFLICT
+// abaixo) — é exatamente a diferença que faltava (OT de recontratação):
+// antes, TODO !result.ok virava um 502 genérico indistinguível de
+// transitório.
+const TRANSIENT_PROVISIONING_REASONS = new Set(["intent_changed", "lookup_failed"]);
+
+// result.reason nunca é texto livre HOJE (só identificadores curtos que
+// provisionAsaasSubscription produz) — mas esta rota não confia cegamente
+// nisso: só ecoa pro cliente um motivo que está nesta allowlist explícita.
+// Qualquer coisa fora dela (inclusive um "reason" corrompido/inesperado)
+// vira "unknown" — nunca risco de a resposta carregar algo que não devia
+// (mesmo espírito de sanitizedError() em provisioning.ts, nunca confiar que
+// um campo de erro é seguro por default).
+const KNOWN_CONFLICT_REASONS = new Set([
+  "identity_conflict",
+  "known_subscription_unavailable",
+  "known_subscription_mismatch",
+  "known_subscription_inactive",
+  "multiple_subscriptions",
+  "subscription_mismatch",
+  "subscription_inactive",
+  "created_subscription_mismatch",
+  "asaas_rejected",
+]);
 
 function createBillingSubscribeAsaasClient(): AsaasClient {
   const apiKey = process.env.ASAAS_API_KEY;
@@ -92,23 +148,32 @@ export async function POST(req: NextRequest) {
 
   await linkEstablishmentBilling(establishmentId, { externalCustomerId: customerResult.externalCustomerId });
 
+  // Recalculados a cada chamada a partir do que já está persistido — nunca
+  // incrementados/salvos antecipadamente. Isso é o que faz retentativas
+  // sucessivas (mesmo dia, dia seguinte, ou várias tentativas de
+  // recontratação antes de uma finalmente suceder) convergirem
+  // consistentemente para a MESMA geração-alvo e o MESMO nextDueDate, sem
+  // nenhuma coordenação extra além do que já está gravado no Firestore.
+  const subscriptionGeneration = resolveTargetGeneration(establishment.billing);
+  const nextDueDate = await resolveNextDueDate(establishmentId, subscriptionGeneration);
+
   const result = await provisionAsaasSubscription(
     {
       establishmentId,
-      subscriptionGeneration: SUBSCRIPTION_GENERATION,
+      subscriptionGeneration,
       asaasCustomerId: customerResult.externalCustomerId,
       leaseOwner: "billing-subscribe-endpoint",
       billingType: PLAN_BILLING_TYPE,
       value: PLAN_VALUE,
       cycle: PLAN_CYCLE,
-      nextDueDate: todayIsoDate(),
+      nextDueDate,
     },
     { asaas, now: Date.now, newId: randomUUID },
   );
 
   if (result.ok && result.phase === "succeeded" && result.intent.externalSubscriptionId) {
     const externalSubscriptionId = result.intent.externalSubscriptionId;
-    await linkEstablishmentBilling(establishmentId, { externalSubscriptionId });
+    await linkEstablishmentBilling(establishmentId, { externalSubscriptionId, subscriptionGeneration });
 
     // subscriptionId vem exclusivamente do intent que o PRÓPRIO backend
     // acabou de provisionar/reconciliar para este establishment — nunca do
@@ -142,5 +207,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "processing" }, { status: 202 });
   }
 
-  return NextResponse.json({ error: "SUBSCRIPTION_PROVISIONING_FAILED" }, { status: 502 });
+  // result.reason já vem de provisionAsaasSubscription — nunca texto livre,
+  // nunca payload da Asaas. Transitório (corrida resolvida do outro lado,
+  // instabilidade pontual) vira o mesmo 202 já usado acima; qualquer outro
+  // motivo é estrutural — retry cego nunca resolve sozinho, então NUNCA mais
+  // 502 genérico ("tente novamente" seria enganoso). 409 sinaliza ao front
+  // que a saída certa é regularizar/falar com o suporte, não tentar de novo.
+  if (TRANSIENT_PROVISIONING_REASONS.has(result.reason)) {
+    return NextResponse.json({ status: "processing" }, { status: 202 });
+  }
+  const reason = KNOWN_CONFLICT_REASONS.has(result.reason) ? result.reason : "unknown";
+  return NextResponse.json({ error: "SUBSCRIPTION_CONFLICT", reason }, { status: 409 });
 }

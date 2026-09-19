@@ -189,6 +189,51 @@ describe("resolveAndApplyEvent (real, via fakeDb) — decisões e transições",
     expect(result).toMatchObject({ outcome: "applied", from: "active", to: "canceled" });
   });
 
+  it("recontratação (generation=2): pagamento confirmado reativa um establishment canceled, sem intervenção manual", async () => {
+    // OT de recontratação, item 5. subscriptionGeneration=2 já está gravado
+    // ANTES deste webhook chegar — app/api/billing/subscribe/route.ts grava
+    // isso de forma síncrona no sucesso do provisionamento, bem antes do
+    // cliente pagar o Pix. O que prova reprovisionamento genuíno aqui é
+    // params.generation bater exatamente com esse valor já persistido.
+    await seedEstablishment(EST_ID, { billingStatus: "canceled", subscriptionGeneration: 2 });
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const result = await deps.resolveAndApplyEvent(
+      params({ generation: 2, event: "PAYMENT_CONFIRMED", domainEvent: "payment_confirmed" }),
+    );
+    expect(result).toMatchObject({ outcome: "applied", from: "canceled", to: "active", generation: 2 });
+    const stored = await fakeDb.collection("establishments").doc(EST_ID).get();
+    expect((stored.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("active");
+  });
+
+  it("payment_confirmed para a geração 1 (nunca recontratada) NUNCA reativa um canceled — guard original preservado", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "canceled" }); // subscriptionGeneration ausente (== 1 implícito)
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const result = await deps.resolveAndApplyEvent(
+      params({ generation: 1, event: "PAYMENT_CONFIRMED", domainEvent: "payment_confirmed" }),
+    );
+    expect(result).toMatchObject({ outcome: "invalid_transition", from: "canceled" });
+  });
+
+  it("replay de uma geração ANTIGA (já superada por outro ciclo cancelar+recontratar) nunca reativa", async () => {
+    // establishment já recontratou uma vez (agora na geração 3) e cancelou
+    // de novo; um evento atrasado da geração 2 (já obsoleta) chega depois.
+    await seedEstablishment(EST_ID, { billingStatus: "canceled", subscriptionGeneration: 3 });
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const result = await deps.resolveAndApplyEvent(
+      params({ generation: 2, event: "PAYMENT_CONFIRMED", domainEvent: "payment_confirmed" }),
+    );
+    expect(result).toMatchObject({ outcome: "invalid_transition", from: "canceled" });
+  });
+
+  it("payment_confirmed de geração>=2 fora do estado canceled segue o caminho normal (idempotente, já testado acima)", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "active", subscriptionGeneration: 2 });
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const result = await deps.resolveAndApplyEvent(
+      params({ generation: 2, event: "PAYMENT_CONFIRMED", domainEvent: "payment_confirmed" }),
+    );
+    expect(result).toMatchObject({ outcome: "applied", from: "active", to: "active" });
+  });
+
   it("establishment inexistente -> establishment_not_found, sem marker definitivo (OT-06G.1/G.2, item 4)", async () => {
     const deps = await createAsaasWebhookProcessingDependencies();
     const result = await deps.resolveAndApplyEvent(params());

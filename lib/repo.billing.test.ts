@@ -54,6 +54,17 @@ describe("linkEstablishmentBilling", () => {
     expect(b.trialStartAt).toBeUndefined();
   });
 
+  it("persiste subscriptionGeneration no sucesso de uma recontratação, sem tocar outros campos", async () => {
+    seedBilling("est_4", { billingStatus: "canceled", externalCustomerId: "cus_4", updatedAt: 1 });
+    await linkEstablishmentBilling("est_4", { externalSubscriptionId: "sub_new", subscriptionGeneration: 2 });
+
+    const b = readBilling("est_4")!;
+    expect(b.subscriptionGeneration).toBe(2);
+    expect(b.externalSubscriptionId).toBe("sub_new");
+    expect(b.externalCustomerId).toBe("cus_4"); // preservado
+    expect(b.billingStatus).toBe("canceled"); // esta função nunca decide billingStatus
+  });
+
   it("repetição não produz vínculo inconsistente (converge para o mesmo externalCustomerId)", async () => {
     seedBilling("est_3", { billingStatus: "active", updatedAt: 1 });
     await linkEstablishmentBilling("est_3", { externalCustomerId: "cus_3" });
