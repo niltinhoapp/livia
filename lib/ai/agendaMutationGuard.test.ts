@@ -84,7 +84,7 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
 
     expect(runTool).toHaveBeenCalledWith(
       "add_order_item",
-      expect.objectContaining({ productId: "product-1", quantity: 1, __operationId: "toolcall.add-1" }),
+      expect.objectContaining({ productId: "product-1", quantity: 1, __operationId: "toolcall.add-1", __allowDraftCreation: true }),
       expect.anything(),
     );
   });

@@ -923,6 +923,14 @@ function isTrivialPostOrderConfirmation(
   return isSilentAcknowledgement(customerText, intent, task, history) || isPureSocialFarewell(customerText);
 }
 
+function explicitlyStartsOrder(text: string): boolean {
+  const normalized = text
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, " ");
+  return /\b(?:quero|queria|gostaria|preciso|vou|vamos|manda|mande|pedir|pedido)\b/.test(normalized);
+}
+
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
   if (mutation.kind === "created") return "create_appointment";
   if (mutation.kind === "rescheduled") return "reschedule_appointment";
@@ -1135,6 +1143,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         // Metadado interno: o modelo não escolhe esta chave. O mesmo tc.id
         // reaplicado em retry converge na transação persistente do pedido.
         if (ORDER_MUTATION_TOOLS.has(tc.function.name as ToolName)) args.__operationId = tc.id;
+        if (name === "add_order_item" && ultimaDoCliente && explicitlyStartsOrder(ultimaDoCliente.text)) {
+          args.__allowDraftCreation = true;
+        }
 
         // A primeira escrita bem-sucedida já determinou o fato operacional
         // deste turno. Não executa a segunda escrita do modelo, mas devolve

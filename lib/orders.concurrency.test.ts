@@ -193,31 +193,47 @@ describe("Concorrência — mutações de item (sem idempotencyKey, itens genuin
     expect(final!.totalCents).toBe(expectedTotal); // pickup, sem taxa de entrega
   });
 
-  it("mutação concorrente com confirmação: o pedido CONFIRMADO nunca é alterado silenciosamente depois de confirmado", async () => {
-    // Descoberta ao escrever este teste: se a mutação perde a corrida DEPOIS
-    // de draftFor() já ter visto activeOrderId limpo pela confirmação, ela
-    // silenciosamente inicia um NOVO draft vazio em vez de lançar erro — a
-    // mutação "sucede", mas sobre um pedido diferente e órfão, nunca sobre o
-    // confirmado. Não é duplicação/perda/inconsistência (o confirmado
-    // permanece intacto), mas é uma UX estranha, registrada aqui e no
-        // relatório final — não corrigida nesta OT (fora do escopo pedido:
-    // idempotência/concorrência de dados, não UX de corrida rara).
-    // O invariante que REALMENTE importa — e que este teste prova — é: o
-    // pedido confirmado nunca ganha/perde item ou muda de total depois de
-    // confirmado, não importa como a corrida se resolve.
+  it("mutação concorrente com confirmação não abre draft órfão e retry permanece inofensivo", async () => {
     const product = await seedProduct();
     const ready = await readyToConfirm(product);
     const itemsBeforeRace = ready.items.length;
-
-    await Promise.allSettled([
-      confirmOrder(EST, ready.id, ready.version, PHONE),
-      addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1),
-    ]);
+    const operationId = "toolcall.confirm-race-add";
+    const confirmation = confirmOrder(EST, ready.id, ready.version, PHONE);
+    await Promise.resolve();
+    const mutation = addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, undefined, operationId);
+    const [confirmationResult, mutationResult] = await Promise.allSettled([confirmation, mutation]);
 
     const stored = await getOrder(EST, ready.id);
+    const orders = [...fakeDb.col(`establishments/${EST}/orders`).values()];
+    const conversation = fakeDb.col(`establishments/${EST}/conversations`).get(CONV) as { activeOrderId?: string; lastConfirmedOrderId?: string } | undefined;
+    expect(confirmationResult.status).toBe("fulfilled");
+    expect(mutationResult.status).toBe("rejected");
     expect(stored?.status).toBe("confirmed");
     expect(stored?.items.length).toBe(itemsBeforeRace);
     expect(stored?.totalCents).toBe(ready.totalCents);
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({ id: ready.id, status: "confirmed" });
+    expect((orders[0] as { items?: unknown[] } | undefined)?.items).toHaveLength(itemsBeforeRace);
+    expect(conversation?.activeOrderId).toBeNull();
+    expect(conversation?.lastConfirmedOrderId).toBe(ready.id);
+
+    await expect(addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, undefined, operationId)).rejects.toThrow(/confirmado/i);
+    expect([...fakeDb.col(`establishments/${EST}/orders`).values()]).toHaveLength(1);
+  });
+
+  it("novo pedido explicitamente autorizado após confirmação continua possível", async () => {
+    const product = await seedProduct();
+    const ready = await readyToConfirm(product);
+    await confirmOrder(EST, ready.id, ready.version, PHONE);
+
+    const next = await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1, undefined, "toolcall.explicit-new-order", true);
+    const active = await getActiveOrder(EST, CONV);
+
+    expect(next.id).not.toBe(ready.id);
+    expect(next.status).toBe("draft");
+    expect(next.items).toHaveLength(1);
+    expect(active?.id).toBe(next.id);
+    expect([...fakeDb.col(`establishments/${EST}/orders`).values()]).toHaveLength(2);
   });
 });
 

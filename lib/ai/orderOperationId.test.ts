@@ -45,6 +45,7 @@ describe("operationId interno de pedidos", () => {
 
     expect(tool.ok).toBe(true);
     expect(addOrderItem).toHaveBeenCalledTimes(1);
-    expect(addOrderItem.mock.calls[0]?.at(-1)).toBe("toolcall.add-1");
+    expect(addOrderItem.mock.calls[0]?.at(-2)).toBe("toolcall.add-1");
+    expect(addOrderItem.mock.calls[0]?.at(-1)).toBe(false);
   });
 });

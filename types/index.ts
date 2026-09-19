@@ -284,6 +284,9 @@ export interface Conversation {
   // Rascunho de pedido ativo, quando pedidos estão habilitados. Não substitui
   // ConversationTask da agenda e é removido ao confirmar/cancelar o pedido.
   activeOrderId?: string;
+  // Referência transacional para impedir que retry de uma mutação do pedido
+  // recém-confirmado abra outro draft por causa de uma corrida.
+  lastConfirmedOrderId?: string;
   // Resumo curto e estruturado, gerado só em momentos relevantes (handoff ou
   // agendamento concluído — nunca a cada mensagem, por custo). Alimenta o
   // atendimento humano e a continuidade numa próxima conversa.
