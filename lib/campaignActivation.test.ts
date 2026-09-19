@@ -6,7 +6,7 @@ vi.mock("@/lib/firebase/admin", async () => {
 });
 
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import { activateCampaign, completeCampaignIfDrained, startDueScheduledCampaign } from "@/lib/repo";
+import { activateCampaign, completeCampaignIfDrained, getCampaign, startDueScheduledCampaign } from "@/lib/repo";
 import type { Campaign, CampaignRecipient } from "@/types";
 
 const ESTABLISHMENT_ID = "est-a";
@@ -64,6 +64,15 @@ describe("ativação controlada de campanhas", () => {
     await activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5, now: 100 });
     const second = await activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5, now: 200 });
     expect(second).toMatchObject({ kind: "already_activated", campaign: { status: "running", activatedAt: 100 } });
+  });
+
+  it("duas ativações concorrentes liberam a campanha uma única vez", async () => {
+    const [first, second] = await Promise.all([
+      activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5, now: 100 }),
+      activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5, now: 200 }),
+    ]);
+    expect([first.kind, second.kind].sort()).toEqual(["activated", "already_activated"]);
+    await expect(getCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID)).resolves.toMatchObject({ status: "running" });
   });
 
   it("agendamento futuro só vira running quando vence", async () => {

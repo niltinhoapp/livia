@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment } from "@/lib/repo";
 import { listMessageTemplates, WhatsAppTemplateError } from "@/lib/whatsapp/client";
+import { isCampaignTemplateCompatible } from "@/lib/campaignTemplates";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   if (!establishment?.whatsapp) return NextResponse.json({ error: "WhatsApp não conectado" }, { status: 409 });
   try {
     const templates = await listMessageTemplates(establishment.whatsapp, establishmentId);
-    return NextResponse.json({ templates });
+    return NextResponse.json({ templates: templates.map((template) => ({ ...template, campaignCompatible: isCampaignTemplateCompatible(template) })) });
   } catch (error) {
     if (error instanceof WhatsAppTemplateError) {
       const status = error.code === "not_connected" || error.code === "missing_waba" ? 409 : 502;

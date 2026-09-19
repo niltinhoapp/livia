@@ -1109,6 +1109,28 @@ export interface PrepareCampaignAudienceResult {
   recipientsCreated: number;
 }
 
+export interface CampaignAudiencePreview {
+  selected: number;
+  eligible: number;
+  excluded: number;
+}
+
+/** Conta a audiência a partir dos CustomerProfiles do próprio tenant. É só
+ * prévia: o snapshot materializado e a revalidação no dispatcher continuam
+ * sendo as autoridades para o envio. */
+export async function previewCampaignAudience(establishmentId: string): Promise<CampaignAudiencePreview> {
+  const customers = await sub(establishmentId, "customers").get();
+  const phones = new Map<string, CustomerProfile>();
+  for (const doc of customers.docs) {
+    const profile = doc.data() as CustomerProfile;
+    const phone = normalizeMarketingImportPhone(doc.id) ?? normalizeMarketingImportPhone(profile.phone);
+    if (phone) phones.set(phone, profile);
+  }
+  let eligible = 0;
+  for (const profile of phones.values()) if (marketingEligibilityOf(profile).eligible) eligible++;
+  return { selected: phones.size, eligible, excluded: phones.size - eligible };
+}
+
 const MAX_SYNCHRONOUS_AUDIENCE = 200;
 
 /** Materializa uma audiência pequena e idempotente. O recipient é snapshot
