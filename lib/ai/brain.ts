@@ -1109,6 +1109,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         } catch {
           // args malformado — segue com {} e deixa a ferramenta validar.
         }
+        // Metadado interno: o modelo não escolhe esta chave. O mesmo tc.id
+        // reaplicado em retry converge na transação persistente do pedido.
+        if (ORDER_MUTATION_TOOLS.has(tc.function.name as ToolName)) args.__operationId = tc.id;
 
         // A primeira escrita bem-sucedida já determinou o fato operacional
         // deste turno. Não executa a segunda escrita do modelo, mas devolve
@@ -1135,6 +1138,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
         toolCalls.push({ name, args });
 
+        toolCtx.operationId = ORDER_MUTATION_TOOLS.has(name) && typeof args.__operationId === "string" ? args.__operationId : undefined;
         const result = await runTool(name, args, toolCtx);
           if (result.ok) {
             if (ORDER_MUTATION_TOOLS.has(name)) orderMutation = true;
