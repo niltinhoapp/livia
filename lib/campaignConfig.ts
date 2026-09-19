@@ -1,7 +1,8 @@
-// Kill switch operacional de Campanhas. O default é fechado: publicar o
-// código não habilita nenhum disparo até uma ativação consciente em ambiente.
+// Kill switch operacional de Campanhas. O envio fica ativo por padrão após a
+// liberação consciente da funcionalidade; definir explicitamente `false` no
+// ambiente continua sendo o rollback imediato, sem novo deploy.
 export function campaignsSendEnabled(): boolean {
-  return process.env.CAMPAIGNS_SEND_ENABLED === "true";
+  return process.env.CAMPAIGNS_SEND_ENABLED !== "false";
 }
 
 export function campaignsMaxRecipientsPerCampaign(): number {

@@ -6,8 +6,8 @@ enviam mensagens reais.
 ## Pré-condições
 
 - PR revisada e mergeada; Production READY.
-- `CAMPAIGNS_SEND_ENABLED=false` confirmado durante a revisão e alterado para
-  `true` somente no momento autorizado.
+- `CAMPAIGNS_SEND_ENABLED` ausente ou `true`; definir `false` mantém o rollback
+  operacional imediato.
 - `CRON_SECRET` configurado e cron autenticado.
 - Template Meta real em `APPROVED`, `senderCompatible=true`.
 - Estabelecimento conectado e 1–3 números próprios/controlados com opt-in
@@ -18,8 +18,8 @@ enviam mensagens reais.
 
 1. Criar uma campanha e materializar a audiência controlada.
 2. Confirmar no detalhe nome, template, recipients e consentimento.
-3. Habilitar o kill switch conscientemente e executar **Confirmar envio** uma
-   única vez. Não chamar o endpoint de dispatcher manualmente em Production.
+3. Executar **Confirmar envio** uma única vez. Não chamar o endpoint de
+   dispatcher manualmente em Production.
 4. Acompanhar no detalhe: `sent` → `delivered` → `read` → resposta.
 5. Confirmar `CampaignRecipient=replied`, contador `replied` e que a resposta
    segue a conversa normal da Lívia.
