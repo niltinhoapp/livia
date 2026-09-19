@@ -5,6 +5,7 @@
 // existentes em /painel/configuracoes, /painel/agenda, etc.
 import { useEffect, useState } from "react";
 import type { EstablishmentType } from "@/types";
+import { canUseService } from "@/lib/billing/stateMachine";
 
 export interface ShellData {
   name: string;
@@ -15,6 +16,12 @@ export interface ShellData {
   // não atende e o dono precisa enxergar isso. O campo já vinha na resposta
   // de /api/establishment e era descartado aqui — nenhuma requisição nova.
   serviceActive: boolean;
+  // Eixo SEPARADO de serviceActive — nunca misturar. Vem de canUseService()
+  // (lib/billing/stateMachine.ts, pura), decidido pelo billingStatus. true
+  // quando billingStatus bloqueia o painel (suspended/canceled, ou trial
+  // vencido). NUNCA pausa o atendimento WhatsApp — só usado pelo redirect de
+  // painel em AppShell.tsx.
+  billingRestricted: boolean;
 }
 
 // `refetchKey` (normalmente o pathname atual) força uma nova busca sempre
@@ -41,6 +48,7 @@ export function useShellData(refetchKey?: string) {
           exists: Boolean(est.exists),
           whatsappConnected: Boolean(wa.connected),
           serviceActive: est.establishment?.status !== "suspended",
+          billingRestricted: !canUseService({ billing: est.establishment?.billing }, Date.now()),
         });
       })
       .catch(() => {

@@ -97,6 +97,15 @@ export default function PlanoPage() {
   const trialActive = hasTrialWindow && billing!.trialEndsAt! > Date.now();
   const trialExpired = hasTrialWindow && !trialActive;
   const hasPendingSubscription = Boolean(billing?.externalSubscriptionId) && !isActive;
+  // Fase 1 do gating de billing (redireciona pra esta página quando
+  // suspended/canceled — ver AppShell.tsx): precisa de copy própria, senão
+  // o tenant cai aqui e só vê o texto genérico "Ciclo mensal". `suspended`
+  // ainda pode regularizar pagando a cobrança em aberto (payment_confirmed
+  // é uma transição válida a partir de suspended); `canceled` NUNCA volta
+  // sozinho por pagamento (deliberado na state machine) — exige reativação
+  // administrativa, então não oferece o mesmo CTA de contratação.
+  const isSuspended = billing?.billingStatus === "suspended";
+  const isCanceled = billing?.billingStatus === "canceled";
 
   async function startSubscribe(e: React.FormEvent) {
     e.preventDefault();
@@ -180,6 +189,8 @@ export default function PlanoPage() {
                 )}
                 {!isActive && trialActive && <StatusBadge tone="info">Período de teste</StatusBadge>}
                 {!isActive && trialExpired && <StatusBadge tone="warning">Período de teste encerrado</StatusBadge>}
+                {isSuspended && <StatusBadge tone="danger">Assinatura suspensa</StatusBadge>}
+                {isCanceled && <StatusBadge tone="danger">Assinatura cancelada</StatusBadge>}
               </div>
               {isActive ? (
                 <p className="mt-0.5 text-sm text-ink-500">Sua assinatura está em dia.</p>
@@ -188,6 +199,14 @@ export default function PlanoPage() {
                   <Clock className="h-3.5 w-3.5" aria-hidden />
                   Termina em {new Date(billing.trialEndsAt).toLocaleDateString("pt-BR")} ·{" "}
                   {daysRemaining(billing.trialEndsAt)} {daysRemaining(billing.trialEndsAt) === 1 ? "dia restante" : "dias restantes"}
+                </p>
+              ) : isSuspended ? (
+                <p className="mt-0.5 text-sm text-danger-fg">
+                  Sua assinatura está suspensa por falta de pagamento. Regularize para voltar a usar o painel.
+                </p>
+              ) : isCanceled ? (
+                <p className="mt-0.5 text-sm text-danger-fg">
+                  Sua assinatura foi cancelada. Fale com o suporte da Lívia para reativar.
                 </p>
               ) : trialExpired ? (
                 <p className="mt-0.5 text-sm text-ink-500">Seu período de teste terminou.</p>
@@ -203,8 +222,19 @@ export default function PlanoPage() {
           </div>
         </div>
 
+        {/* -------- Cancelada: nunca reativa sozinha por pagamento (deliberado na
+             state machine) — sem CTA de autoatendimento, só orientação. -------- */}
+        {isCanceled && (
+          <div className="mt-5 border-t border-line/60 pt-4">
+            <p className="text-sm text-ink-500">
+              Assinaturas canceladas não voltam automaticamente com um novo pagamento. Entre em contato com o
+              suporte da Lívia para reativar sua conta.
+            </p>
+          </div>
+        )}
+
         {/* -------- Contratação -------- */}
-        {!isActive && subscribeStep === "idle" && (
+        {!isActive && !isCanceled && subscribeStep === "idle" && (
           <div className="mt-5 border-t border-line/60 pt-4">
             <Button
               disabled={PAYMENT_TEMPORARILY_DISABLED}
