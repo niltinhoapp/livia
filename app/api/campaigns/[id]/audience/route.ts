@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, prepareCampaignAudience } from "@/lib/repo";
-import { campaignTemplateSnapshot, isCampaignTemplateCompatible } from "@/lib/campaignTemplates";
+import { campaignTemplateSnapshot, isCampaignTemplateCompatible, templateParameterBindingsAreValid } from "@/lib/campaignTemplates";
 import { listMessageTemplates, WhatsAppTemplateError } from "@/lib/whatsapp/client";
+import type { CampaignTemplateParameterBinding } from "@/types";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     if (body.selection !== "all_eligible" && body.selection !== "selected") {
       return NextResponse.json({ error: "seleção inválida" }, { status: 400 });
     }
-    const requestedTemplate = body.template as { id?: unknown; name?: unknown; languageCode?: unknown } | undefined;
+    const requestedTemplate = body.template as { id?: unknown; name?: unknown; languageCode?: unknown; parameterBindings?: unknown } | undefined;
     if (!requestedTemplate || typeof requestedTemplate.id !== "string" || typeof requestedTemplate.name !== "string" || typeof requestedTemplate.languageCode !== "string") {
       return NextResponse.json({ error: "template inválido" }, { status: 400 });
     }
@@ -28,10 +29,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     if (!template || !isCampaignTemplateCompatible(template)) {
       return NextResponse.json({ error: "template não está aprovado ou não é compatível com este envio" }, { status: 409 });
     }
+    const parameterBindings = Array.isArray(requestedTemplate.parameterBindings)
+      ? requestedTemplate.parameterBindings as CampaignTemplateParameterBinding[]
+      : undefined;
+    if (!templateParameterBindingsAreValid(template.components, parameterBindings)) {
+      return NextResponse.json({ error: "preencha todas as variáveis do template" }, { status: 400 });
+    }
     const result = await prepareCampaignAudience(establishmentId, campaignId, {
       selection: body.selection,
       phones: Array.isArray(body.phones) ? body.phones.filter((phone): phone is string => typeof phone === "string") : undefined,
-      template: campaignTemplateSnapshot(template),
+      template: campaignTemplateSnapshot(template, parameterBindings),
     });
     return NextResponse.json(result);
   } catch (error) {

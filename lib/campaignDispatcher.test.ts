@@ -270,7 +270,7 @@ describe("Campanhas-06 — retry, permanente e ambíguo end-to-end", () => {
 });
 
 describe("Campanhas-06 — precondições operacionais", () => {
-  it("não envia snapshot legado que ainda exige parâmetros", async () => {
+  it("não envia snapshot legado que exige parâmetros mas não possui bindings", async () => {
     seedCampaign(A, { template: { name: "parametrized", languageCode: "pt_BR", status: "APPROVED", senderCompatible: true, components: [{ type: "BODY", text: "Olá {{1}}" }] } });
     await seedEligibleRecipient("r-params", "5511999000098");
 
@@ -278,6 +278,34 @@ describe("Campanhas-06 — precondições operacionais", () => {
 
     expect(result.aborted).toBe("missing_template");
     expect(sender.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it("personaliza nome do cliente e valores fixos antes de chamar a Meta", async () => {
+    seedCampaign(A, { template: {
+      name: "cupom",
+      languageCode: "pt_BR",
+      status: "APPROVED",
+      senderCompatible: true,
+      components: [{ type: "BODY", text: "Olá {{1}}, desconto {{2}}, cupom {{3}}" }],
+      parameterBindings: [
+        { index: 1, source: "customer_name" },
+        { index: 2, source: "fixed", value: "20%" },
+        { index: 3, source: "fixed", value: "LIVIA20" },
+      ],
+    } });
+    fakeDb.col(`establishments/${A}/customers`).set("5511999000097", {
+      phone: "5511999000097", establishmentId: A, name: "Ana", marketingStatus: "eligible",
+      lastInteractionAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now(),
+    });
+    seedRecipient(A, "r-vars", "5511999000097");
+    sender.sendTemplate.mockResolvedValueOnce({ waMessageId: "wamid.vars" });
+
+    const result = await dispatchCampaignBatch(A, CAMPAIGN_ID);
+
+    expect(result.sent).toBe(1);
+    expect(sender.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "connected" }), A, "5511999000097", "cupom", "pt_BR", ["Ana", "20%", "LIVIA20"],
+    );
   });
 
   it("kill switch fechado impede chamada interna ao dispatcher", async () => {

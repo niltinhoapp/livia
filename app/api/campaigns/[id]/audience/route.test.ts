@@ -51,4 +51,21 @@ describe("POST /api/campaigns/:id/audience", () => {
     expect(response.status).toBe(409);
     expect(prepareCampaignAudience).not.toHaveBeenCalled();
   });
+
+  it("persiste bindings revalidados para template com variáveis", async () => {
+    listMessageTemplates.mockResolvedValue([{ ...metaTemplate, components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}" }] }]);
+    const parameterBindings = [{ index: 1, source: "customer_name" }, { index: 2, source: "fixed", value: "LIVIA20" }];
+    const response = await POST(request({ id: "tpl-1", name: "hello", languageCode: "pt_BR", parameterBindings }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(200);
+    expect(prepareCampaignAudience).toHaveBeenCalledWith("est-a", "c1", expect.objectContaining({
+      template: expect.objectContaining({ parameterBindings }),
+    }));
+  });
+
+  it("rejeita template com variável sem valor", async () => {
+    listMessageTemplates.mockResolvedValue([{ ...metaTemplate, components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}" }] }]);
+    const response = await POST(request({ id: "tpl-1", name: "hello", languageCode: "pt_BR", parameterBindings: [{ index: 1, source: "customer_name" }] }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(400);
+    expect(prepareCampaignAudience).not.toHaveBeenCalled();
+  });
 });

@@ -60,6 +60,8 @@ describe("ativação controlada de campanhas", () => {
     expect(await activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 1 })).toMatchObject({ kind: "invalid", reason: "recipient_limit_exceeded" });
     seedCampaign({ template: { id: "t1", name: "parametrized", languageCode: "pt_BR", status: "APPROVED", senderCompatible: true, components: [{ type: "BODY", text: "Olá {{1}}" }] } });
     expect(await activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5 })).toMatchObject({ kind: "invalid", reason: "approved_compatible_template_required" });
+    seedCampaign({ template: { id: "t1", name: "parametrized", languageCode: "pt_BR", status: "APPROVED", senderCompatible: true, components: [{ type: "BODY", text: "Olá {{1}}" }], parameterBindings: [{ index: 1, source: "customer_name" }] } });
+    expect((await activateCampaign(ESTABLISHMENT_ID, CAMPAIGN_ID, { mode: "now", maxRecipients: 5 })).kind).toBe("activated");
   });
 
   it("é idempotente e não reativa campanha já liberada", async () => {

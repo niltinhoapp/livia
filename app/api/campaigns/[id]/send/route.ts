@@ -4,7 +4,11 @@ import { campaignsMaxRecipientsPerCampaign, campaignsSendEnabled } from "@/lib/c
 import { activateCampaign, getCampaign, getEstablishment } from "@/lib/repo";
 import { dispatchCampaignBatch } from "@/lib/campaignDispatcher";
 import { listMessageTemplates, WhatsAppTemplateError } from "@/lib/whatsapp/client";
-import { isCampaignTemplateCompatible, matchesCampaignTemplate } from "@/lib/campaignTemplates";
+import {
+  isCampaignTemplateCompatible,
+  matchesCampaignTemplate,
+  templateParameterBindingsAreValid,
+} from "@/lib/campaignTemplates";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +43,11 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   try {
     const templates = await listMessageTemplates(establishment.whatsapp, establishmentId);
     const current = templates.find((template) => matchesCampaignTemplate(draft.template!, template));
-    if (!current || !isCampaignTemplateCompatible(current)) {
+    if (
+      !current
+      || !isCampaignTemplateCompatible(current)
+      || !templateParameterBindingsAreValid(current.components, draft.template.parameterBindings)
+    ) {
       return NextResponse.json({ error: "template não está aprovado ou não é compatível com este envio" }, { status: 409 });
     }
   } catch (error) {
