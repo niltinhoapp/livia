@@ -131,7 +131,7 @@ describe("PlanoPage (OT-07D)", () => {
 
     expect(await screen.findByText("Assinatura suspensa")).toBeTruthy();
     expect(screen.getByText(/suspensa por falta de pagamento/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /contratação em breve/i })).toBeTruthy(); // PAYMENT_TEMPORARILY_DISABLED ainda true
+    expect(screen.getByRole("button", { name: /ver cobrança pendente/i })).toBeTruthy(); // externalSubscriptionId já existe (sub_1) -> hasPendingSubscription
     expect(screen.queryByText(/assinaturas canceladas/i)).toBeNull();
   });
 
@@ -166,37 +166,23 @@ describe("PlanoPage (OT-07D)", () => {
 });
 
 describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
-  // OT-BILLING-UI-01: contratação desabilitada SÓ no front
-  // (PAYMENT_TEMPORARILY_DISABLED=true em page.tsx) enquanto o Hosted
-  // Checkout/Asaas aguarda suporte. O fluxo abaixo (CPF/CNPJ -> POST
-  // /api/billing/subscribe -> QR/copia-e-cola) continua intacto no código,
-  // só ficou inalcançável pela UI porque o único botão de entrada
-  // (id "idle") está `disabled`. Os testes 11/12/17 foram atualizados para
-  // essa realidade; 13/14/15 testam estados posteriores do fluxo que hoje
-  // não são alcançáveis por clique real — ficam `skip` com este comentário
-  // como ponteiro: quando PAYMENT_TEMPORARILY_DISABLED voltar a false,
-  // remover o `.skip` e reverter 11/12/17 para as versões que clicam de
-  // verdade (git blame deste arquivo antes desta OT tem a versão original).
-
-  it("11) botão de contratação some visível porém desabilitado, com aviso de indisponibilidade temporária", async () => {
+  it("11) botão de contratação aparece quando billingStatus != active", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    const btn = await screen.findByRole("button", { name: /contratação em breve/i });
-    expect(btn).toBeTruthy();
-    expect((btn as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/pagamento temporariamente indisponível/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^contratar lívia$/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /contratar lívia/i })).toBeTruthy();
   });
 
-  it("12) clicar no botão desabilitado nunca revela o formulário de CPF/CNPJ", async () => {
+  it("12) CPF/CNPJ só é solicitado após clicar em contratar, nunca antes", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    const btn = await screen.findByRole("button", { name: /contratação em breve/i });
-    fireEvent.click(btn); // button disabled -> navegador/RTL não dispara onClick
+    await screen.findByRole("button", { name: /contratar lívia/i });
     expect(screen.queryByPlaceholderText("000.000.000-00")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /contratar lívia/i }));
+    expect(await screen.findByPlaceholderText("000.000.000-00")).toBeTruthy();
   });
 
-  it.skip("13) loading trava clique duplo: só um POST é disparado mesmo com dois cliques em confirmar", async () => {
+  it("13) loading trava clique duplo: só um POST é disparado mesmo com dois cliques em confirmar", async () => {
     let resolveSubscribe!: (v: { status: number; body: unknown }) => void;
     const pending = new Promise<{ status: number; body: unknown }>((r) => (resolveSubscribe = r));
     mockFetchRouter({
@@ -228,7 +214,7 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
     expect(subscribeCalls()).toHaveLength(1);
   });
 
-  it.skip("14) erro é exibido de forma segura, sem CPF/CNPJ digitado", async () => {
+  it("14) erro é exibido de forma segura, sem CPF/CNPJ digitado", async () => {
     mockFetchRouter({
       establishment: () => ({ establishment: establishment(), exists: true }),
       subscribe: () => ({ status: 400, body: { error: "INVALID_PAYLOAD" } }),
@@ -244,7 +230,7 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
     expect(document.body.textContent).not.toContain("INVALID_PAYLOAD");
   });
 
-  it.skip("15) cobrança disponível: mostra QR real e código copia-e-cola", async () => {
+  it("15) cobrança disponível: mostra QR real e código copia-e-cola", async () => {
     mockFetchRouter({
       establishment: () => ({ establishment: establishment(), exists: true }),
       subscribe: () => ({
@@ -275,12 +261,10 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
     expect(screen.queryByPlaceholderText("000.000.000-00")).toBeNull();
   });
 
-  it("17) carregar/renderizar a página nunca dispara POST /api/billing/subscribe sozinho, nem clicando no botão desabilitado", async () => {
+  it("17) carregar/renderizar a página nunca dispara POST /api/billing/subscribe sozinho", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    const btn = await screen.findByRole("button", { name: /contratação em breve/i });
-    expect(subscribeCalls()).toHaveLength(0);
-    fireEvent.click(btn);
+    await screen.findByRole("button", { name: /contratar lívia/i });
     expect(subscribeCalls()).toHaveLength(0);
   });
 });
