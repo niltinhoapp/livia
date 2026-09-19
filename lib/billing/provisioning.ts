@@ -1,7 +1,7 @@
-// Workflow dormente para o produto de provisionamento/reconciliação Asaas.
-// O único acionamento HTTP atual é o harness administrativo Preview/Sandbox;
-// nenhuma rota de produto, webhook ou cron o utiliza. Firestore coordena a
-// intenção local; chamadas Asaas acontecem SEMPRE fora de transactions.
+// Workflow de provisionamento/reconciliação Asaas. Acionado hoje por
+// app/api/billing/subscribe/route.ts (produto real, OT-07E1+) e pelo
+// harness administrativo Preview/Sandbox. Firestore coordena a intenção
+// local; chamadas Asaas acontecem SEMPRE fora de transactions.
 import { createHash } from "node:crypto";
 import { db } from "@/lib/firebase/admin";
 import type {
@@ -395,6 +395,16 @@ function subscriptionMatches(
   );
 }
 
+// Mesmo critério já usado em reconcileConflictedSubscription (guard de
+// "status !== ACTIVE" antes de promover um conflito) — nunca reaproveitar
+// uma subscription cujo status não seja explicitamente ACTIVE. Ausência de
+// status também é rejeitada de propósito, para ficar consistente com esse
+// precedente: o que está em jogo aqui é decidir se uma subscription pode
+// representar a cobrança atual do tenant, não um campo cosmético.
+function isSubscriptionStatusReusable(status: string | undefined): boolean {
+  return status === "ACTIVE";
+}
+
 // Cópia deliberada de subscriptionMatches SEM a condição de nextDueDate —
 // nunca extraída/reaproveitada por composição, para que subscriptionMatches
 // (usada em provisionAsaasSubscription, replay normal e verificação
@@ -634,6 +644,20 @@ export async function provisionAsaasSubscription(
       );
       return { ok: false, phase: "conflict", reason: "known_subscription_mismatch", intent: conflicted ?? undefined };
     }
+    if (!isSubscriptionStatusReusable(found.data.status)) {
+      // Campos batem, mas a Asaas já marcou esta subscription como inativa
+      // (ex.: cancelamento/exclusão real — SUBSCRIPTION_DELETED chega como
+      // INACTIVE aqui). subscriptionMatches nunca olhou `status` — sem esta
+      // checagem, uma subscription morta seria "verified" e o dispatcher de
+      // recontratação nunca perceberia que precisa de uma geração nova.
+      const conflicted = await markKnownSubscriptionConflict(
+        identity,
+        knownId,
+        dependencies.now(),
+        "known_subscription_inactive",
+      );
+      return { ok: false, phase: "conflict", reason: "known_subscription_inactive", intent: conflicted ?? undefined };
+    }
     return { ok: true, phase: "succeeded", outcome: "verified", intent: reservation.intent };
   }
 
@@ -704,6 +728,21 @@ export async function provisionAsaasSubscription(
         conflictSubscriptionIds: [existing.id],
       }));
       return { ok: false, phase: "conflict", reason: "subscription_mismatch", intent: conflicted ?? undefined };
+    }
+    if (!isSubscriptionStatusReusable(existing.status)) {
+      // A busca de reconciliação passa includeDeleted:true de propósito
+      // (linha ~665) — inclui exatamente as subscriptions inativas que não
+      // podem ser reaproveitadas aqui.
+      const conflicted = await transitionWithLease(identity, leaseId, () => ({
+        phase: "conflict",
+        leaseId: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: dependencies.now(),
+        lastError: { kind: "conflict", code: "subscription_inactive" },
+        conflictSubscriptionIds: [existing.id],
+      }));
+      return { ok: false, phase: "conflict", reason: "subscription_inactive", intent: conflicted ?? undefined };
     }
     const succeeded = await transitionWithLease(identity, leaseId, () => ({
       phase: "succeeded",
@@ -1084,7 +1123,10 @@ export async function reconcileConflictedSubscription(
   return { ok: true, phase: "succeeded", outcome: "reconciled", intent: succeeded };
 }
 
-// Exportado apenas para testes/diagnóstico da fundação; não ativa o workflow.
+// Leitura pura, sem efeito colateral — não ativa o workflow. Usada por
+// testes/diagnóstico e também por app/api/billing/subscribe/route.ts para
+// resolver o nextDueDate/geração de uma tentativa em andamento antes de
+// chamar provisionAsaasSubscription (ver OT de recontratação).
 export async function getBillingProvisioningIntent(
   establishmentId: string,
   generation: number,

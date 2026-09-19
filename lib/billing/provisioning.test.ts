@@ -43,6 +43,7 @@ function matchingSubscription(
       INPUT.establishmentId,
       INPUT.subscriptionGeneration,
     ),
+    status: "ACTIVE", // representa uma subscription genuinamente reutilizável por padrão; testes de status inativo sobrescrevem isto explicitamente
     ...patch,
   };
 }
@@ -181,6 +182,30 @@ describe("intent durável e protocolo normal", () => {
     expect(client.createSubscription).not.toHaveBeenCalled();
   });
 
+  it("subscription existente com campos batendo mas status INACTIVE (cancelada) nunca é reutilizada", async () => {
+    const client = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingSubscription({ status: "INACTIVE" })],
+      })),
+    });
+    const result = await provisionAsaasSubscription(INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_inactive" });
+    expect(client.createSubscription).not.toHaveBeenCalled();
+    expect((await getBillingProvisioningIntent("est_1", 1))?.externalSubscriptionId).toBeNull();
+  });
+
+  it("subscription existente sem status algum também é rejeitada (fail-closed, nunca assume ACTIVE por ausência)", async () => {
+    const client = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => ({
+        ok: true as const,
+        data: [matchingSubscription({ status: undefined })],
+      })),
+    });
+    const result = await provisionAsaasSubscription(INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "subscription_inactive" });
+  });
+
   it("ID persistido divergente vira conflict após GET por ID", async () => {
     const initial = fakeAsaas();
     await provisionAsaasSubscription(INPUT, dependencies(initial));
@@ -190,6 +215,23 @@ describe("intent durável e protocolo normal", () => {
     const result = await provisionAsaasSubscription(INPUT, dependencies(client));
     expect(client.getSubscription).toHaveBeenCalledWith("sub_1");
     expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "known_subscription_mismatch" });
+    expect(client.createSubscription).not.toHaveBeenCalled();
+  });
+
+  it("ID persistido aponta pra subscription cancelada (INACTIVE) no Asaas: nunca é 'verified'", async () => {
+    // Cenário real do diagnóstico de recontratação pós-cancelamento: o
+    // establishment está billingStatus="canceled" mas o intent gen=1 ainda
+    // guarda externalSubscriptionId da subscription real, que a Asaas já
+    // marcou INACTIVE (SUBSCRIPTION_DELETED). Os campos continuam batendo
+    // (subscriptionMatches sozinho diria "verified") — só o status a
+    // distingue de uma subscription genuinamente ativa.
+    const initial = fakeAsaas();
+    await provisionAsaasSubscription(INPUT, dependencies(initial));
+    const client = fakeAsaas({
+      getSubscription: vi.fn(async () => ({ ok: true as const, data: matchingSubscription({ status: "INACTIVE" }) })),
+    });
+    const result = await provisionAsaasSubscription(INPUT, dependencies(client));
+    expect(result).toMatchObject({ ok: false, phase: "conflict", reason: "known_subscription_inactive" });
     expect(client.createSubscription).not.toHaveBeenCalled();
   });
 
@@ -346,6 +388,41 @@ describe("concorrência e transaction retry", () => {
     const winner = await first;
     expect(winner.ok && winner.outcome).toBe("created");
     expect(client.createSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("recontratação (generation=2): duas execuções concorrentes para a MESMA geração nova convergem numa única subscription", async () => {
+    // Prova o invariante central da OT de recontratação: duas requisições
+    // simultâneas de um tenant "canceled" — ambas já teriam calculado a
+    // mesma subscriptionGeneration alvo (resolveTargetGeneration, em
+    // app/api/billing/subscribe/route.ts, lê o valor persistido, não
+    // incrementa cegamente) — nunca criam duas subscriptions na mesma
+    // geração. Mesmo mecanismo de lease/reserveIntent já testado acima para
+    // generation=1, aqui confirmado explicitamente para generation=2.
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const client = fakeAsaas({
+      findSubscriptionsForReconciliation: vi.fn(async () => {
+        lookupStarted();
+        await blocked;
+        return { ok: true as const, data: [] };
+      }),
+    });
+    const recontratacaoInput = { ...INPUT, subscriptionGeneration: 2 };
+    const first = provisionAsaasSubscription(recontratacaoInput, dependencies(client));
+    await started;
+    const second = await provisionAsaasSubscription({ ...recontratacaoInput, leaseOwner: "worker_2" }, dependencies(client));
+    expect(second.ok && second.outcome).toBe("busy");
+    releaseLookup();
+    const winner = await first;
+    expect(winner.ok && winner.outcome).toBe("created");
+    expect(client.createSubscription).toHaveBeenCalledTimes(1);
+    expect((await getBillingProvisioningIntent("est_1", 2))?.externalReference).toBe(
+      logicalSubscriptionExternalReference("est_1", 2),
+    );
+    // A geração antiga (1) nunca é tocada por essa recontratação.
+    expect(await getBillingProvisioningIntent("est_1", 1)).toBeNull();
   });
 
   it("retry da callback Firestore não duplica POST", async () => {

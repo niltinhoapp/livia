@@ -6,6 +6,7 @@ const getEstablishment = vi.fn();
 const linkEstablishmentBilling = vi.fn();
 const resolveOrCreateAsaasCustomer = vi.fn();
 const provisionAsaasSubscription = vi.fn();
+const getBillingProvisioningIntent = vi.fn(async (..._a: unknown[]): Promise<{ terms: { nextDueDate: string } } | null> => null);
 const resolvePixPaymentForSubscription = vi.fn();
 const createAsaasClient = vi.fn((..._args: unknown[]) => ({ fakeClient: true }));
 
@@ -21,6 +22,7 @@ vi.mock("@/lib/billing/customerIdentity", () => ({
 }));
 vi.mock("@/lib/billing/provisioning", () => ({
   provisionAsaasSubscription: (...a: unknown[]) => provisionAsaasSubscription(...a),
+  getBillingProvisioningIntent: (...a: unknown[]) => getBillingProvisioningIntent(...a),
 }));
 vi.mock("@/lib/billing/pixPayment", () => ({
   resolvePixPaymentForSubscription: (...a: unknown[]) => resolvePixPaymentForSubscription(...a),
@@ -166,10 +168,13 @@ describe("POST /api/billing/subscribe", () => {
     expect(linkEstablishmentBilling).toHaveBeenCalledWith(EST_ID, { externalCustomerId: "cus_persist" });
   });
 
-  it("11) externalSubscriptionId é persistido quando a subscription é confirmada", async () => {
+  it("11) externalSubscriptionId (e a geração usada) é persistido quando a subscription é confirmada", async () => {
     provisionAsaasSubscription.mockResolvedValue(subscriptionSucceeded("sub_persist"));
     await POST(request({ cpfCnpj: "52998224725" }) as never);
-    expect(linkEstablishmentBilling).toHaveBeenCalledWith(EST_ID, { externalSubscriptionId: "sub_persist" });
+    expect(linkEstablishmentBilling).toHaveBeenCalledWith(EST_ID, {
+      externalSubscriptionId: "sub_persist",
+      subscriptionGeneration: 1,
+    });
   });
 
   it("12) repetição usa sempre a mesma identidade (establishmentId+generation) — idempotência delegada ao provisioning", async () => {
@@ -194,18 +199,36 @@ describe("POST /api/billing/subscribe", () => {
     );
   });
 
-  it("14) falha externa no provisioning -> resposta segura, sem vazar reason/secret", async () => {
+  it("14) falha estrutural no provisioning -> 409 específico (nunca 502 genérico), reason fora da allowlist nunca vaza texto livre", async () => {
     provisionAsaasSubscription.mockResolvedValue({
       ok: false,
       phase: "failed_terminal",
       reason: "known_subscription_mismatch: chave secreta interna XPTO",
     });
     const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(409);
     const text = await res.text();
     expect(text).not.toContain("XPTO");
     expect(text).not.toContain("known_subscription_mismatch");
-    expect(JSON.parse(text)).toEqual({ error: "SUBSCRIPTION_PROVISIONING_FAILED" });
+    expect(JSON.parse(text)).toEqual({ error: "SUBSCRIPTION_CONFLICT", reason: "unknown" });
+  });
+
+  it("14c) falha estrutural conhecida (known_subscription_inactive) -> 409 com o motivo específico, nunca 502", async () => {
+    provisionAsaasSubscription.mockResolvedValue({
+      ok: false,
+      phase: "conflict",
+      reason: "known_subscription_inactive",
+    });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "SUBSCRIPTION_CONFLICT", reason: "known_subscription_inactive" });
+  });
+
+  it("14d) falha transitória (intent_changed) -> 202 processing, nunca erro definitivo", async () => {
+    provisionAsaasSubscription.mockResolvedValue({ ok: false, phase: "conflict", reason: "intent_changed" });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ status: "processing" });
   });
 
   it("14b) falha na resolução do customer -> resposta segura", async () => {
@@ -269,5 +292,90 @@ describe("POST /api/billing/subscribe", () => {
     const firstCall = resolvePixPaymentForSubscription.mock.calls[0]!;
     const secondCall = resolvePixPaymentForSubscription.mock.calls[1]!;
     expect(firstCall[1].nextDueDate).toBe(secondCall[1].nextDueDate);
+  });
+
+  // ---- OT de recontratação/provisionamento ----
+
+  it("21) mesmo dia (nenhum intent gravado ainda): nextDueDate é calculado como hoje", async () => {
+    getBillingProvisioningIntent.mockResolvedValue(null);
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const [input] = provisionAsaasSubscription.mock.calls[0]!;
+    expect(input.nextDueDate).toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  it("22) retomada em outro dia (intent já existe com nextDueDate de antes): reusa o valor gravado, nunca recalcula", async () => {
+    getBillingProvisioningIntent.mockResolvedValue({
+      terms: { nextDueDate: "2026-01-05" },
+    });
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const [input] = provisionAsaasSubscription.mock.calls[0]!;
+    expect(input.nextDueDate).toBe("2026-01-05");
+    expect(input.nextDueDate).not.toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  it("23) PIX pendente (intent 'reserved'/'creating', sem sucesso ainda): retomada reusa o mesmo nextDueDate/geração", async () => {
+    getBillingProvisioningIntent.mockResolvedValue({ terms: { nextDueDate: "2026-02-10" } });
+    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "trial", trialEndsAt: 9e15, updatedAt: 1 } }));
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const [input] = provisionAsaasSubscription.mock.calls[0]!;
+    expect(input.nextDueDate).toBe("2026-02-10");
+    expect(input.subscriptionGeneration).toBe(1);
+  });
+
+  it("24) timeout/corrida (provisioning devolve intent_changed): 202 processing, nunca erro definitivo", async () => {
+    provisionAsaasSubscription.mockResolvedValue({ ok: false, phase: "conflict", reason: "intent_changed" });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ status: "processing" });
+  });
+
+  it("25) subscription cancelada/inativa persistida (known_subscription_inactive): 409 específico, nunca 502", async () => {
+    provisionAsaasSubscription.mockResolvedValue({ ok: false, phase: "conflict", reason: "known_subscription_inactive" });
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "SUBSCRIPTION_CONFLICT", reason: "known_subscription_inactive" });
+  });
+
+  it("26) billingStatus 'canceled': recontrata numa geração nova, nunca reusa a geração cancelada", async () => {
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "canceled", subscriptionGeneration: 1, updatedAt: 1 } }),
+    );
+    getBillingProvisioningIntent.mockResolvedValue(null); // geração 2 nunca teve intent ainda
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(getBillingProvisioningIntent).toHaveBeenCalledWith(EST_ID, 2);
+    const [input] = provisionAsaasSubscription.mock.calls[0]!;
+    expect(input.subscriptionGeneration).toBe(2);
+  });
+
+  it("26b) billingStatus 'canceled' sem subscriptionGeneration prévio (establishment mais antigo que o campo): recontrata na geração 2", async () => {
+    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "canceled", updatedAt: 1 } }));
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    const [input] = provisionAsaasSubscription.mock.calls[0]!;
+    expect(input.subscriptionGeneration).toBe(2);
+  });
+
+  it("27) sucesso na recontratação persiste a NOVA geração junto do externalSubscriptionId", async () => {
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "canceled", subscriptionGeneration: 1, updatedAt: 1 } }),
+    );
+    provisionAsaasSubscription.mockResolvedValue(subscriptionSucceeded("sub_geracao_2"));
+    await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(linkEstablishmentBilling).toHaveBeenCalledWith(EST_ID, {
+      externalSubscriptionId: "sub_geracao_2",
+      subscriptionGeneration: 2,
+    });
+  });
+
+  it("28) tenant não-canceled nunca recontrata: geração sempre a mesma persistida, mesmo em trial/past_due/suspended", async () => {
+    for (const billingStatus of ["trial", "past_due", "suspended"] as const) {
+      getBillingProvisioningIntent.mockClear();
+      provisionAsaasSubscription.mockClear();
+      getEstablishment.mockResolvedValue(
+        establishment({ billing: { billingStatus, subscriptionGeneration: 3, trialEndsAt: 9e15, updatedAt: 1 } }),
+      );
+      await POST(request({ cpfCnpj: "52998224725" }) as never);
+      const [input] = provisionAsaasSubscription.mock.calls[0]!;
+      expect(input.subscriptionGeneration).toBe(3);
+    }
   });
 });
