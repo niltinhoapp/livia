@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/Button";
 import { Input, Label, Select } from "@/components/ui/Field";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { templateBodyExampleValues } from "@/lib/campaignTemplates";
 
 type Step = 0 | 1 | 2 | 3;
 const STEP_LABELS = ["Campanha", "Público", "Template", "Revisão"];
 
 type Audience = "all" | "imported" | "segment";
-type CampaignTemplate = { id: string; name: string; language: string; status: string; components: Array<{ type?: unknown; text?: unknown }>; senderCompatible: boolean; campaignCompatible: boolean };
+type CampaignTemplate = { id: string; name: string; language: string; status: string; components: Array<{ type?: unknown; text?: unknown; example?: unknown }>; senderCompatible: boolean; campaignCompatible: boolean };
 type AudiencePreview = { selected: number; eligible: number; excluded: number };
 
 function parameterIndexes(template: CampaignTemplate | undefined): number[] {
@@ -59,6 +60,12 @@ export default function NewCampaignPage() {
 
   const canContinueStep0 = name.trim().length > 0;
   const canSendNow = Boolean(selectedTemplate && !missingParameterValue && audience === "all" && (audiencePreview?.eligible ?? 0) > 0 && !saving);
+
+  function selectTemplate(nextTemplateId: string) {
+    const template = templates.find((item) => item.id === nextTemplateId);
+    setTemplateId(nextTemplateId);
+    setParameterValues(templateBodyExampleValues(template?.components));
+  }
 
   async function createAndPrepare(sendNow: boolean) {
     if (!selectedTemplate) return;
@@ -206,12 +213,12 @@ export default function NewCampaignPage() {
           <Card>
             <StepHeader icon={<FileText className="h-5 w-5" />} title="Template" />
             <Label>Template aprovado</Label>
-            <Select value={templateId} onChange={(e) => { setTemplateId(e.target.value); setParameterValues({}); }}>
+            <Select value={templateId} onChange={(e) => selectTemplate(e.target.value)}>
               <option value="">Selecione um template</option>
               {templates.filter((template) => template.campaignCompatible).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
             </Select>
             <p className="mt-1.5 text-xs text-ink-400">
-              Templates devem estar aprovados e compatíveis com o sender —{" "}
+              O conteúdo vem do template aprovado e será enviado para todos os contatos elegíveis —{" "}
               <Link href="/painel/campanhas/templates" className="font-semibold text-primary hover:underline">
                 ver Templates
               </Link>
@@ -220,7 +227,7 @@ export default function NewCampaignPage() {
 
             {selectedParameterIndexes.length > 0 ? (
               <div className="mt-4 space-y-3 rounded-control border border-line p-4">
-                <p className="text-sm font-semibold text-ink-900">Variáveis da mensagem</p>
+                <p className="text-sm font-semibold text-ink-900">Personalização automática</p>
                 {selectedParameterIndexes.map((index) => index === 1 ? (
                   <div key={index}>
                     <Label>{`{{${index}}} — Nome do cliente`}</Label>
@@ -228,15 +235,16 @@ export default function NewCampaignPage() {
                   </div>
                 ) : (
                   <div key={index}>
-                    <Label>{`Valor de {{${index}}}`}</Label>
+                    <Label>{`Valor aprovado de {{${index}}}`}</Label>
                     <Input
                       value={parameterValues[index] ?? ""}
                       onChange={(event) => setParameterValues((current) => ({ ...current, [index]: event.target.value }))}
-                      placeholder={`Digite o valor de {{${index}}}`}
+                      placeholder={`O template não possui exemplo para {{${index}}}`}
                       maxLength={1024}
                     />
                   </div>
                 ))}
+                <p className="text-xs text-ink-400">Esses valores vieram do modelo aprovado na Meta e valem para a campanha inteira, não precisam ser preenchidos contato por contato.</p>
               </div>
             ) : null}
 

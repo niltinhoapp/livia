@@ -10,6 +10,21 @@ export function templateParameterIndexes(components: ReadonlyArray<{ type?: unkn
   return [...indexes].filter((index) => Number.isInteger(index) && index > 0).sort((a, b) => a - b);
 }
 
+/** Valores de exemplo cadastrados na aprovação da Meta. O primeiro conjunto
+ * corresponde aos parâmetros posicionais {{1}}, {{2}}... do BODY. */
+export function templateBodyExampleValues(
+  components: ReadonlyArray<{ type?: unknown; example?: unknown }> | undefined,
+): Record<number, string> {
+  const body = components?.find((component) => String(component.type).toUpperCase() === "BODY");
+  if (!body?.example || typeof body.example !== "object") return {};
+  const raw = (body.example as { body_text?: unknown }).body_text;
+  if (!Array.isArray(raw) || !Array.isArray(raw[0])) return {};
+  return raw[0].reduce<Record<number, string>>((values, value, offset) => {
+    if (typeof value === "string" && value.trim()) values[offset + 1] = value.trim();
+    return values;
+  }, {});
+}
+
 export function isCampaignTemplateCompatible(template: WhatsAppTemplate): boolean {
   return template.approved && template.senderCompatible;
 }
