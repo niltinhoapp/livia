@@ -29,6 +29,7 @@ vi.mock("@/lib/ai/tools", () => ({
     { type: "function", function: { name: "cancel_appointment", parameters: {} } },
     { type: "function", function: { name: "confirm_appointment", parameters: {} } },
     { type: "function", function: { name: "get_business_hours", parameters: {} } },
+    { type: "function", function: { name: "add_order_item", parameters: {} } },
   ],
   runTool: (...args: unknown[]) => runTool(...args),
 }));
@@ -38,7 +39,7 @@ const { think } = await import("./brain");
 const est = {
   id: "demo",
   name: "Clínica",
-  bot: { personaName: "Livia", tone: "acolhedora", bookingEnabled: true, handoffKeywords: [], medicalGuardrail: false },
+  bot: { personaName: "Livia", tone: "acolhedora", bookingEnabled: true, ordersEnabled: true, handoffKeywords: [], medicalGuardrail: false },
 } as unknown as Establishment;
 const intent: Intent = { type: "general_question", confidence: 0.4, entities: {} };
 
@@ -73,6 +74,21 @@ beforeEach(() => {
 });
 
 describe("uma mutação de agenda bem-sucedida por turno", () => {
+  it("injeta o tc.id como __operationId interno para add_order_item", async () => {
+    modelMessages = [
+      tool("add_order_item", { productId: "product-1", quantity: 1 }, "toolcall.add-1"),
+      { content: "Item adicionado." },
+    ];
+
+    await run("Quero um lanche", null);
+
+    expect(runTool).toHaveBeenCalledWith(
+      "add_order_item",
+      expect.objectContaining({ productId: "product-1", quantity: 1, __operationId: "toolcall.add-1", __allowDraftCreation: true }),
+      expect.anything(),
+    );
+  });
+
   it("mantém a remarcação determinística às 15:00 e bloqueia a segunda chamada do modelo", async () => {
     let finalTime = "";
     runTool.mockImplementation(async (name: string, args: Record<string, unknown>) => {

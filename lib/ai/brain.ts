@@ -16,6 +16,8 @@ import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
+import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
+import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -204,7 +206,7 @@ function buildSystemPrompt(
   // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
   // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
   rules.push(...knowledgeGuidanceToText(kb));
-  if (bot.bookingEnabled) {
+    if (bot.bookingEnabled) {
     rules.push(
       "Você PODE agendar, remarcar e cancelar. Regras:",
       "- Descubra o serviço desejado e o dia de preferência.",
@@ -219,6 +221,16 @@ function buildSystemPrompt(
     );
   } else {
     rules.push("Você ainda não fecha agendamentos; para marcar, oriente a pessoa a falar com a equipe.");
+  }
+  if (bot.ordersEnabled) {
+    rules.push(
+      "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
+      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte search_menu/get_menu_product e o resumo do pedido.",
+      "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
+      "- Antes de pedir confirmação, consulte get_order_draft e apresente exclusivamente o resumo retornado.",
+      "- Só use confirm_order depois de o cliente confirmar explicitamente e usando orderId/version do resumo.",
+      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa."
+    );
   }
   rules.push(
     `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
@@ -832,6 +844,9 @@ export interface BrainInput {
   // Passo 3, já calculado pelo webhook (determinístico) — reaproveitado aqui
   // pro Passo 7 (checagem de confiança), sem recalcular nem gastar IA.
   intent: Intent;
+  // Fato persistido pela confirmação transacional do pedido. Evita decidir
+  // sobre um novo draft a partir do texto variável da resposta da IA.
+  hasLastConfirmedOrder?: boolean;
 }
 
 export interface BrainResult {
@@ -890,6 +905,33 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
   "cancel_appointment",
   "confirm_appointment",
 ]);
+const ORDER_MUTATION_TOOLS = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order",
+]);
+// Diferente da agenda, um pedido pode exigir várias linhas numa única
+// mensagem. O teto limita tool loops sem bloquear um pedido composto.
+const MAX_ORDER_MUTATIONS_PER_TURN = 8;
+const ORDER_DRAFT_MUTATION_TOOLS = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment",
+]);
+
+function isTrivialPostOrderConfirmation(
+  customerText: string,
+  intent: Intent,
+  task: ConversationTask | null,
+  hasLastConfirmedOrder: boolean,
+): boolean {
+  if (!hasLastConfirmedOrder) return false;
+  return isSilentAcknowledgement(customerText, intent, task, []) || isPureSocialFarewell(customerText);
+}
+
+function explicitlyStartsOrder(text: string): boolean {
+  const normalized = text
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, " ");
+  return /\b(?:quero|queria|gostaria|preciso|vou|vamos|manda|mande|pedir|pedido)\b/.test(normalized);
+}
 
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
   if (mutation.kind === "created") return "create_appointment";
@@ -949,7 +991,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
@@ -980,6 +1022,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Serviço citado pelo cliente nesta mensagem (nome canônico da base). Mesmo
   // propósito do statedDate: vence um serviceName preso na tarefa (OT-02G).
   const statedService = ultimaDoCliente ? parseServiceSelection(ultimaDoCliente.text, kb?.services) : null;
+  const trivialPostOrderConfirmation = ultimaDoCliente
+    ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, hasLastConfirmedOrder)
+    : false;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
 
   // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
@@ -1005,8 +1050,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Compartilhado pela resolução determinística pré-loop e pelo loop do
   // modelo. Só uma escrita BEM-SUCEDIDA consome o turno; falhas continuam
   // permitindo que o modelo faça uma tentativa válida.
-  let agendaMutation: AgendaMutation | null = null;
-  let blockedAgendaMutation: ToolName | null = null;
+    let agendaMutation: AgendaMutation | null = null;
+    let blockedAgendaMutation: ToolName | null = null;
+    let orderMutationAttempts = 0;
+    let orderMutationLimitReached = false;
+    let orderConfirmedThisTurn = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -1095,6 +1143,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         } catch {
           // args malformado — segue com {} e deixa a ferramenta validar.
         }
+        // Metadado interno: o modelo não escolhe esta chave. O mesmo tc.id
+        // reaplicado em retry converge na transação persistente do pedido.
+        if (ORDER_MUTATION_TOOLS.has(tc.function.name as ToolName)) args.__operationId = tc.id;
+        if (name === "add_order_item" && ultimaDoCliente && explicitlyStartsOrder(ultimaDoCliente.text)) {
+          args.__allowDraftCreation = true;
+        }
 
         // A primeira escrita bem-sucedida já determinou o fato operacional
         // deste turno. Não executa a segunda escrita do modelo, mas devolve
@@ -1114,11 +1168,26 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           });
           continue;
         }
+        if (ORDER_MUTATION_TOOLS.has(name) && orderConfirmedThisTurn) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order already confirmed this turn" }) });
+          continue;
+        }
+        if (ORDER_DRAFT_MUTATION_TOOLS.has(name) && trivialPostOrderConfirmation) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "trivial post-confirmation message cannot start a new order" }) });
+          continue;
+        }
+        if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
+          orderMutationLimitReached = true;
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn", data: { limit: MAX_ORDER_MUTATIONS_PER_TURN, executed: orderMutationAttempts, operationExecuted: false } }) });
+          continue;
+        }
 
         toolCalls.push({ name, args });
+        if (ORDER_MUTATION_TOOLS.has(name)) orderMutationAttempts++;
 
         const result = await runTool(name, args, toolCtx);
-        if (result.ok) {
+          if (result.ok) {
+            if (name === "confirm_order") orderConfirmedThisTurn = true;
           if (name === "create_appointment") {
             booked = true;
             const data = result.data as { when?: string; serviceName?: string } | undefined;
@@ -1193,6 +1262,14 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         statedDate,
         statedService,
       };
+    }
+
+    // A nona mutação não aconteceu. Não deixa texto livre do modelo afirmar o
+    // contrário só porque recebeu o erro da tool: a resposta ao cliente fica
+    // ancorada no limite que o backend efetivamente aplicou.
+    if (orderMutationLimitReached) {
+      reply = `Consegui aplicar até ${MAX_ORDER_MUTATIONS_PER_TURN} alterações neste pedido. A última não foi realizada; me diga como prefere ajustar.`;
+      handoff = false;
     }
 
     // Trava determinística do fluxo de consulta de agenda: se a consulta deu

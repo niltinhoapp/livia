@@ -3,12 +3,21 @@ import { NextRequest } from "next/server";
 
 const resolveEstablishmentId = vi.fn();
 const getEstablishment = vi.fn();
+const getCampaign = vi.fn();
 const activateCampaign = vi.fn();
+const dispatchCampaignBatch = vi.fn();
+const listMessageTemplates = vi.fn();
 
 vi.mock("@/lib/auth/session", () => ({ resolveEstablishmentId: (...args: unknown[]) => resolveEstablishmentId(...args) }));
 vi.mock("@/lib/repo", () => ({
   getEstablishment: (...args: unknown[]) => getEstablishment(...args),
+  getCampaign: (...args: unknown[]) => getCampaign(...args),
   activateCampaign: (...args: unknown[]) => activateCampaign(...args),
+}));
+vi.mock("@/lib/campaignDispatcher", () => ({ dispatchCampaignBatch: (...args: unknown[]) => dispatchCampaignBatch(...args) }));
+vi.mock("@/lib/whatsapp/client", () => ({
+  listMessageTemplates: (...args: unknown[]) => listMessageTemplates(...args),
+  WhatsAppTemplateError: class WhatsAppTemplateError extends Error { code: string; constructor(code: string) { super(code); this.code = code; } },
 }));
 
 const { POST } = await import("./route");
@@ -27,7 +36,11 @@ describe("POST /api/campaigns/:id/send", () => {
     vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "true");
     resolveEstablishmentId.mockResolvedValue("est-a");
     getEstablishment.mockResolvedValue({ id: "est-a", whatsapp: { status: "connected" } });
-    activateCampaign.mockResolvedValue({ kind: "activated", campaign: { id: "c1", status: "running" } });
+    const campaign = { id: "c1", status: "running", template: { id: "tpl-1", name: "hello", languageCode: "pt_BR" } };
+    getCampaign.mockResolvedValue(campaign);
+    activateCampaign.mockResolvedValue({ kind: "activated", campaign });
+    listMessageTemplates.mockResolvedValue([{ id: "tpl-1", name: "hello", language: "pt_BR", components: [], approved: true, senderCompatible: true }]);
+    dispatchCampaignBatch.mockResolvedValue({ claimed: 1, sent: 1, failed: 0, skipped: 0 });
   });
 
   it("isola tenant pela sessão e não aceita confirmação ausente", async () => {
@@ -44,7 +57,7 @@ describe("POST /api/campaigns/:id/send", () => {
     expect(activateCampaign).not.toHaveBeenCalled();
   });
 
-  it("ativa campanha válida sem enviar dentro da request", async () => {
+  it("ativa campanha válida e delega somente um lote limitado ao dispatcher", async () => {
     const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
     expect(response.status).toBe(200);
     expect(activateCampaign).toHaveBeenCalledWith("est-a", "c1", {
@@ -52,6 +65,7 @@ describe("POST /api/campaigns/:id/send", () => {
       scheduledAt: null,
       maxRecipients: 5,
     });
+    expect(dispatchCampaignBatch).toHaveBeenCalledWith("est-a", "c1", { batchSize: 5 });
   });
 
   it("retry/double click retorna ativação idempotente", async () => {
@@ -61,10 +75,26 @@ describe("POST /api/campaigns/:id/send", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect((await second.json()).idempotent).toBe(true);
+    expect(dispatchCampaignBatch).toHaveBeenCalledTimes(2);
   });
 
   it("não ativa sem WhatsApp conectado", async () => {
     getEstablishment.mockResolvedValue({ id: "est-a", whatsapp: { status: "disconnected" } });
+    const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(409);
+    expect(activateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("não ativa nem delega ao dispatcher se a revalidação Meta não aprovar o template", async () => {
+    listMessageTemplates.mockResolvedValue([{ id: "tpl-1", name: "hello", language: "pt_BR", components: [], approved: false, senderCompatible: true }]);
+    const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(409);
+    expect(activateCampaign).not.toHaveBeenCalled();
+    expect(dispatchCampaignBatch).not.toHaveBeenCalled();
+  });
+
+  it("bloqueia templates que exigem parâmetros ainda não suportados", async () => {
+    listMessageTemplates.mockResolvedValue([{ id: "tpl-1", name: "hello", language: "pt_BR", components: [{ type: "BODY", text: "Olá {{1}}" }], approved: true, senderCompatible: true }]);
     const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
     expect(response.status).toBe(409);
     expect(activateCampaign).not.toHaveBeenCalled();

@@ -1,0 +1,7 @@
+import { NextRequest, NextResponse } from "next/server";
+import { resolveEstablishmentId } from "@/lib/auth/session";
+import { getOrder, transitionOrder } from "@/lib/orders";
+import { ordersEnabledFor } from "@/lib/ordersAccess";
+import type { OrderStatus } from "@/types";
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) { const est = await resolveEstablishmentId(req); const { id } = await params; if (!est) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 }); if (!await ordersEnabledFor(est)) return NextResponse.json({ error: "pedidos desabilitados" }, { status: 404 }); const order = await getOrder(est, id); return order ? NextResponse.json({ order }) : NextResponse.json({ error: "pedido não encontrado" }, { status: 404 }); }
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) { const est = await resolveEstablishmentId(req); const { id } = await params; if (!est) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 }); if (!await ordersEnabledFor(est)) return NextResponse.json({ error: "pedidos desabilitados" }, { status: 404 }); try { const body = await req.json() as { status?: OrderStatus }; if (!body.status) throw new Error("status obrigatório"); return NextResponse.json({ order: await transitionOrder(est, id, body.status) }); } catch (e) { return NextResponse.json({ error: String(e) }, { status: 400 }); } }
