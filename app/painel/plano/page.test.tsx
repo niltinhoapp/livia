@@ -5,10 +5,22 @@
 // app/painel/conversas/page.messages.test.tsx.
 // OT-07E2: cobre só o delta de contratação real (CTA -> CPF/CNPJ -> POST
 // /api/billing/subscribe -> QR Pix), reaproveitando o mesmo padrão.
+// OT de migração pro Hosted Checkout: cobre o delta de cartão (CTA ->
+// POST /api/billing/checkout -> redirect) e o retorno via ?checkout=...
+// (nunca ativa nada sozinho — só reflete o billingStatus do backend).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import PlanoPage from "./page";
 import type { Establishment } from "@/types";
+
+// Mesmo padrão de components/layout/AppShell.test.tsx: mocka next/navigation
+// com um valor controlável por teste. currentSearchParams é lido por
+// useSearchParams().get("checkout") em page.tsx.
+let currentSearchParams = new URLSearchParams();
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => currentSearchParams,
+}));
+
+const { default: PlanoPage } = await import("./page");
 
 function establishment(over: Partial<Establishment> = {}): Establishment {
   return {
@@ -37,12 +49,14 @@ function mockFetchOnce(body: unknown, ok = true) {
 }
 
 // Roteia por URL: GET /api/establishment sempre via `establishment()` (pode
-// mudar entre chamadas, para simular o refresh após "Já paguei"); POST
-// /api/billing/subscribe via `subscribe(body)`. Usado só pelos testes de
-// contratação (OT-07E2) — os testes OT-07D continuam usando mockFetchOnce.
+// mudar entre chamadas, para simular o refresh após "Já paguei"/retorno do
+// Checkout); POST /api/billing/subscribe via `subscribe(body)`; POST
+// /api/billing/checkout via `checkout()`. Usado pelos testes de contratação
+// (Pix e cartão) — os testes OT-07D continuam usando mockFetchOnce.
 function mockFetchRouter(opts: {
   establishment: () => unknown;
   subscribe?: (body: unknown) => { status: number; body: unknown };
+  checkout?: () => { status: number; body: unknown };
 }) {
   fetchMock = vi.fn((url: unknown, init?: RequestInit) => {
     const u = String(url);
@@ -58,6 +72,14 @@ function mockFetchRouter(opts: {
         json: () => Promise.resolve(result.body),
       } as Response);
     }
+    if (u.includes("/api/billing/checkout")) {
+      const result = opts.checkout ? opts.checkout() : { status: 500, body: { error: "UNEXPECTED" } };
+      return Promise.resolve({
+        ok: result.status >= 200 && result.status < 300,
+        status: result.status,
+        json: () => Promise.resolve(result.body),
+      } as Response);
+    }
     return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -67,9 +89,14 @@ function subscribeCalls() {
   return fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/billing/subscribe"));
 }
 
+function checkoutCalls() {
+  return fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/billing/checkout"));
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  currentSearchParams = new URLSearchParams();
 });
 
 describe("PlanoPage (OT-07D)", () => {
@@ -131,7 +158,7 @@ describe("PlanoPage (OT-07D)", () => {
 
     expect(await screen.findByText("Assinatura suspensa")).toBeTruthy();
     expect(screen.getByText(/suspensa por falta de pagamento/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /ver cobrança pendente/i })).toBeTruthy(); // externalSubscriptionId já existe (sub_1) -> hasPendingSubscription
+    expect(screen.getByRole("button", { name: /ver cobrança pix pendente/i })).toBeTruthy(); // externalSubscriptionId já existe (sub_1) -> hasPendingSubscription
     expect(screen.queryByText(/assinaturas canceladas/i)).toBeNull();
   });
 
@@ -147,7 +174,7 @@ describe("PlanoPage (OT-07D)", () => {
     expect(await screen.findByText("Assinatura cancelada")).toBeTruthy();
     expect(screen.getByText(/fale com o suporte da lívia para reativar/i)).toBeTruthy();
     expect(screen.getByText(/assinaturas canceladas não voltam automaticamente/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /contratação em breve|contratar lívia|ver cobrança pendente/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /contratação em breve|pagar com pix|ver cobrança pix pendente|cartão de crédito/i })).toBeNull();
   });
 
   it("erro de carregamento: mostra aviso, não quebra a página", async () => {
@@ -169,16 +196,16 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
   it("11) botão de contratação aparece quando billingStatus != active", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    expect(await screen.findByRole("button", { name: /contratar lívia/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /pagar com pix/i })).toBeTruthy();
   });
 
   it("12) CPF/CNPJ só é solicitado após clicar em contratar, nunca antes", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    await screen.findByRole("button", { name: /contratar lívia/i });
+    await screen.findByRole("button", { name: /pagar com pix/i });
     expect(screen.queryByPlaceholderText("000.000.000-00")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /contratar lívia/i }));
+    fireEvent.click(screen.getByRole("button", { name: /pagar com pix/i }));
     expect(await screen.findByPlaceholderText("000.000.000-00")).toBeTruthy();
   });
 
@@ -202,7 +229,7 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
     });
 
     render(<PlanoPage />);
-    fireEvent.click(await screen.findByRole("button", { name: /contratar lívia/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /pagar com pix/i }));
     fireEvent.change(await screen.findByPlaceholderText("000.000.000-00"), { target: { value: "52998224725" } });
     const confirmBtn = screen.getByRole("button", { name: /confirmar contratação/i });
     fireEvent.click(confirmBtn);
@@ -220,7 +247,7 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
       subscribe: () => ({ status: 400, body: { error: "INVALID_PAYLOAD" } }),
     });
     render(<PlanoPage />);
-    fireEvent.click(await screen.findByRole("button", { name: /contratar lívia/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /pagar com pix/i }));
     fireEvent.change(await screen.findByPlaceholderText("000.000.000-00"), { target: { value: "12345678900" } });
     fireEvent.click(screen.getByRole("button", { name: /confirmar contratação/i }));
 
@@ -239,7 +266,7 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
       }),
     });
     render(<PlanoPage />);
-    fireEvent.click(await screen.findByRole("button", { name: /contratar lívia/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /pagar com pix/i }));
     fireEvent.change(await screen.findByPlaceholderText("000.000.000-00"), { target: { value: "52998224725" } });
     fireEvent.click(screen.getByRole("button", { name: /confirmar contratação/i }));
 
@@ -257,14 +284,153 @@ describe("PlanoPage — contratação real via PIX (OT-07E2)", () => {
     });
     render(<PlanoPage />);
     expect(await screen.findByText(/assinatura ativa/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /contratar lívia/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /pagar com pix/i })).toBeNull();
     expect(screen.queryByPlaceholderText("000.000.000-00")).toBeNull();
   });
 
   it("17) carregar/renderizar a página nunca dispara POST /api/billing/subscribe sozinho", async () => {
     mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
     render(<PlanoPage />);
-    await screen.findByRole("button", { name: /contratar lívia/i });
+    await screen.findByRole("button", { name: /pagar com pix/i });
     expect(subscribeCalls()).toHaveLength(0);
+  });
+});
+
+describe("PlanoPage — contratação via cartão de crédito (Hosted Checkout)", () => {
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    // jsdom não permite navegação real — substitui por um objeto simples só
+    // para capturar a atribuição de href, mesmo padrão usado para testar
+    // "window.location.href = ..." sem navegar de verdade.
+    // @ts-expect-error apagar window.location é necessário pra poder redefinir abaixo
+    delete window.location;
+    // @ts-expect-error objeto simplificado, só o suficiente para este teste (href)
+    window.location = { href: "" };
+  });
+
+  afterEach(() => {
+    // @ts-expect-error restaura o location real do jsdom
+    window.location = originalLocation;
+  });
+
+  it("18) botão de cartão aparece junto do botão de Pix quando billingStatus != active", async () => {
+    mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
+    render(<PlanoPage />);
+    expect(await screen.findByRole("button", { name: /pagar com pix/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /cartão de crédito/i })).toBeTruthy();
+  });
+
+  it("19) clicar em 'cartão de crédito' chama POST /api/billing/checkout e redireciona para a URL devolvida pelo backend, nunca coleta dado de cartão aqui", async () => {
+    mockFetchRouter({
+      establishment: () => ({ establishment: establishment(), exists: true }),
+      checkout: () => ({ status: 200, body: { status: "checkout_created", checkoutUrl: "https://sandbox.asaas.com/checkoutSession/show/chk_xyz" } }),
+    });
+    render(<PlanoPage />);
+    const btn = await screen.findByRole("button", { name: /cartão de crédito/i });
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(window.location.href).toBe("https://sandbox.asaas.com/checkoutSession/show/chk_xyz"));
+    expect(checkoutCalls()).toHaveLength(1);
+    // Nunca existe campo de número de cartão/CVV nesta página — a coleta
+    // acontece exclusivamente na página hospedada da Asaas.
+    expect(screen.queryByPlaceholderText(/número do cartão/i)).toBeNull();
+  });
+
+  it("20) duplo clique no botão de cartão dispara só uma requisição (trava enquanto redirecionando)", async () => {
+    let resolveCheckout!: (v: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>((r) => (resolveCheckout = r));
+    mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
+    fetchMock.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.includes("/api/establishment")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ establishment: establishment(), exists: true }) } as Response);
+      }
+      if (u.includes("/api/billing/checkout")) {
+        return pending.then((r) => ({ ok: r.status < 300, status: r.status, json: () => Promise.resolve(r.body) } as Response));
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    });
+
+    render(<PlanoPage />);
+    const btn = await screen.findByRole("button", { name: /cartão de crédito/i });
+    fireEvent.click(btn);
+    fireEvent.click(btn); // segundo clique enquanto a 1ª requisição ainda está em voo
+
+    resolveCheckout({ status: 200, body: { status: "checkout_created", checkoutUrl: "https://sandbox.asaas.com/x" } });
+    await waitFor(() => expect(window.location.href).toBe("https://sandbox.asaas.com/x"));
+    expect(checkoutCalls()).toHaveLength(1);
+  });
+
+  it("21) retorno ?checkout=success mostra banner de processamento, NUNCA marca a assinatura como ativa a partir da query string", async () => {
+    currentSearchParams = new URLSearchParams("checkout=success");
+    mockFetchRouter({
+      establishment: () => ({ establishment: establishment(), exists: true }), // backend continua "trial" — webhook ainda não confirmou
+    });
+    render(<PlanoPage />);
+    expect(await screen.findByText(/aguardando a confirmação do asaas/i)).toBeTruthy();
+    expect(screen.queryByText(/assinatura ativa/i)).toBeNull();
+    expect(screen.queryByText(/pagamento confirmado/i)).toBeNull();
+  });
+
+  it("22) retorno ?checkout=success quando o webhook JÁ confirmou antes do redirect: reflete active vindo do backend, não do banner", async () => {
+    currentSearchParams = new URLSearchParams("checkout=success");
+    mockFetchRouter({
+      establishment: () => ({
+        establishment: establishment({ billing: { billingStatus: "active", updatedAt: 1 } }),
+        exists: true,
+      }),
+    });
+    render(<PlanoPage />);
+    expect(await screen.findByText(/assinatura ativa/i)).toBeTruthy();
+  });
+
+  it("23) retorno ?checkout=cancel nunca mostra o banner de sucesso nem ativa nada", async () => {
+    currentSearchParams = new URLSearchParams("checkout=cancel");
+    mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
+    render(<PlanoPage />);
+    expect(await screen.findByText(/cancelado/i)).toBeTruthy();
+    expect(screen.queryByText(/aguardando a confirmação/i)).toBeNull();
+  });
+
+  it("24) retorno ?checkout=expired orienta a tentar de novo, nunca ativa nada", async () => {
+    currentSearchParams = new URLSearchParams("checkout=expired");
+    mockFetchRouter({ establishment: () => ({ establishment: establishment(), exists: true }) });
+    render(<PlanoPage />);
+    expect(await screen.findByText(/link de pagamento expirou/i)).toBeTruthy();
+  });
+
+  it("25) erro ao criar Checkout mostra mensagem segura (nunca o texto bruto do backend) e permite tentar de novo", async () => {
+    mockFetchRouter({
+      establishment: () => ({ establishment: establishment(), exists: true }),
+      checkout: () => ({ status: 409, body: { error: "CHECKOUT_CONFLICT", reason: "asaas_rejected" } }),
+    });
+    render(<PlanoPage />);
+    const btn = await screen.findByRole("button", { name: /cartão de crédito/i });
+    fireEvent.click(btn);
+
+    expect(await screen.findByText(/não foi possível iniciar o pagamento por cartão/i)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("CHECKOUT_CONFLICT");
+    expect(document.body.textContent).not.toContain("asaas_rejected");
+
+    const retry = screen.getByRole("button", { name: /tentar novamente/i });
+    expect(retry).toBeTruthy();
+  });
+
+  it("26) status 202 (processing/busy) do backend nunca redireciona nem trava a página, e nenhum segredo aparece em nenhuma resposta capturada", async () => {
+    mockFetchRouter({
+      establishment: () => ({ establishment: establishment(), exists: true }),
+      checkout: () => ({ status: 202, body: { status: "processing" } }),
+    });
+    render(<PlanoPage />);
+    const btn = await screen.findByRole("button", { name: /cartão de crédito/i });
+    fireEvent.click(btn);
+    await waitFor(() => expect(checkoutCalls()).toHaveLength(1));
+    expect(window.location.href).toBe(""); // nunca navegou
+    // Nenhuma chamada de fetch carrega ASAAS_API_KEY/access_token em lugar nenhum.
+    for (const call of fetchMock.mock.calls) {
+      expect(JSON.stringify(call)).not.toMatch(/aact_(hmlg|prod)_/i);
+    }
   });
 });

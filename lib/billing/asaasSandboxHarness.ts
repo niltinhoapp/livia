@@ -4,6 +4,12 @@
 // explícita antes de construir o client.
 import { randomUUID } from "node:crypto";
 import { createAsaasClient, type AsaasClient, type AsaasError, type AsaasPayment } from "./asaas";
+// Domínio (produção real, ver app/layout.tsx metadataBase) usado só como
+// destino inofensivo das URLs de callback do Checkout de teste — ninguém
+// precisa clicar "voltar" para este experimento ser válido; a rota real de
+// retorno (/painel/plano?checkout=...) não existe ainda (arquitetura
+// definitiva fora de escopo nesta OT de verificação).
+const SANDBOX_CHECKOUT_RETURN_BASE = "https://livia-seven.vercel.app/painel/plano";
 import type {
   BillingProvisioningIntent,
   ConflictRecoveryDependencies,
@@ -94,6 +100,19 @@ export type SandboxHarnessCommand =
       confirmSandbox: true;
       testRunId: string;
       generation: number;
+    }
+  // Verificação empírica do Hosted Checkout (OT de migração Asaas): cria um
+  // Checkout RECURRENT + CREDIT_CARD real no Sandbox, sem tocar
+  // establishment/Firestore — só observa o que a Asaas devolve. Fixo em
+  // CREDIT_CARD porque é o único billingType documentado oficialmente para
+  // chargeTypes=RECURRENT (ver auditoria da OT); nunca parametrizado para
+  // PIX aqui.
+  | {
+      action: "checkout";
+      confirmSandbox: true;
+      testRunId: string;
+      nextDueDate: string;
+      value: number;
     };
 
 export type SandboxHarnessFailureCode =
@@ -106,7 +125,8 @@ export type SandboxHarnessFailureCode =
   | "subscription_conflict"
   | "subscription_lookup_failed"
   | "payments_lookup_failed"
-  | "recovery_conflict";
+  | "recovery_conflict"
+  | "checkout_create_rejected";
 
 export type SandboxHarnessResult =
   | { ok: true; action: "auth_check"; authenticated: true }
@@ -162,6 +182,16 @@ export type SandboxHarnessResult =
       externalSubscriptionId: string;
     }
   | {
+      ok: true;
+      action: "checkout";
+      checkout: {
+        id: string;
+        link: string;
+        status: string;
+        externalReference: string | null;
+      };
+    }
+  | {
       ok: false;
       action: SandboxHarnessCommand["action"];
       code: SandboxHarnessFailureCode | "asaas_auth_failed";
@@ -214,6 +244,10 @@ export function sandboxCustomerExternalReference(testRunId: string): string {
 
 export function sandboxTestEstablishmentId(testRunId: string): string {
   return `asaas-sandbox-test-${testRunId}`;
+}
+
+export function sandboxCheckoutExternalReference(testRunId: string): string {
+  return `livia:sandbox-test:${testRunId}:checkout`;
 }
 
 function sanitizeAsaasError(error: AsaasError): SanitizedAsaasError {
@@ -369,6 +403,50 @@ async function recoverConflict(
   };
 }
 
+// Cria um Checkout real no Sandbox e devolve exatamente o que a Asaas
+// respondeu — nenhuma escrita em Firestore/establishment, nenhuma
+// correlação com provisioning.ts. O objetivo desta ação é só observar o
+// comportamento real da API (id, link, status, externalReference) para
+// decidir a arquitetura de correlação do webhook — não é parte do fluxo de
+// produto.
+async function createCheckoutForTest(
+  command: Extract<SandboxHarnessCommand, { action: "checkout" }>,
+  deps: SandboxHarnessDependencies,
+): Promise<SandboxHarnessResult> {
+  const externalReference = sandboxCheckoutExternalReference(command.testRunId);
+  const result = await deps.asaas.createCheckout({
+    billingTypes: ["CREDIT_CARD"],
+    chargeTypes: ["RECURRENT"],
+    externalReference,
+    minutesToExpire: 60,
+    callback: {
+      successUrl: `${SANDBOX_CHECKOUT_RETURN_BASE}?checkout=success`,
+      cancelUrl: `${SANDBOX_CHECKOUT_RETURN_BASE}?checkout=cancel`,
+      expiredUrl: `${SANDBOX_CHECKOUT_RETURN_BASE}?checkout=expired`,
+    },
+    items: [{ name: "Livia sandbox test", quantity: 1, value: command.value }],
+    subscription: { cycle: "MONTHLY", nextDueDate: command.nextDueDate },
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      action: "checkout",
+      code: "checkout_create_rejected",
+      upstream: sanitizeAsaasError(result.error),
+    };
+  }
+  return {
+    ok: true,
+    action: "checkout",
+    checkout: {
+      id: result.data.id,
+      link: result.data.link,
+      status: result.data.status,
+      externalReference: result.data.externalReference ?? null,
+    },
+  };
+}
+
 async function inspect(
   command: Extract<SandboxHarnessCommand, { action: "inspect" }>,
   deps: SandboxHarnessDependencies,
@@ -496,6 +574,7 @@ export async function executeAsaasSandboxHarness(
   if (command.action === "customer") return ensureCustomer(command, deps);
   if (command.action === "subscription") return provisionSubscription(command, deps);
   if (command.action === "conflict_recovery") return recoverConflict(command, deps);
+  if (command.action === "checkout") return createCheckoutForTest(command, deps);
   return inspect(command, deps);
 }
 
@@ -557,6 +636,13 @@ export function parseSandboxHarnessCommand(value: unknown): SandboxHarnessComman
     if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "generation"])) return null;
     if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
     if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation) || raw.generation < 1) return null;
+    return raw as SandboxHarnessCommand;
+  }
+  if (raw.action === "checkout") {
+    if (!exactKeys(raw, ["action", "confirmSandbox", "testRunId", "nextDueDate", "value"])) return null;
+    if (typeof raw.testRunId !== "string" || !TEST_RUN_ID.test(raw.testRunId)) return null;
+    if (typeof raw.nextDueDate !== "string" || !ISO_DATE.test(raw.nextDueDate)) return null;
+    if (!validHarnessValue(raw.value)) return null;
     return raw as SandboxHarnessCommand;
   }
   return null;

@@ -26,7 +26,7 @@ import { resolveOrCreateAsaasCustomer } from "@/lib/billing/customerIdentity";
 import { provisionAsaasSubscription, getBillingProvisioningIntent } from "@/lib/billing/provisioning";
 import { resolvePixPaymentForSubscription } from "@/lib/billing/pixPayment";
 import { createAsaasClient, type AsaasClient, type AsaasEnvironment } from "@/lib/billing/asaas";
-import type { EstablishmentBilling } from "@/types";
+import { resolveTargetGeneration } from "@/lib/billing/generation";
 
 const PLAN_VALUE = 129;
 const PLAN_CYCLE = "MONTHLY" as const;
@@ -34,19 +34,6 @@ const PLAN_BILLING_TYPE = "PIX" as const;
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-// Geração alvo desta chamada. Ausência de subscriptionGeneration = geração
-// 1 (todo establishment provisionado antes deste campo existir). Só avança
-// quando billingStatus já é "canceled": a state machine nunca reativa
-// canceled por payment_confirmed (é deliberado, ver stateMachine.ts), então
-// reusar a MESMA geração de uma assinatura cancelada travaria para sempre
-// em known_subscription_inactive/subscription_inactive. Para qualquer outro
-// status (trial/past_due/suspended), a geração atual é reaproveitada — é
-// assim que uma retomada normal da mesma tentativa não vira recontratação.
-function resolveTargetGeneration(billing: EstablishmentBilling | undefined): number {
-  const currentGeneration = billing?.subscriptionGeneration ?? 1;
-  return billing?.billingStatus === "canceled" ? currentGeneration + 1 : currentGeneration;
 }
 
 // nextDueDate É PARTE do fingerprint que identifica uma tentativa
