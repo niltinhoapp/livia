@@ -12,6 +12,12 @@ async function eligible(establishmentId: string, phone: string, name: string) {
 }
 
 describe("Campanhas-05 — audiência e recipients", () => {
+  it("contato importado com consentimento explícito aparece imediatamente na audiência", async () => {
+    expect(await previewCampaignAudience(A)).toEqual({ selected: 0, eligible: 0, excluded: 0 });
+    await eligible(A, "(14) 99644-7132", "Controlado");
+    expect(await previewCampaignAudience(A)).toEqual({ selected: 1, eligible: 1, excluded: 0 });
+  });
+
   it("prévia usa contatos do próprio tenant, deduplica telefone e não materializa recipients", async () => {
     await eligible(A, "5514996447132", "A");
     await eligible(B, "5514996447132", "B");
