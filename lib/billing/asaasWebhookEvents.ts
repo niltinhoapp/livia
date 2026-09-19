@@ -121,6 +121,29 @@ export function extractExternalReference(data: Record<string, unknown> | null): 
   return data?.externalReference;
 }
 
+// checkoutSession = id do Checkout que originou a subscription/payment —
+// confirmado empiricamente no Asaas Sandbox (OT de migração pro Hosted
+// Checkout): presente tanto no objeto subscription quanto no objeto
+// payment, sempre que a origem é um Checkout. Usado como fallback de
+// identidade SÓ quando externalReference não resolve (ver
+// asaasWebhookProcessing.ts) — nunca substitui a resolução por
+// externalReference, que continua a autoridade primária (fluxo PIX
+// direto).
+export function extractCheckoutSession(data: Record<string, unknown> | null): string | null {
+  const value = data?.checkoutSession;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+// id da subscription dona deste payment — já documentado oficialmente
+// ("quando o payment pertence a uma subscription"). Usado só para persistir
+// billing.externalSubscriptionId no momento da confirmação (necessário para
+// o caminho Hosted Checkout, que nunca cria a subscription diretamente —
+// só fica sabendo o id dela através do próprio evento de webhook).
+export function extractSubscriptionId(data: Record<string, unknown> | null): string | null {
+  const value = data?.subscription;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 // nextDueDate só é persistido quando o próprio payload do evento o carrega
 // (contrato OT-06B item 13: "quando aplicável/documentado"). payment.dueDate
 // (a cobrança específica) NUNCA é confundido com nextDueDate (a assinatura).

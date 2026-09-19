@@ -63,6 +63,7 @@ describe("processAsaasWebhookEvent — dispatch", () => {
         from: "trial",
         to: "active",
       })),
+      resolveEstablishmentFromCheckoutSession: vi.fn(async () => null),
       now: () => 9_999,
       ...overrides,
     };
@@ -141,6 +142,65 @@ describe("processAsaasWebhookEvent — dispatch", () => {
     });
     const result = await processAsaasWebhookEvent(envelope({ event: "PAYMENT_OVERDUE" }), deps);
     expect(result).toEqual({ outcome: "out_of_order", event: "PAYMENT_OVERDUE", establishmentId: EST_ID, generation: 1 });
+  });
+
+  it("subscriptionId do payload é repassado a resolveAndApplyEvent quando presente", async () => {
+    const deps = mockedDeps();
+    await processAsaasWebhookEvent(
+      envelope({ event: "PAYMENT_CONFIRMED", payment: { id: "pay_1", externalReference: REF_GEN1, subscription: "sub_abc123" } }),
+      deps,
+    );
+    expect(deps.resolveAndApplyEvent).toHaveBeenCalledWith(expect.objectContaining({ subscriptionId: "sub_abc123" }));
+  });
+
+  // ---------------------------------------------------------------------
+  // Fallback de identidade por checkoutSession (OT de migração pro Hosted
+  // Checkout) — SÓ tentado quando externalReference não resolveu.
+  // ---------------------------------------------------------------------
+  it("externalReference ausente + checkoutSession conhecido -> resolve via resolveEstablishmentFromCheckoutSession", async () => {
+    const resolveByCheckout = vi.fn(async (session: string) =>
+      session === "chk_abc" ? { establishmentId: "est_card_1", generation: 3 } : null,
+    );
+    const deps = mockedDeps({ resolveEstablishmentFromCheckoutSession: resolveByCheckout });
+    await processAsaasWebhookEvent(
+      envelope({ event: "PAYMENT_CONFIRMED", payment: { id: "pay_1", externalReference: null, checkoutSession: "chk_abc", subscription: "sub_x" } }),
+      deps,
+    );
+    expect(resolveByCheckout).toHaveBeenCalledWith("chk_abc");
+    expect(deps.resolveAndApplyEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ establishmentId: "est_card_1", generation: 3, subscriptionId: "sub_x" }),
+    );
+  });
+
+  it("externalReference ausente + checkoutSession DESCONHECIDO (sem vínculo persistido) -> unresolved_identity, nunca chama resolveAndApplyEvent", async () => {
+    const resolveByCheckout = vi.fn(async () => null);
+    const deps = mockedDeps({ resolveEstablishmentFromCheckoutSession: resolveByCheckout });
+    const result = await processAsaasWebhookEvent(
+      envelope({ event: "PAYMENT_CONFIRMED", payment: { id: "pay_1", externalReference: null, checkoutSession: "chk_never_seen" } }),
+      deps,
+    );
+    expect(resolveByCheckout).toHaveBeenCalledWith("chk_never_seen");
+    expect(result).toEqual({ outcome: "unresolved_identity", event: "PAYMENT_CONFIRMED" });
+    expect(deps.resolveAndApplyEvent).not.toHaveBeenCalled();
+  });
+
+  it("externalReference resolvido -> checkoutSession nunca é consultado, mesmo presente no payload (externalReference é sempre prioritário)", async () => {
+    const resolveByCheckout = vi.fn(async () => ({ establishmentId: "est_should_never_be_used", generation: 99 }));
+    const deps = mockedDeps({ resolveEstablishmentFromCheckoutSession: resolveByCheckout });
+    await processAsaasWebhookEvent(
+      envelope({ event: "PAYMENT_CONFIRMED", payment: { id: "pay_1", externalReference: REF_GEN1, checkoutSession: "chk_ignored" } }),
+      deps,
+    );
+    expect(resolveByCheckout).not.toHaveBeenCalled();
+    expect(deps.resolveAndApplyEvent).toHaveBeenCalledWith(expect.objectContaining({ establishmentId: EST_ID, generation: 1 }));
+  });
+
+  it("nem externalReference nem checkoutSession presentes -> unresolved_identity, resolveEstablishmentFromCheckoutSession nunca chamado", async () => {
+    const resolveByCheckout = vi.fn(async () => null);
+    const deps = mockedDeps({ resolveEstablishmentFromCheckoutSession: resolveByCheckout });
+    const result = await processAsaasWebhookEvent(envelope({ payment: { id: "pay_1" } }), deps);
+    expect(result).toEqual({ outcome: "unresolved_identity", event: "PAYMENT_RECEIVED" });
+    expect(resolveByCheckout).not.toHaveBeenCalled();
   });
 });
 
@@ -281,6 +341,159 @@ describe("resolveAndApplyEvent (real, via fakeDb) — decisões e transições",
     await deps.resolveAndApplyEvent(params({ nextDueDate: "2026-12-01" }));
     const stored = await fakeDb.collection("establishments").doc(EST_ID).get();
     expect((stored.data() as { billing: EstablishmentBilling }).billing.nextDueDate).toBe("2026-12-01");
+  });
+
+  it("subscriptionId do evento é persistido em billing.externalSubscriptionId, e billing.subscriptionGeneration reflete params.generation", async () => {
+    await seedEstablishment(EST_ID, { billingStatus: "trial" });
+    const deps = await createAsaasWebhookProcessingDependencies();
+    await deps.resolveAndApplyEvent(params({ subscriptionId: "sub_from_webhook" }));
+    const stored = await fakeDb.collection("establishments").doc(EST_ID).get();
+    const b = (stored.data() as { billing: EstablishmentBilling }).billing;
+    expect(b.externalSubscriptionId).toBe("sub_from_webhook");
+    expect(b.subscriptionGeneration).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Camada 3: processAsaasWebhookEvent de ponta a ponta (deps REAIS via
+// fakeDb) para o caminho Hosted Checkout — prova a correlação por
+// checkoutSession contra o vínculo persistido em
+// _asaas_checkout_correlations (o mesmo documento que
+// provisionBillingCheckout escreve antes do redirecionamento).
+// ---------------------------------------------------------------------
+describe("processAsaasWebhookEvent (real, via fakeDb) — correlação por checkoutSession (Hosted Checkout)", () => {
+  async function seedEstablishment(id: string, billingOverride: Partial<EstablishmentBilling> = {}) {
+    await fakeDb.collection("establishments").doc(id).set({ billing: billing(billingOverride) });
+  }
+
+  async function seedCheckoutCorrelation(checkoutId: string, establishmentId: string, generation: number) {
+    await fakeDb.collection("_asaas_checkout_correlations").doc(checkoutId).set({
+      establishmentId,
+      subscriptionGeneration: generation,
+      createdAt: 1,
+    });
+  }
+
+  function checkoutEnvelope(over: Record<string, unknown> = {}) {
+    return {
+      id: "evt_checkout_1",
+      event: "PAYMENT_CONFIRMED",
+      dateCreated: "2026-09-19 10:00:00",
+      payment: { id: "pay_checkout_1", externalReference: null, checkoutSession: "chk_est_a", subscription: "sub_est_a", value: 129 },
+      ...over,
+    };
+  }
+
+  it("PAYMENT_CONFIRMED com externalReference=null e checkoutSession conhecido ativa a assinatura corretamente", async () => {
+    await seedEstablishment("est_card_a", { billingStatus: "trial" });
+    await seedCheckoutCorrelation("chk_est_a", "est_card_a", 1);
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const result = await processAsaasWebhookEvent(checkoutEnvelope(), deps);
+    expect(result).toMatchObject({ outcome: "applied", from: "trial", to: "active", establishmentId: "est_card_a", generation: 1 });
+
+    const stored = await fakeDb.collection("establishments").doc("est_card_a").get();
+    const b = (stored.data() as { billing: EstablishmentBilling }).billing;
+    expect(b.billingStatus).toBe("active");
+    expect(b.externalSubscriptionId).toBe("sub_est_a");
+    expect(b.subscriptionGeneration).toBe(1);
+  });
+
+  it("checkoutSession desconhecido (nenhum vínculo persistido pela Lívia) -> unresolved_identity, nunca ativa nada", async () => {
+    await seedEstablishment("est_card_b", { billingStatus: "trial" });
+    // Nenhuma correlação persistida para "chk_never_registered".
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const result = await processAsaasWebhookEvent(
+      checkoutEnvelope({ payment: { id: "pay_2", externalReference: null, checkoutSession: "chk_never_registered", subscription: "sub_y" } }),
+      deps,
+    );
+    expect(result).toEqual({ outcome: "unresolved_identity", event: "PAYMENT_CONFIRMED" });
+
+    const stored = await fakeDb.collection("establishments").doc("est_card_b").get();
+    expect((stored.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("trial"); // nunca tocado
+  });
+
+  it("isolamento multi-tenant: checkoutSession de um establishment nunca ativa outro, mesmo que ambos existam", async () => {
+    await seedEstablishment("est_tenant_a", { billingStatus: "trial" });
+    await seedEstablishment("est_tenant_b", { billingStatus: "trial" });
+    await seedCheckoutCorrelation("chk_tenant_a", "est_tenant_a", 1);
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    await processAsaasWebhookEvent(
+      checkoutEnvelope({ payment: { id: "pay_iso", externalReference: null, checkoutSession: "chk_tenant_a", subscription: "sub_a" } }),
+      deps,
+    );
+
+    const a = await fakeDb.collection("establishments").doc("est_tenant_a").get();
+    const b = await fakeDb.collection("establishments").doc("est_tenant_b").get();
+    expect((a.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("active");
+    expect((b.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("trial"); // intocado
+  });
+
+  it("checkout antigo (geração superada) correlaciona para uma geração obsoleta -> invalid_transition, nunca reativa a geração atual", async () => {
+    // establishment já recontratou (geração atual = 3, canceled de novo);
+    // um checkoutSession antigo, criado quando a geração ainda era 2,
+    // manda um PAYMENT_CONFIRMED atrasado.
+    await seedEstablishment("est_stale", { billingStatus: "canceled", subscriptionGeneration: 3 });
+    await seedCheckoutCorrelation("chk_old_gen2", "est_stale", 2);
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const result = await processAsaasWebhookEvent(
+      checkoutEnvelope({ payment: { id: "pay_stale", externalReference: null, checkoutSession: "chk_old_gen2", subscription: "sub_old" } }),
+      deps,
+    );
+    expect(result).toMatchObject({ outcome: "invalid_transition", from: "canceled" });
+
+    const stored = await fakeDb.collection("establishments").doc("est_stale").get();
+    expect((stored.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("canceled"); // nunca reativado
+  });
+
+  it("checkout da geração atual reativa corretamente um establishment canceled (recontratação via cartão)", async () => {
+    await seedEstablishment("est_recontrata", { billingStatus: "canceled", subscriptionGeneration: 2 });
+    await seedCheckoutCorrelation("chk_gen2_atual", "est_recontrata", 2);
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const result = await processAsaasWebhookEvent(
+      checkoutEnvelope({ payment: { id: "pay_recontrata", externalReference: null, checkoutSession: "chk_gen2_atual", subscription: "sub_novo" } }),
+      deps,
+    );
+    expect(result).toMatchObject({ outcome: "applied", from: "canceled", to: "active" });
+  });
+
+  it("webhook duplicado (mesmo event.id) via checkoutSession: segunda entrega vira duplicate, estado permanece correto", async () => {
+    await seedEstablishment("est_dup", { billingStatus: "trial" });
+    await seedCheckoutCorrelation("chk_dup", "est_dup", 1);
+    const deps = await createAsaasWebhookProcessingDependencies();
+    const env = checkoutEnvelope({
+      id: "evt_dup_checkout",
+      payment: { id: "pay_dup", externalReference: null, checkoutSession: "chk_dup", subscription: "sub_dup" },
+    });
+
+    const first = await processAsaasWebhookEvent(env, deps);
+    expect(first).toMatchObject({ outcome: "applied", to: "active" });
+    const second = await processAsaasWebhookEvent(env, deps);
+    expect(second).toEqual({ outcome: "duplicate", eventId: "evt_dup_checkout" });
+
+    const stored = await fakeDb.collection("establishments").doc("est_dup").get();
+    expect((stored.data() as { billing: EstablishmentBilling }).billing.billingStatus).toBe("active");
+  });
+
+  it("cancelamento/recusa (SUBSCRIPTION_DELETED) via checkoutSession nunca ativa — só cancela", async () => {
+    await seedEstablishment("est_declined", { billingStatus: "trial" });
+    await seedCheckoutCorrelation("chk_declined", "est_declined", 1);
+    const deps = await createAsaasWebhookProcessingDependencies();
+
+    const result = await processAsaasWebhookEvent(
+      {
+        id: "evt_declined_1",
+        event: "SUBSCRIPTION_DELETED",
+        dateCreated: "2026-09-19 10:00:00",
+        subscription: { id: "sub_declined", externalReference: null, checkoutSession: "chk_declined" },
+      },
+      deps,
+    );
+    expect(result).toMatchObject({ outcome: "applied", from: "trial", to: "canceled" });
   });
 });
 

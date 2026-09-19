@@ -7,8 +7,10 @@ vi.mock("@/lib/firebase/admin", async () => {
 
 import { logicalSubscriptionExternalReference } from "./provisioning";
 import {
+  extractCheckoutSession,
   extractExternalReference,
   extractNextDueDate,
+  extractSubscriptionId,
   isRecognizedNoTransitionEvent,
   parseAsaasEventTimestamp,
   parseAsaasWebhookEnvelope,
@@ -169,5 +171,24 @@ describe("extractExternalReference / extractNextDueDate", () => {
   it("nunca confunde payment.dueDate (cobrança específica) com nextDueDate (assinatura)", () => {
     // payment webhook payload real não tem nextDueDate — só dueDate.
     expect(extractNextDueDate({ dueDate: "2026-12-01", value: 5 })).toBeUndefined();
+  });
+
+  it("extractCheckoutSession só aceita string não-vazia", () => {
+    expect(extractCheckoutSession({ checkoutSession: "a0871e16-1bdf-4f9f-91dc-5963e4588e85" })).toBe(
+      "a0871e16-1bdf-4f9f-91dc-5963e4588e85",
+    );
+    expect(extractCheckoutSession({ checkoutSession: "" })).toBeNull();
+    expect(extractCheckoutSession({ checkoutSession: 123 })).toBeNull();
+    expect(extractCheckoutSession({ checkoutSession: null })).toBeNull();
+    expect(extractCheckoutSession(null)).toBeNull();
+    expect(extractCheckoutSession({})).toBeNull();
+  });
+
+  it("extractSubscriptionId só aceita string não-vazia (payment.subscription)", () => {
+    expect(extractSubscriptionId({ subscription: "sub_umsscnlkbirwmv6w" })).toBe("sub_umsscnlkbirwmv6w");
+    expect(extractSubscriptionId({ subscription: "" })).toBeNull();
+    expect(extractSubscriptionId({ subscription: 123 })).toBeNull();
+    expect(extractSubscriptionId(null)).toBeNull();
+    expect(extractSubscriptionId({})).toBeNull();
   });
 });
