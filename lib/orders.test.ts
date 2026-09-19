@@ -16,6 +16,14 @@ describe("domínio de pedidos", () => {
     expect(() => calculateItem(product(), null, ["queijo-inventado"], 1)).toThrow(/indisponível/);
     expect(() => calculateItem(product(), null, [], 0)).toThrow(/Quantidade/);
   });
+  it("recusa variante ou adicional que se tornou indisponível", () => {
+    const unavailable = product();
+    unavailable.variants[0]!.active = false;
+    expect(() => calculateItem(unavailable, "double", [], 1)).toThrow(/Variação indisponível/);
+    const withoutBacon = product();
+    withoutBacon.modifierGroups[0]!.options[0]!.active = false;
+    expect(() => calculateItem(withoutBacon, null, ["bacon"], 1)).toThrow(/Adicional indisponível/);
+  });
   it("determina taxa por bairro e nunca estima sem regra", () => {
     const settings = normalizeOrderSettings({ deliveryEnabled: true, deliveryRules: [{ kind: "fixed", feeCents: 900 }, { kind: "neighborhood", neighborhood: "Centro", feeCents: 500 }] });
     expect(deliveryFee(settings, "pickup")).toBe(0);

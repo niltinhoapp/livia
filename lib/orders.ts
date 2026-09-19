@@ -130,8 +130,21 @@ export async function getActiveOrder(establishmentId: string, conversationId: st
 export async function confirmOrder(establishmentId: string, orderId: string, expectedVersion: number, phone: string): Promise<FoodOrder> {
   const ref = orderRef(establishmentId, orderId); const settings = await getOrderSettings(establishmentId);
   return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; if (normalizePhone(order.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente."); if (order.status === "confirmed") return order; if (!ACTIVE_DRAFT.has(order.status) || order.version !== expectedVersion) throw new Error("O pedido mudou; confira o resumo atualizado antes de confirmar."); if (!order.items.length || !order.fulfillment || !order.payment.method || (order.fulfillment === "delivery" && !order.deliveryAddress)) throw new Error("Faltam dados para confirmar o pedido.");
-    // Rele cada produto para impedir confirmação de item que ficou indisponível.
-    for (const item of order.items) { const product = await tx.get(sub(establishmentId, "menuProducts").doc(item.productId)); if (!product.exists || !(product.data() as MenuProduct).active) throw new Error(`${item.productName} não está mais disponível.`); }
+    // Rele produto, variante e adicionais na mesma transação. Uma mudança de
+    // catálogo não pode confirmar um snapshot antigo com preço ou composição
+    // diferente; o cliente precisa receber um resumo novo, nunca um total
+    // silenciosamente alterado.
+    for (const item of order.items) {
+      const productSnap = await tx.get(sub(establishmentId, "menuProducts").doc(item.productId));
+      if (!productSnap.exists) throw new Error(`${item.productName} não está mais disponível.`);
+      const product = productSnap.data() as MenuProduct;
+      let current: OrderItem;
+      try { current = calculateItem(product, item.variantId, item.modifiers.map((m) => m.optionId), item.quantity, item.notes); }
+      catch { throw new Error(`${item.productName} mudou ou não está mais disponível.`); }
+      if (current.unitPriceCents !== item.unitPriceCents || current.lineTotalCents !== item.lineTotalCents || current.productName !== item.productName) {
+        throw new Error(`${item.productName} mudou de preço; confira o resumo atualizado antes de confirmar.`);
+      }
+    }
     const now = Date.now(); const confirmed = { ...recalculate(order, settings), status: "confirmed" as const, version: order.version + 1, confirmedAt: now, updatedAt: now }; tx.set(ref, confirmed); tx.set(sub(establishmentId, "conversations").doc(order.conversationId), { activeOrderId: null }, { merge: true }); return confirmed;
   });
 }
