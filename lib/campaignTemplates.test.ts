@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveCampaignTemplateParams, templateBodyExampleValues, templateParameterBindingsAreValid, templateParameterIndexes } from "@/lib/campaignTemplates";
+import { campaignTemplateSnapshot, resolveCampaignTemplateParams, templateBodyExampleValues, templateParameterBindingsAreValid, templateParameterIndexes } from "@/lib/campaignTemplates";
 
 const components = [{ type: "BODY", text: "Olá {{1}}, desconto {{2}}, cupom {{3}}" }];
 
@@ -31,5 +31,19 @@ describe("variáveis de templates de campanha", () => {
       type: "BODY",
       example: { body_text: [["Maria", "LIVIA20", "20%"]] },
     }])).toEqual({ 1: "Maria", 2: "LIVIA20", 3: "20%" });
+  });
+
+  it("remove exemplos com arrays aninhados antes de persistir no Firestore", () => {
+    const snapshot = campaignTemplateSnapshot({
+      id: "tpl-1", name: "cupom", language: "pt_BR", status: "APPROVED",
+      approved: true, senderCompatible: true,
+      components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}", example: { body_text: [["Maria", "LIVIA20"]] } }],
+    }, [
+      { index: 1, source: "customer_name" },
+      { index: 2, source: "fixed", value: "LIVIA20" },
+    ]);
+
+    expect(snapshot.components).toEqual([{ type: "BODY", text: "Olá {{1}}, use {{2}}" }]);
+    expect(JSON.stringify(snapshot)).not.toContain("body_text");
   });
 });

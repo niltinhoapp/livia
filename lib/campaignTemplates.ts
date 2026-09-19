@@ -60,13 +60,22 @@ export function campaignTemplateSnapshot(
   template: WhatsAppTemplate,
   parameterBindings?: CampaignTemplateParameterBinding[],
 ): CampaignTemplateSnapshot {
+  // `example.body_text` da Meta é uma matriz (ex.: [["Maria", "LIVIA20"]]).
+  // Firestore não aceita arrays aninhados. Exemplos servem apenas para montar
+  // a UI; o snapshot operacional precisa somente do tipo/texto/formato para
+  // validar e resolver os parâmetros já materializados abaixo.
+  const components = template.components.map((component) => ({
+    type: component.type,
+    ...(typeof component.text === "string" ? { text: component.text } : {}),
+    ...(typeof component.format === "string" ? { format: component.format } : {}),
+  }));
   return {
     id: template.id,
     name: template.name,
     languageCode: template.language,
     status: template.status,
     category: template.category,
-    components: template.components,
+    components,
     senderCompatible: template.senderCompatible,
     ...(parameterBindings?.length ? { parameterBindings } : {}),
   };
