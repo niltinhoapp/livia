@@ -27,6 +27,7 @@ import { provisionAsaasSubscription, getBillingProvisioningIntent } from "@/lib/
 import { resolvePixPaymentForSubscription } from "@/lib/billing/pixPayment";
 import { createAsaasClient, type AsaasClient, type AsaasEnvironment } from "@/lib/billing/asaas";
 import { resolveTargetGeneration } from "@/lib/billing/generation";
+import { isTrialPaymentBlocked } from "@/lib/billing/trialWindow";
 
 const PLAN_VALUE = 129;
 const PLAN_CYCLE = "MONTHLY" as const;
@@ -104,6 +105,17 @@ export async function POST(req: NextRequest) {
   // toca customer/subscription/Asaas.
   if (establishment.billing?.billingStatus === "active") {
     return NextResponse.json({ status: "active" });
+  }
+
+  // Regra definitiva do trial (auditoria pré-primeiro-pagamento real):
+  // nenhuma cobrança pode nascer antes de trialEndsAt-24h — nem PIX, nem
+  // cartão. Backend é autoridade: bloqueado aqui ANTES de ler o corpo da
+  // requisição ou tocar qualquer credencial/cliente Asaas, então mesmo uma
+  // chamada direta à API (sem passar pela UI) nunca consegue criar uma
+  // cobrança antecipada. A partir de trialEndsAt-24h (inclusive) a rota
+  // funciona normalmente, sem nenhuma outra mudança de comportamento.
+  if (isTrialPaymentBlocked(establishment.billing, Date.now())) {
+    return NextResponse.json({ error: "TRIAL_PAYMENT_NOT_YET_AVAILABLE" }, { status: 403 });
   }
 
   let body: unknown;

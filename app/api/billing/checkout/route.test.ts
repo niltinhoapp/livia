@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { TRIAL_PAYMENT_WINDOW_MS, TRIAL_GRACE_WINDOW_MS } from "@/lib/billing/trialWindow";
 import type { Establishment } from "@/types";
 
 const resolveEstablishmentId = vi.fn();
@@ -160,5 +161,85 @@ describe("POST /api/billing/checkout", () => {
       expect.objectContaining({ subscriptionGeneration: 3 }),
       expect.anything(),
     );
+  });
+
+  // -----------------------------------------------------------------
+  // Regra definitiva do trial (auditoria pré-primeiro-pagamento real) —
+  // MESMO gate de subscribe/route.ts (lib/billing/trialWindow.ts,
+  // compartilhado): nenhum Checkout pode nascer antes de trialEndsAt-24h,
+  // nem por chamada direta à API.
+  // -----------------------------------------------------------------
+  it("12) antes de trialEndsAt-24h -> 403 TRIAL_PAYMENT_NOT_YET_AVAILABLE, nenhum Checkout criado", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + 6 * 24 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "TRIAL_PAYMENT_NOT_YET_AVAILABLE" });
+    expect(provisionBillingCheckout).not.toHaveBeenCalled();
+    expect(createAsaasClient).not.toHaveBeenCalled();
+  });
+
+  it("13) exatamente em trialEndsAt-24h -> Checkout liberado", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + TRIAL_PAYMENT_WINDOW_MS, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(200);
+    expect(provisionBillingCheckout).toHaveBeenCalled();
+  });
+
+  it("14) imediatamente antes de trialEndsAt -> Checkout ainda disponível", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + 1, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(200);
+    expect(provisionBillingCheckout).toHaveBeenCalled();
+  });
+
+  it("15) exatamente em trialEndsAt -> Checkout disponível, NÃO bloqueado", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(200);
+    expect(provisionBillingCheckout).toHaveBeenCalled();
+  });
+
+  it("16) durante as 24h de tolerância pós-trialEndsAt -> Checkout disponível (regularização)", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now - 12 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(200);
+    expect(provisionBillingCheckout).toHaveBeenCalled();
+  });
+
+  it("17) mesmo bem depois de trialEndsAt+24h (já expirado), Checkout continua disponível pra regularizar", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS - 10 * 24 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request());
+    expect(res.status).toBe(200);
+    expect(provisionBillingCheckout).toHaveBeenCalled();
+  });
+
+  it("18) billingStatus fora de 'trial' nunca é bloqueado pelo gate de trial", async () => {
+    for (const billingStatus of ["past_due", "suspended", "canceled"] as const) {
+      provisionBillingCheckout.mockClear();
+      getEstablishment.mockResolvedValue(
+        establishment({ billing: { billingStatus, trialEndsAt: Date.now() + 6 * 24 * 3600000, updatedAt: 1 } }),
+      );
+      const res = await POST(request());
+      expect(res.status).toBe(200);
+      expect(provisionBillingCheckout).toHaveBeenCalled();
+    }
   });
 });

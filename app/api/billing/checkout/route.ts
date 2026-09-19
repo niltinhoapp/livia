@@ -19,6 +19,7 @@ import { getEstablishment } from "@/lib/repo";
 import { provisionBillingCheckout, getBillingCheckoutIntent } from "@/lib/billing/checkoutProvisioning";
 import { createAsaasClient, type AsaasClient, type AsaasEnvironment } from "@/lib/billing/asaas";
 import { resolveTargetGeneration } from "@/lib/billing/generation";
+import { isTrialPaymentBlocked } from "@/lib/billing/trialWindow";
 
 const PLAN_VALUE = 129;
 const PLAN_CYCLE = "MONTHLY" as const;
@@ -68,6 +69,14 @@ export async function POST(req: NextRequest) {
   // pelo webhook) -> nenhuma nova tentativa, idempotente por construção.
   if (establishment.billing?.billingStatus === "active") {
     return NextResponse.json({ status: "active" });
+  }
+
+  // MESMO gate de subscribe/route.ts (lib/billing/trialWindow.ts,
+  // compartilhado) — nenhum Checkout pode nascer antes de trialEndsAt-24h,
+  // nem por chamada direta à API. Bloqueado ANTES de tocar qualquer
+  // credencial/cliente Asaas.
+  if (isTrialPaymentBlocked(establishment.billing, Date.now())) {
+    return NextResponse.json({ error: "TRIAL_PAYMENT_NOT_YET_AVAILABLE" }, { status: 403 });
   }
 
   let asaas: AsaasClient;

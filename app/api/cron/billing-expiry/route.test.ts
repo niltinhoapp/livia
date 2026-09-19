@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { TRIAL_GRACE_WINDOW_MS } from "@/lib/billing/trialWindow";
 
 const applyBillingStatusExpiry = vi.fn();
 const trialGet = vi.fn();
@@ -41,10 +42,10 @@ describe("GET /api/cron/billing-expiry", () => {
     expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
   });
 
-  it("trial vencido dispara trial_expired", async () => {
+  it("trial vencido HÁ MAIS de 24h (tolerância de regularização esgotada) dispara trial_expired", async () => {
     const now = Date.now();
     trialGet.mockResolvedValue({
-      docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now - 1000 } }) }],
+      docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS - 1000 } }) }],
     });
     applyBillingStatusExpiry.mockResolvedValue("applied");
 
@@ -56,7 +57,7 @@ describe("GET /api/cron/billing-expiry", () => {
     expect(body.results).toEqual([{ establishmentId: "est-a", event: "trial_expired", outcome: "applied" }]);
   });
 
-  it("trial ainda dentro da janela NÃO dispara nada", async () => {
+  it("trial ainda dentro da janela (antes de trialEndsAt) NÃO dispara nada", async () => {
     const now = Date.now();
     trialGet.mockResolvedValue({
       docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now + 60_000 } }) }],
@@ -66,6 +67,43 @@ describe("GET /api/cron/billing-expiry", () => {
 
     expect(response.status).toBe(200);
     expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
+  });
+
+  it("trial vencido mas AINDA dentro da tolerância de 24h de regularização NÃO dispara nada (regra definitiva de produto)", async () => {
+    const now = Date.now();
+    trialGet.mockResolvedValue({
+      docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now - 1000 } }) }],
+    });
+
+    const response = await GET(req("https://example.test/api/cron/billing-expiry", { authorization: "Bearer s3cr3t" }));
+
+    expect(response.status).toBe(200);
+    expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
+  });
+
+  it("1ms antes do fim da tolerância de 24h NÃO dispara; exatamente no fim, dispara", async () => {
+    // Date.now() do próprio route precisa bater EXATAMENTE com o `now` usado
+    // pra montar o fixture — só vi.useFakeTimers() garante isso num limite
+    // de 1ms (relógio de parede real seria inerentemente instável aqui).
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      trialGet.mockResolvedValue({
+        docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS + 1 } }) }],
+      });
+      await GET(req("https://example.test/api/cron/billing-expiry", { authorization: "Bearer s3cr3t" }));
+      expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
+
+      vi.clearAllMocks();
+      trialGet.mockResolvedValue({
+        docs: [{ data: () => ({ id: "est-a", billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS } }) }],
+      });
+      applyBillingStatusExpiry.mockResolvedValue("applied");
+      await GET(req("https://example.test/api/cron/billing-expiry", { authorization: "Bearer s3cr3t" }));
+      expect(applyBillingStatusExpiry).toHaveBeenCalledWith("est-a", "trial_expired", expect.any(Number));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("past_due com carência de 3 dias vencida dispara grace_expired", async () => {
@@ -107,8 +145,8 @@ describe("GET /api/cron/billing-expiry", () => {
     const now = Date.now();
     trialGet.mockResolvedValue({
       docs: [
-        { data: () => ({ id: "est-fail", billing: { billingStatus: "trial", trialEndsAt: now - 1000 } }) },
-        { data: () => ({ id: "est-ok", billing: { billingStatus: "trial", trialEndsAt: now - 1000 } }) },
+        { data: () => ({ id: "est-fail", billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS - 1000 } }) },
+        { data: () => ({ id: "est-ok", billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS - 1000 } }) },
       ],
     });
     applyBillingStatusExpiry.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce("applied");

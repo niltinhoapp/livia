@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase/admin";
 import { applyBillingStatusExpiry } from "@/lib/repo";
+import { TRIAL_GRACE_WINDOW_MS } from "@/lib/billing/trialWindow";
 import type { Establishment } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -41,7 +42,14 @@ export async function GET(req: NextRequest) {
   for (const doc of trialSnap.docs) {
     const est = doc.data() as Establishment;
     const trialEndsAt = est.billing?.trialEndsAt;
-    if (typeof trialEndsAt !== "number" || !Number.isFinite(trialEndsAt) || trialEndsAt > now) continue;
+    // Regra definitiva de produto (auditoria pré-primeiro-pagamento real):
+    // não suspende mais em trialEndsAt — só depois da tolerância de
+    // regularização de 24h (mesma janela de lib/billing/trialWindow.ts,
+    // compartilhada com o gate de pagamento e com canUseService, pra nunca
+    // divergir sobre onde termina o trial de verdade).
+    if (typeof trialEndsAt !== "number" || !Number.isFinite(trialEndsAt) || trialEndsAt + TRIAL_GRACE_WINDOW_MS > now) {
+      continue;
+    }
     try {
       const outcome = await applyBillingStatusExpiry(est.id, "trial_expired", now);
       results.push({ establishmentId: est.id, event: "trial_expired", outcome });

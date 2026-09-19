@@ -25,6 +25,7 @@ import { Input, Label } from "@/components/ui/Field";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Skeleton, SkeletonCard } from "@/components/ui/Skeleton";
+import { resolveTrialPhase } from "@/lib/billing/trialWindow";
 import type { Establishment } from "@/types";
 
 const FUTURE_PLANS = [
@@ -145,10 +146,6 @@ function PlanoPageInner() {
 
   const billing = establishment?.billing;
   const isActive = billing?.billingStatus === "active";
-  const hasTrialWindow = billing?.billingStatus === "trial" && typeof billing.trialEndsAt === "number";
-  const trialActive = hasTrialWindow && billing!.trialEndsAt! > Date.now();
-  const trialExpired = hasTrialWindow && !trialActive;
-  const hasPendingSubscription = Boolean(billing?.externalSubscriptionId) && !isActive;
   // Fase 1 do gating de billing (redireciona pra esta página quando
   // suspended/canceled — ver AppShell.tsx): precisa de copy própria, senão
   // o tenant cai aqui e só vê o texto genérico "Ciclo mensal". `suspended`
@@ -158,6 +155,24 @@ function PlanoPageInner() {
   // administrativa, então não oferece o mesmo CTA de contratação.
   const isSuspended = billing?.billingStatus === "suspended";
   const isCanceled = billing?.billingStatus === "canceled";
+  // Regra definitiva do trial (auditoria pré-primeiro-pagamento real):
+  // calculado por TIMESTAMP (resolveTrialPhase, lib/billing/trialWindow.ts
+  // — mesma fonte usada pelo backend nas duas rotas de pagamento e pelo
+  // cron de expiração), nunca por "dia de calendário" nem duplicado aqui.
+  // `trialPhase` só existe enquanto billingStatus ainda é literalmente
+  // "trial" — uma vez suspenso de verdade pelo cron, isSuspended já cobre.
+  const hasTrialData =
+    billing?.billingStatus === "trial" && typeof billing.trialEndsAt === "number" && Number.isFinite(billing.trialEndsAt);
+  const trialPhase = hasTrialData ? resolveTrialPhase(billing!.trialEndsAt!, Date.now()) : null;
+  const isBeforePaymentWindow = trialPhase === "before_window";
+  const isTrialFinalDay = trialPhase === "final_day";
+  const isTrialGrace = trialPhase === "grace";
+  // Tolerância de 24h já esgotada mas o cron diário ainda não persistiu
+  // "suspended" — acesso já foi cortado em tempo real por canUseService
+  // (stateMachine.ts), então a página trata como suspenso também, pra
+  // nunca mostrar "ainda dá tempo" quando não dá mais.
+  const isTrialGraceExpired = trialPhase === "expired";
+  const hasPendingSubscription = Boolean(billing?.externalSubscriptionId) && !isActive;
 
   async function startSubscribe(e: React.FormEvent) {
     e.preventDefault();
@@ -272,18 +287,33 @@ function PlanoPageInner() {
                     </span>
                   </StatusBadge>
                 )}
-                {!isActive && trialActive && <StatusBadge tone="info">Período de teste</StatusBadge>}
-                {!isActive && trialExpired && <StatusBadge tone="warning">Período de teste encerrado</StatusBadge>}
+                {(isBeforePaymentWindow || isTrialFinalDay) && <StatusBadge tone="info">Período de teste</StatusBadge>}
+                {(isTrialGrace || isTrialGraceExpired) && <StatusBadge tone="warning">Período de teste encerrado</StatusBadge>}
                 {isSuspended && <StatusBadge tone="danger">Assinatura suspensa</StatusBadge>}
                 {isCanceled && <StatusBadge tone="danger">Assinatura cancelada</StatusBadge>}
               </div>
               {isActive ? (
                 <p className="mt-0.5 text-sm text-ink-500">Sua assinatura está em dia.</p>
-              ) : trialActive && billing?.trialEndsAt ? (
+              ) : isBeforePaymentWindow && billing?.trialEndsAt ? (
                 <p className="mt-0.5 flex items-center gap-1.5 text-sm text-ink-500">
                   <Clock className="h-3.5 w-3.5" aria-hidden />
-                  Termina em {new Date(billing.trialEndsAt).toLocaleDateString("pt-BR")} ·{" "}
+                  Seu período gratuito está ativo. Termina em {new Date(billing.trialEndsAt).toLocaleDateString("pt-BR")} ·{" "}
                   {daysRemaining(billing.trialEndsAt)} {daysRemaining(billing.trialEndsAt) === 1 ? "dia restante" : "dias restantes"}
+                  . As opções de pagamento ficam disponíveis no último dia do teste.
+                </p>
+              ) : isTrialFinalDay && billing?.trialEndsAt ? (
+                <p className="mt-0.5 flex items-center gap-1.5 text-sm text-ink-500">
+                  <Clock className="h-3.5 w-3.5" aria-hidden />
+                  Seu período gratuito termina em breve, em {new Date(billing.trialEndsAt).toLocaleDateString("pt-BR")}. Você já
+                  pode pagar agora para evitar interrupção.
+                </p>
+              ) : isTrialGrace ? (
+                <p className="mt-0.5 text-sm text-warning-fg">
+                  Seu período gratuito terminou. Você tem até 24 horas para regularizar o pagamento antes da suspensão.
+                </p>
+              ) : isTrialGraceExpired ? (
+                <p className="mt-0.5 text-sm text-danger-fg">
+                  Seu período gratuito terminou. Regularize o pagamento para continuar usando a Lívia.
                 </p>
               ) : isSuspended ? (
                 <p className="mt-0.5 text-sm text-danger-fg">
@@ -293,8 +323,6 @@ function PlanoPageInner() {
                 <p className="mt-0.5 text-sm text-danger-fg">
                   Sua assinatura foi cancelada. Fale com o suporte da Lívia para reativar.
                 </p>
-              ) : trialExpired ? (
-                <p className="mt-0.5 text-sm text-ink-500">Seu período de teste terminou.</p>
               ) : (
                 <p className="mt-0.5 text-sm text-ink-500">Ciclo mensal</p>
               )}
@@ -303,7 +331,7 @@ function PlanoPageInner() {
           <div className="text-right">
             <p className="text-2xl font-bold text-ink-900">R$ 129</p>
             <p className="text-xs text-ink-400">por mês</p>
-            {!isActive && !trialExpired && <p className="mt-1 text-xs text-ink-400">7 dias grátis para começar</p>}
+            {isBeforePaymentWindow && <p className="mt-1 text-xs text-ink-400">7 dias grátis para começar</p>}
           </div>
         </div>
 
@@ -320,8 +348,12 @@ function PlanoPageInner() {
 
         {/* -------- Contratação: Pix (fluxo direto atual) ou cartão (Hosted
              Checkout) — o cliente escolhe o meio ANTES de prosseguir; cada
-             escolha segue um caminho de backend inteiramente separado. -------- */}
-        {!isActive && !isCanceled && subscribeStep === "idle" && cardCheckoutStep !== "error" && (
+             escolha segue um caminho de backend inteiramente separado.
+             Nunca aparece antes de trialEndsAt-24h (regra definitiva do
+             trial) — o backend rejeita de qualquer forma
+             (TRIAL_PAYMENT_NOT_YET_AVAILABLE), isto é só a UI refletindo a
+             mesma regra pra não oferecer um botão que a API recusaria. -------- */}
+        {!isActive && !isCanceled && !isBeforePaymentWindow && subscribeStep === "idle" && cardCheckoutStep !== "error" && (
           <div className="mt-5 border-t border-line/60 pt-4">
             <p className="mb-3 text-sm font-semibold text-ink-700">Como você quer pagar?</p>
             <div className="flex flex-wrap gap-2">

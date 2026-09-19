@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TRIAL_PAYMENT_WINDOW_MS, TRIAL_GRACE_WINDOW_MS } from "@/lib/billing/trialWindow";
 import type { Establishment } from "@/types";
 
 const resolveEstablishmentId = vi.fn();
@@ -315,7 +316,11 @@ describe("POST /api/billing/subscribe", () => {
 
   it("23) PIX pendente (intent 'reserved'/'creating', sem sucesso ainda): retomada reusa o mesmo nextDueDate/geração", async () => {
     getBillingProvisioningIntent.mockResolvedValue({ terms: { nextDueDate: "2026-02-10" } });
-    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "trial", trialEndsAt: 9e15, updatedAt: 1 } }));
+    // trialEndsAt perto o bastante do "agora" do teste pra cair dentro da
+    // janela em que o gate de trial (lib/billing/trialWindow.ts) já libera
+    // pagamento — o teste 23 é sobre reuso de nextDueDate/geração, não
+    // sobre o gate em si (esse tem testes dedicados mais abaixo).
+    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "trial", trialEndsAt: Date.now() + 1000, updatedAt: 1 } }));
     await POST(request({ cpfCnpj: "52998224725" }) as never);
     const [input] = provisionAsaasSubscription.mock.calls[0]!;
     expect(input.nextDueDate).toBe("2026-02-10");
@@ -371,11 +376,98 @@ describe("POST /api/billing/subscribe", () => {
       getBillingProvisioningIntent.mockClear();
       provisionAsaasSubscription.mockClear();
       getEstablishment.mockResolvedValue(
-        establishment({ billing: { billingStatus, subscriptionGeneration: 3, trialEndsAt: 9e15, updatedAt: 1 } }),
+        establishment({ billing: { billingStatus, subscriptionGeneration: 3, trialEndsAt: Date.now() + 1000, updatedAt: 1 } }),
       );
       await POST(request({ cpfCnpj: "52998224725" }) as never);
       const [input] = provisionAsaasSubscription.mock.calls[0]!;
       expect(input.subscriptionGeneration).toBe(3);
     }
+  });
+
+  // -----------------------------------------------------------------
+  // Regra definitiva do trial (auditoria pré-primeiro-pagamento real):
+  // nenhuma cobrança PIX pode nascer antes de trialEndsAt-24h — nem
+  // mesmo chamando a rota diretamente, sem passar pela UI.
+  // -----------------------------------------------------------------
+  it("29) antes de trialEndsAt-24h -> 403 TRIAL_PAYMENT_NOT_YET_AVAILABLE, nenhuma chamada Asaas", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + 6 * 24 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "TRIAL_PAYMENT_NOT_YET_AVAILABLE" });
+    expect(resolveOrCreateAsaasCustomer).not.toHaveBeenCalled();
+    expect(provisionAsaasSubscription).not.toHaveBeenCalled();
+    expect(createAsaasClient).not.toHaveBeenCalled();
+  });
+
+  it("30) exatamente em trialEndsAt-24h -> pagamento liberado, segue normalmente", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + TRIAL_PAYMENT_WINDOW_MS, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
+  });
+
+  it("31) imediatamente antes de trialEndsAt -> pagamento ainda disponível", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now + 1, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
+  });
+
+  it("32) exatamente em trialEndsAt (início da tolerância) -> pagamento disponível, NÃO bloqueado", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
+  });
+
+  it("33) durante as 24h de tolerância pós-trialEndsAt -> pagamento disponível (regularização)", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now - 12 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
+  });
+
+  it("34) mesmo bem depois de trialEndsAt+24h (já expirado/suspenso), pagamento continua disponível pra regularizar", async () => {
+    const now = Date.now();
+    getEstablishment.mockResolvedValue(
+      establishment({ billing: { billingStatus: "trial", trialEndsAt: now - TRIAL_GRACE_WINDOW_MS - 10 * 24 * 3600000, updatedAt: 1 } }),
+    );
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
+  });
+
+  it("35) billingStatus fora de 'trial' (past_due/suspended/canceled) nunca é bloqueado pelo gate de trial", async () => {
+    for (const billingStatus of ["past_due", "suspended", "canceled"] as const) {
+      provisionAsaasSubscription.mockClear();
+      getEstablishment.mockResolvedValue(
+        establishment({ billing: { billingStatus, trialEndsAt: Date.now() + 6 * 24 * 3600000, updatedAt: 1 } }),
+      );
+      const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+      expect(res.status).toBe(200);
+      expect(provisionAsaasSubscription).toHaveBeenCalled();
+    }
+  });
+
+  it("36) trialEndsAt ausente/corrompido durante trial nunca bloqueia pagamento (não é este gate que fica fail-closed)", async () => {
+    getEstablishment.mockResolvedValue(establishment({ billing: { billingStatus: "trial", updatedAt: 1 } }));
+    const res = await POST(request({ cpfCnpj: "52998224725" }) as never);
+    expect(res.status).toBe(200);
+    expect(provisionAsaasSubscription).toHaveBeenCalled();
   });
 });

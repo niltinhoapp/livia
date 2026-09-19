@@ -66,14 +66,27 @@ describe("useShellData — billingRestricted (Fase 1)", () => {
     expect(result.current.data?.billingRestricted).toBe(false);
   });
 
-  it("trial vencido: fica restrito", async () => {
+  it("trial vencido HÁ MAIS de 24h (tolerância de regularização esgotada): fica restrito", async () => {
+    // Regra definitiva de produto (auditoria pré-primeiro-pagamento real):
+    // 24h de tolerância pós-trialEndsAt antes de restringir — ver
+    // lib/billing/trialWindow.ts, mesma fonte usada por canUseService.
+    mockFetch({
+      exists: true,
+      establishment: establishment({ billingStatus: "trial", trialStartAt: 1, trialEndsAt: Date.now() - 25 * 3600000, updatedAt: 1 }),
+    });
+    const { result } = renderHook(() => useShellData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.billingRestricted).toBe(true);
+  });
+
+  it("trial vencido HÁ POUCO (ainda dentro da tolerância de 24h): NÃO fica restrito", async () => {
     mockFetch({
       exists: true,
       establishment: establishment({ billingStatus: "trial", trialStartAt: 1, trialEndsAt: Date.now() - 60_000, updatedAt: 1 }),
     });
     const { result } = renderHook(() => useShellData());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.data?.billingRestricted).toBe(true);
+    expect(result.current.data?.billingRestricted).toBe(false);
   });
 
   it("suspended: fica restrito", async () => {

@@ -14,6 +14,7 @@
 // Establishment.status ou panelAccess, ou chama o Asaas. É só a fundação de
 // domínio — nenhuma rota/webhook/cron chama estas funções ainda.
 import type { BillingStatus, Establishment } from "@/types";
+import { resolveTrialPhase, trialAllowsAccess } from "./trialWindow";
 
 // ---- Eventos canônicos internos ----
 //
@@ -172,9 +173,13 @@ export function canUseService(est: Pick<Establishment, "billing">, now: number):
       // princípio já usado no projeto para campo persistido inesperado
       // (ex.: lib/whatsapp/coexistence.ts: normalizeConnectionMode).
       if (typeof trialEndsAt !== "number" || !Number.isFinite(trialEndsAt)) return false;
-      // No limite exato, o trial ainda vale — trialEndsAt é o último
-      // instante permitido, não o primeiro bloqueado.
-      return now <= trialEndsAt;
+      // Acesso continua durante a janela de tolerância de 24h pós-trial
+      // (regra definitiva de produto, auditoria pré-primeiro-pagamento) —
+      // mesma fronteira compartilhada com o gate de pagamento das rotas de
+      // billing e com o cron de expiração, via trialWindow.ts. Nunca
+      // recalculada aqui separadamente: um único lugar decide onde estão os
+      // limites, pra nunca abrir um buraco de tempo entre acesso e cobrança.
+      return trialAllowsAccess(resolveTrialPhase(trialEndsAt, now));
     }
   }
 }
