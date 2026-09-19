@@ -4,6 +4,7 @@ import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { isMarketingOptInSource, normalizeMarketingImportPhone, marketingEligibilityOf } from "@/lib/campaigns";
+import { templateRequiresParameters } from "@/lib/campaignTemplates";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import { nextBillingStatus, type BillingEventType } from "@/lib/billing/stateMachine";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
@@ -1109,6 +1110,28 @@ export interface PrepareCampaignAudienceResult {
   recipientsCreated: number;
 }
 
+export interface CampaignAudiencePreview {
+  selected: number;
+  eligible: number;
+  excluded: number;
+}
+
+/** Conta a audiência a partir dos CustomerProfiles do próprio tenant. É só
+ * prévia: o snapshot materializado e a revalidação no dispatcher continuam
+ * sendo as autoridades para o envio. */
+export async function previewCampaignAudience(establishmentId: string): Promise<CampaignAudiencePreview> {
+  const customers = await sub(establishmentId, "customers").get();
+  const phones = new Map<string, CustomerProfile>();
+  for (const doc of customers.docs) {
+    const profile = doc.data() as CustomerProfile;
+    const phone = normalizeMarketingImportPhone(doc.id) ?? normalizeMarketingImportPhone(profile.phone);
+    if (phone) phones.set(phone, profile);
+  }
+  let eligible = 0;
+  for (const profile of phones.values()) if (marketingEligibilityOf(profile).eligible) eligible++;
+  return { selected: phones.size, eligible, excluded: phones.size - eligible };
+}
+
 const MAX_SYNCHRONOUS_AUDIENCE = 200;
 
 /** Materializa uma audiência pequena e idempotente. O recipient é snapshot
@@ -1205,7 +1228,7 @@ export async function activateCampaign(
   if (!campaign.audience || campaign.audience.eligibleRecipientCount < 1) {
     return { kind: "invalid", reason: "audience_required" };
   }
-  if (!campaign.template || campaign.template.status !== "APPROVED" || campaign.template.senderCompatible !== true) {
+  if (!campaign.template || campaign.template.status !== "APPROVED" || campaign.template.senderCompatible !== true || templateRequiresParameters(campaign.template.components)) {
     return { kind: "invalid", reason: "approved_compatible_template_required" };
   }
   const recipients = await recipientsCol.where("campaignId", "==", campaignId).limit(options.maxRecipients + 1).get();

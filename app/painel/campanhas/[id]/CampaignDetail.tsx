@@ -1,12 +1,4 @@
 "use client";
-// Detalhe de campanha — estrutura preparada (OT-FRONT-CAMPANHAS-01).
-// Sem GET /api/campaigns/:id ainda, a página sempre mostra "não encontrada"
-// (estado real — nenhuma campanha existe de fato hoje). A estrutura de
-// cabeçalho/resumo/destinatários já fica pronta para plugar o fetch depois.
-//
-// BACKEND CONTRACT NEEDED:
-//   - GET /api/campaigns/:id -> { campaign: Campaign }
-//   - GET /api/campaigns/:id/recipients -> { recipients: CampaignRecipient[] }
 import Link from "next/link";
 import { ArrowLeft, Megaphone } from "lucide-react";
 import { useState } from "react";
@@ -35,7 +27,7 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
         <EmptyState
           icon={<Megaphone className="h-5 w-5" />}
           title="Campanha não encontrada"
-          description="Ela pode ter sido removida, ou o backend de campanhas ainda não está conectado."
+          description="Ela pode ter sido removida ou não pertencer a este estabelecimento."
         />
       </div>
     );

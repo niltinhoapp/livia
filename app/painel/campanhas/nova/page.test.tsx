@@ -1,10 +1,21 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import NewCampaignPage from "./page";
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  const fetchMock = vi.fn((url: string) => Promise.resolve({
+    ok: true,
+    json: async () => url.includes("templates")
+      ? { templates: [{ id: "tpl-1", name: "promocao", language: "pt_BR", status: "APPROVED", components: [], senderCompatible: true, campaignCompatible: true }] }
+      : { audience: { selected: 3, eligible: 2, excluded: 1 } },
+  }));
+  vi.stubGlobal("fetch", fetchMock);
 });
 
 describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
@@ -45,12 +56,24 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     expect(select.disabled).toBe(false);
     expect(screen.getByText(/templates devem estar aprovados/i)).toBeTruthy();
 
-    // Sem template real (nenhum contrato de backend ainda), o avanço para
-    // Revisão fica estruturalmente travado — mesmo padrão de "gate por
-    // botão desabilitado" já usado em /painel/plano (OT-BILLING-UI-01).
-    // Isso significa que "Enviar agora"/"Agendar" nunca são alcançáveis por
-    // clique real nesta fase, o que é intencional.
     const templateContinue = screen.getByRole("button", { name: /continuar/i }) as HTMLButtonElement;
     expect(templateContinue.disabled).toBe(true);
+  });
+
+  it("mostra destinatários reais e exige confirmação explícita antes de enviar", async () => {
+    render(<NewCampaignPage />);
+    fireEvent.change(screen.getByPlaceholderText(/reativação de clientes/i), { target: { value: "Promoção" } });
+    fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
+    await waitFor(() => expect(screen.getByRole("option", { name: /promocao/i })).toBeTruthy());
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "tpl-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
+    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.getByText(/promocao · pt_BR/i)).toBeTruthy();
+    const send = screen.getByRole("button", { name: "Enviar agora" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirmar envio" })).toBeTruthy();
   });
 });

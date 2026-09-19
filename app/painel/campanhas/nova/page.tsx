@@ -1,40 +1,72 @@
 "use client";
-// Nova campanha — fluxo visual preparado (OT-FRONT-CAMPANHAS-01), mesmo
-// padrão de stepper de app/painel/onboarding/page.tsx. Nenhum passo chama
-// backend: não existe ainda POST /api/campaigns nem endpoint de audiência
-// elegível/templates aprovados — os campos ficam prontos para receber esses
-// contratos depois, sem redesenhar nada.
-//
-// BACKEND CONTRACT NEEDED:
-//   - GET /api/campaigns/audience-count?segment=... -> { eligible, ineligible, optedOut }
-//   - GET /api/campaigns/templates -> { templates: Template[] } (status "approved" apenas selecionável)
-//   - POST /api/campaigns -> cria em draft/scheduled
-import { useState } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Megaphone, Users, FileText, ClipboardCheck, Check, ArrowLeft } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select } from "@/components/ui/Field";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 type Step = 0 | 1 | 2 | 3;
 const STEP_LABELS = ["Campanha", "Público", "Template", "Revisão"];
 
 type Audience = "all" | "imported" | "segment";
+type CampaignTemplate = { id: string; name: string; language: string; status: string; components: Record<string, unknown>[]; senderCompatible: boolean; campaignCompatible: boolean };
+type AudiencePreview = { selected: number; eligible: number; excluded: number };
 
 export default function NewCampaignPage() {
   const [step, setStep] = useState<Step>(0);
   const [name, setName] = useState("");
   const [audience, setAudience] = useState<Audience>("all");
   const [templateId, setTemplateId] = useState("");
-  const [templates, setTemplates] = useState<Array<{ id: string; name: string; language: string; status: string; components: Record<string, unknown>[]; senderCompatible: boolean }>>([]);
+  const [templates, setTemplates] = useState<CampaignTemplate[]>([]);
+  const [audiencePreview, setAudiencePreview] = useState<AudiencePreview | null>(null);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { fetch("/api/campaigns/templates").then((r) => r.ok ? r.json() : Promise.reject()).then((b: { templates?: typeof templates }) => setTemplates(b.templates ?? [])).catch(() => setTemplates([])); }, []);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    void Promise.all([
+      fetch("/api/campaigns/templates").then((r) => r.ok ? r.json() : Promise.reject()),
+      fetch("/api/campaigns/audience").then((r) => r.ok ? r.json() : Promise.reject()),
+    ]).then(([templateBody, audienceBody]: [{ templates?: CampaignTemplate[] }, { audience?: AudiencePreview }]) => {
+      setTemplates(templateBody.templates ?? []);
+      setAudiencePreview(audienceBody.audience ?? null);
+    }).catch(() => setError("Não foi possível carregar os dados necessários para a campanha."));
+  }, []);
   const selectedTemplate = templates.find((template) => template.id === templateId);
 
   const canContinueStep0 = name.trim().length > 0;
+  const canSendNow = Boolean(selectedTemplate && audience === "all" && (audiencePreview?.eligible ?? 0) > 0 && !saving);
+
+  async function createAndPrepare(sendNow: boolean) {
+    if (!selectedTemplate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const createResponse = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      const created = await createResponse.json() as { campaign?: { id: string }; error?: string };
+      if (!createResponse.ok || !created.campaign) throw new Error(created.error ?? "Não foi possível criar a campanha.");
+      const audienceResponse = await fetch(`/api/campaigns/${encodeURIComponent(created.campaign.id)}/audience`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selection: "all_eligible", template: { id: selectedTemplate.id, name: selectedTemplate.name, languageCode: selectedTemplate.language } }),
+      });
+      const audienceBody = await audienceResponse.json().catch(() => ({})) as { error?: string };
+      if (!audienceResponse.ok) throw new Error(audienceBody.error ?? "Não foi possível preparar os destinatários.");
+      if (sendNow) {
+        const sendResponse = await fetch(`/api/campaigns/${encodeURIComponent(created.campaign.id)}/send`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }),
+        });
+        const sendBody = await sendResponse.json().catch(() => ({})) as { error?: string };
+        if (!sendResponse.ok) throw new Error(sendBody.error ?? "Não foi possível iniciar o envio.");
+      }
+      window.location.href = `/painel/campanhas/${created.campaign.id}`;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível concluir a campanha.");
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -74,6 +106,7 @@ export default function NewCampaignPage() {
       </ol>
 
       <div key={step} className="animate-fade-in">
+        {error ? <p role="alert" className="mb-4 rounded-control bg-danger-bg px-3 py-2 text-sm text-danger-fg">{error}</p> : null}
         {step === 0 && (
           <Card>
             <StepHeader icon={<Megaphone className="h-5 w-5" />} title="Campanha" />
@@ -112,19 +145,18 @@ export default function NewCampaignPage() {
               </p>
             )}
 
-            {/* BACKEND CONTRACT NEEDED: contagem real de elegíveis/inelegíveis/opt-out */}
             <div className="mt-4 grid grid-cols-3 gap-3 text-center">
               <div className="rounded-control border border-line p-3">
-                <p className="text-lg font-bold text-ink-900">—</p>
+                <p className="text-lg font-bold text-ink-900">{audiencePreview?.selected ?? "—"}</p>
                 <p className="text-xs text-ink-400">selecionados</p>
               </div>
               <div className="rounded-control border border-line p-3">
-                <p className="text-lg font-bold text-ink-900">—</p>
+                <p className="text-lg font-bold text-ink-900">{audiencePreview?.excluded ?? "—"}</p>
                 <p className="text-xs text-ink-400">inelegíveis</p>
               </div>
               <div className="rounded-control border border-line p-3">
-                <p className="text-lg font-bold text-ink-900">—</p>
-                <p className="text-xs text-ink-400">opt-out</p>
+                <p className="text-lg font-bold text-ink-900">{audiencePreview?.eligible ?? "—"}</p>
+                <p className="text-xs text-ink-400">elegíveis</p>
               </div>
             </div>
 
@@ -145,7 +177,7 @@ export default function NewCampaignPage() {
             <Label>Template aprovado</Label>
             <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
               <option value="">Selecione um template</option>
-              {templates.filter((template) => template.status === "APPROVED" && template.senderCompatible).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
+              {templates.filter((template) => template.campaignCompatible).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
             </Select>
             <p className="mt-1.5 text-xs text-ink-400">
               Templates devem estar aprovados e compatíveis com o sender —{" "}
@@ -176,31 +208,37 @@ export default function NewCampaignPage() {
             <div className="space-y-3 text-sm">
               <ReviewRow label="Campanha" value={name || "—"} />
               <ReviewRow label="Público" value="Todos os contatos elegíveis" />
-              <ReviewRow label="Template" value={templateId || "—"} />
-              <ReviewRow label="Destinatários" value="—" />
+              <ReviewRow label="Template" value={selectedTemplate ? `${selectedTemplate.name} · ${selectedTemplate.language}` : "—"} />
+              <ReviewRow label="Destinatários" value={audiencePreview ? String(audiencePreview.eligible) : "—"} />
             </div>
-
-            <div className="mt-5 rounded-control border border-warning/30 bg-warning-bg/30 p-3 text-xs text-warning-fg">
-              O envio real ainda depende do backend de Campanhas (<StatusBadge tone="warning">em construção</StatusBadge>).
-            </div>
+            <p className="mt-5 rounded-control border border-warning/30 bg-warning-bg/30 p-3 text-xs text-warning-fg">As mensagens serão enviadas pelo WhatsApp somente após sua confirmação explícita. Confirme que esta audiência possui consentimento válido.</p>
 
             <div className="mt-6 flex gap-3">
               <Button variant="secondary" className="flex-1" onClick={() => setStep(2)}>
                 Voltar
               </Button>
-              <Button className="flex-1" disabled title="Envio será habilitado em Campanhas-06">
+              <Button className="flex-1" disabled={!canSendNow} onClick={() => setConfirmOpen(true)}>
                 Enviar agora
               </Button>
               <Button variant="secondary" className="flex-1" disabled title="Agendamento será habilitado em Campanhas-06">
                 Agendar
               </Button>
-              <Button variant="secondary" className="flex-1" disabled={saving || !selectedTemplate} onClick={async () => { setSaving(true); try { const created = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => r.json()); await fetch(`/api/campaigns/${created.campaign.id}/audience`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selection: "all_eligible", template: { id: selectedTemplate!.id, name: selectedTemplate!.name, languageCode: selectedTemplate!.language, status: selectedTemplate!.status, components: selectedTemplate!.components, senderCompatible: selectedTemplate!.senderCompatible } }) }); window.location.href = `/painel/campanhas/${created.campaign.id}`; } finally { setSaving(false); } }}>
+              <Button variant="secondary" className="flex-1" disabled={saving || !selectedTemplate} onClick={() => void createAndPrepare(false)}>
                 {saving ? "Preparando…" : "Salvar e preparar"}
               </Button>
             </div>
           </Card>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Confirmar envio"
+        description={`Campanha “${name}”, template “${selectedTemplate?.name ?? "—"}”, para ${audiencePreview?.eligible ?? 0} destinatários. As mensagens serão enviadas pelo WhatsApp. Confirme que esta audiência possui consentimento válido.`}
+        confirmLabel="Confirmar envio"
+        confirmDisabled={!canSendNow}
+        onConfirm={() => { setConfirmOpen(false); void createAndPrepare(true); }}
+        onCancel={() => { if (!saving) setConfirmOpen(false); }}
+      />
     </div>
   );
 }

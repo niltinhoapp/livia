@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { sendTemplate } from "@/lib/whatsapp/client";
 import { marketingEligibilityOf } from "@/lib/campaigns";
 import { campaignsSendEnabled } from "@/lib/campaignConfig";
+import { templateRequiresParameters } from "@/lib/campaignTemplates";
 import {
   applyCampaignRecipientOutcome,
   claimCampaignRecipients,
@@ -133,7 +134,9 @@ export async function dispatchCampaignBatch(
   } else if (campaign.status !== "running") {
     return { ...empty, aborted: "campaign_not_running" };
   }
-  if (!campaign.template?.name || !campaign.template.languageCode) return { ...empty, aborted: "missing_template" };
+  if (!campaign.template?.name || !campaign.template.languageCode || templateRequiresParameters(campaign.template.components)) {
+    return { ...empty, aborted: "missing_template" };
+  }
 
   const establishment = await getEstablishment(establishmentId);
   const wa = establishment?.whatsapp;

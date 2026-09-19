@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => { const fake = await import("@/lib/__testing__/firestoreFake"); return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb }; });
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import { createCampaign, getCampaign, prepareCampaignAudience, importMarketingContacts } from "@/lib/repo";
+import { createCampaign, getCampaign, prepareCampaignAudience, importMarketingContacts, previewCampaignAudience } from "@/lib/repo";
 
 const A = "est-a"; const B = "est-b";
 const template = { id: "tpl-1", name: "hello", languageCode: "pt_BR", status: "APPROVED", components: [{ type: "BODY", text: "Olá" }], senderCompatible: true };
@@ -12,6 +12,15 @@ async function eligible(establishmentId: string, phone: string, name: string) {
 }
 
 describe("Campanhas-05 — audiência e recipients", () => {
+  it("prévia usa contatos do próprio tenant, deduplica telefone e não materializa recipients", async () => {
+    await eligible(A, "5514996447132", "A");
+    await eligible(B, "5514996447132", "B");
+    fakeDb.col(`establishments/${A}/customers`).set("dup", { phone: "(14) 99644-7132", marketingStatus: "eligible" });
+    const preview = await previewCampaignAudience(A);
+    expect(preview).toEqual({ selected: 1, eligible: 1, excluded: 0 });
+    expect(fakeDb.col(`establishments/${A}/campaignRecipients`).size).toBe(0);
+  });
+
   it("materializa todos os elegíveis, exclui protegidos/legados e normaliza", async () => {
     await eligible(A, "(14) 99644-7132", "Ana");
     fakeDb.col(`establishments/${A}/customers`).set("5514996447000", { phone: "5514996447000", name: "Optout", marketingStatus: "opted_out" });
