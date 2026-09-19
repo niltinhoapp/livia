@@ -270,6 +270,16 @@ describe("Campanhas-06 — retry, permanente e ambíguo end-to-end", () => {
 });
 
 describe("Campanhas-06 — precondições operacionais", () => {
+  it("não envia snapshot legado que ainda exige parâmetros", async () => {
+    seedCampaign(A, { template: { name: "parametrized", languageCode: "pt_BR", status: "APPROVED", senderCompatible: true, components: [{ type: "BODY", text: "Olá {{1}}" }] } });
+    await seedEligibleRecipient("r-params", "5511999000098");
+
+    const result = await dispatchCampaignBatch(A, CAMPAIGN_ID);
+
+    expect(result.aborted).toBe("missing_template");
+    expect(sender.sendTemplate).not.toHaveBeenCalled();
+  });
+
   it("kill switch fechado impede chamada interna ao dispatcher", async () => {
     vi.stubEnv("CAMPAIGNS_SEND_ENABLED", "false");
     seedRecipient(A, "r0", "5511999000099");

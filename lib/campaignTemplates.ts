@@ -2,7 +2,7 @@ import type { CampaignTemplateSnapshot } from "@/types";
 import type { WhatsAppTemplate } from "@/lib/whatsapp/client";
 
 /** Campanhas V1 não possui preenchimento de parâmetros de template. */
-export function templateRequiresParameters(components: WhatsAppTemplate["components"] | undefined): boolean {
+export function templateRequiresParameters(components: ReadonlyArray<{ text?: unknown }> | undefined): boolean {
   return Boolean(components?.some((component) => typeof component.text === "string" && /\{\{\d+\}\}/.test(component.text)));
 }
 
