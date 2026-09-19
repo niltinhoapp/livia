@@ -93,11 +93,42 @@ describe("POST /api/campaigns/:id/send", () => {
     expect(dispatchCampaignBatch).not.toHaveBeenCalled();
   });
 
-  it("bloqueia templates que exigem parâmetros ainda não suportados", async () => {
+  it("bloqueia template parametrizado sem configuração das variáveis", async () => {
     listMessageTemplates.mockResolvedValue([{ id: "tpl-1", name: "hello", language: "pt_BR", components: [{ type: "BODY", text: "Olá {{1}}" }], approved: true, senderCompatible: true }]);
     const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
     expect(response.status).toBe(409);
     expect(activateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("ativa template parametrizado quando todas as variáveis estão configuradas", async () => {
+    const campaign = {
+      id: "c1",
+      status: "running",
+      template: {
+        id: "tpl-1",
+        name: "hello",
+        languageCode: "pt_BR",
+        parameterBindings: [
+          { index: 1, source: "customer_name" },
+          { index: 2, source: "fixed", value: "sexta-feira" },
+        ],
+      },
+    };
+    getCampaign.mockResolvedValue(campaign);
+    activateCampaign.mockResolvedValue({ kind: "activated", campaign });
+    listMessageTemplates.mockResolvedValue([{
+      id: "tpl-1",
+      name: "hello",
+      language: "pt_BR",
+      components: [{ type: "BODY", text: "Olá {{1}}, esperamos você {{2}}" }],
+      approved: true,
+      senderCompatible: true,
+    }]);
+
+    const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
+
+    expect(response.status).toBe(200);
+    expect(activateCampaign).toHaveBeenCalled();
   });
 
   it("encaminha agendamento futuro sem loop de envio", async () => {

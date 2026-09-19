@@ -4,7 +4,7 @@ import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { isMarketingOptInSource, normalizeMarketingImportPhone, marketingEligibilityOf } from "@/lib/campaigns";
-import { templateRequiresParameters } from "@/lib/campaignTemplates";
+import { templateParameterBindingsAreValid } from "@/lib/campaignTemplates";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
 import { nextBillingStatus, type BillingEventType } from "@/lib/billing/stateMachine";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
@@ -1228,7 +1228,7 @@ export async function activateCampaign(
   if (!campaign.audience || campaign.audience.eligibleRecipientCount < 1) {
     return { kind: "invalid", reason: "audience_required" };
   }
-  if (!campaign.template || campaign.template.status !== "APPROVED" || campaign.template.senderCompatible !== true || templateRequiresParameters(campaign.template.components)) {
+  if (!campaign.template || campaign.template.status !== "APPROVED" || campaign.template.senderCompatible !== true || !templateParameterBindingsAreValid(campaign.template.components, campaign.template.parameterBindings)) {
     return { kind: "invalid", reason: "approved_compatible_template_required" };
   }
   const recipients = await recipientsCol.where("campaignId", "==", campaignId).limit(options.maxRecipients + 1).get();

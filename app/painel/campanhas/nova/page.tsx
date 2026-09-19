@@ -12,14 +12,33 @@ type Step = 0 | 1 | 2 | 3;
 const STEP_LABELS = ["Campanha", "Público", "Template", "Revisão"];
 
 type Audience = "all" | "imported" | "segment";
-type CampaignTemplate = { id: string; name: string; language: string; status: string; components: Record<string, unknown>[]; senderCompatible: boolean; campaignCompatible: boolean };
+type CampaignTemplate = { id: string; name: string; language: string; status: string; components: Array<{ type?: unknown; text?: unknown }>; senderCompatible: boolean; campaignCompatible: boolean };
 type AudiencePreview = { selected: number; eligible: number; excluded: number };
+
+function parameterIndexes(template: CampaignTemplate | undefined): number[] {
+  const indexes = new Set<number>();
+  for (const component of template?.components ?? []) {
+    if (String(component.type).toUpperCase() !== "BODY" || typeof component.text !== "string") continue;
+    for (const match of component.text.matchAll(/\{\{\s*(\d+)\s*\}\}/g)) indexes.add(Number(match[1]));
+  }
+  return [...indexes].sort((a, b) => a - b);
+}
+
+function previewBody(template: CampaignTemplate | undefined, values: Record<number, string>): string {
+  const body = template?.components.find((component) => String(component.type).toUpperCase() === "BODY")?.text;
+  if (typeof body !== "string") return "Prévia indisponível.";
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, rawIndex: string) => {
+    const index = Number(rawIndex);
+    return index === 1 ? "Nome do cliente" : values[index]?.trim() || `{{${index}}}`;
+  });
+}
 
 export default function NewCampaignPage() {
   const [step, setStep] = useState<Step>(0);
   const [name, setName] = useState("");
   const [audience, setAudience] = useState<Audience>("all");
   const [templateId, setTemplateId] = useState("");
+  const [parameterValues, setParameterValues] = useState<Record<number, string>>({});
   const [templates, setTemplates] = useState<CampaignTemplate[]>([]);
   const [audiencePreview, setAudiencePreview] = useState<AudiencePreview | null>(null);
   const [saving, setSaving] = useState(false);
@@ -35,9 +54,11 @@ export default function NewCampaignPage() {
     }).catch(() => setError("Não foi possível carregar os dados necessários para a campanha."));
   }, []);
   const selectedTemplate = templates.find((template) => template.id === templateId);
+  const selectedParameterIndexes = parameterIndexes(selectedTemplate);
+  const missingParameterValue = selectedParameterIndexes.some((index) => index > 1 && !parameterValues[index]?.trim());
 
   const canContinueStep0 = name.trim().length > 0;
-  const canSendNow = Boolean(selectedTemplate && audience === "all" && (audiencePreview?.eligible ?? 0) > 0 && !saving);
+  const canSendNow = Boolean(selectedTemplate && !missingParameterValue && audience === "all" && (audiencePreview?.eligible ?? 0) > 0 && !saving);
 
   async function createAndPrepare(sendNow: boolean) {
     if (!selectedTemplate) return;
@@ -50,7 +71,17 @@ export default function NewCampaignPage() {
       const audienceResponse = await fetch(`/api/campaigns/${encodeURIComponent(created.campaign.id)}/audience`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selection: "all_eligible", template: { id: selectedTemplate.id, name: selectedTemplate.name, languageCode: selectedTemplate.language } }),
+        body: JSON.stringify({
+          selection: "all_eligible",
+          template: {
+            id: selectedTemplate.id,
+            name: selectedTemplate.name,
+            languageCode: selectedTemplate.language,
+            parameterBindings: selectedParameterIndexes.map((index) => index === 1
+              ? { index, source: "customer_name" }
+              : { index, source: "fixed", value: (parameterValues[index] ?? "").trim() }),
+          },
+        }),
       });
       const audienceBody = await audienceResponse.json().catch(() => ({})) as { error?: string };
       if (!audienceResponse.ok) throw new Error(audienceBody.error ?? "Não foi possível preparar os destinatários.");
@@ -175,7 +206,7 @@ export default function NewCampaignPage() {
           <Card>
             <StepHeader icon={<FileText className="h-5 w-5" />} title="Template" />
             <Label>Template aprovado</Label>
-            <Select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+            <Select value={templateId} onChange={(e) => { setTemplateId(e.target.value); setParameterValues({}); }}>
               <option value="">Selecione um template</option>
               {templates.filter((template) => template.campaignCompatible).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
             </Select>
@@ -187,15 +218,37 @@ export default function NewCampaignPage() {
               .
             </p>
 
-            <div className="mt-4 rounded-control border border-dashed border-line p-4 text-center text-sm text-ink-400">
-              {selectedTemplate ? "Template aprovado e compatível selecionado." : "Prévia da mensagem aparece aqui quando um template for selecionado."}
+            {selectedParameterIndexes.length > 0 ? (
+              <div className="mt-4 space-y-3 rounded-control border border-line p-4">
+                <p className="text-sm font-semibold text-ink-900">Variáveis da mensagem</p>
+                {selectedParameterIndexes.map((index) => index === 1 ? (
+                  <div key={index}>
+                    <Label>{`{{${index}}} — Nome do cliente`}</Label>
+                    <Input value="Preenchido automaticamente para cada contato" disabled />
+                  </div>
+                ) : (
+                  <div key={index}>
+                    <Label>{`Valor de {{${index}}}`}</Label>
+                    <Input
+                      value={parameterValues[index] ?? ""}
+                      onChange={(event) => setParameterValues((current) => ({ ...current, [index]: event.target.value }))}
+                      placeholder={`Digite o valor de {{${index}}}`}
+                      maxLength={1024}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="mt-4 whitespace-pre-wrap rounded-control border border-dashed border-line p-4 text-sm text-ink-500">
+              {selectedTemplate ? previewBody(selectedTemplate, parameterValues) : "Prévia da mensagem aparece aqui quando um template for selecionado."}
             </div>
 
             <div className="mt-6 flex gap-3">
               <Button variant="secondary" className="flex-1" onClick={() => setStep(1)}>
                 Voltar
               </Button>
-              <Button className="flex-1" disabled={!selectedTemplate} onClick={() => setStep(3)} title="Selecione um template para continuar">
+              <Button className="flex-1" disabled={!selectedTemplate || missingParameterValue} onClick={() => setStep(3)} title="Selecione um template e preencha as variáveis para continuar">
                 Continuar
               </Button>
             </div>

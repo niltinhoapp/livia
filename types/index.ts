@@ -423,6 +423,10 @@ export interface MarketingImportResult {
 // Fundação tenant-scoped. Campanhas-02 não cria recipients nem envia nada.
 export type CampaignStatus = "draft" | "scheduled" | "running" | "completed" | "canceled";
 
+export type CampaignTemplateParameterBinding =
+  | { index: number; source: "customer_name" }
+  | { index: number; source: "fixed"; value: string };
+
 export interface CampaignTemplateSnapshot {
   id?: string;
   name: string;
@@ -431,6 +435,7 @@ export interface CampaignTemplateSnapshot {
   category?: string;
   components?: Record<string, unknown>[];
   senderCompatible?: boolean;
+  parameterBindings?: CampaignTemplateParameterBinding[];
 }
 
 export interface CampaignAudienceSnapshot {

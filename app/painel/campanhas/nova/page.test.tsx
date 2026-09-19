@@ -76,4 +76,26 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Confirmar envio" })).toBeTruthy();
   });
+
+  it("mostra e exige valores de variáveis antes de avançar", async () => {
+    const fetchMock = vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: async () => url.includes("templates")
+        ? { templates: [{ id: "tpl-vars", name: "cupom", language: "pt_BR", status: "APPROVED", components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}" }], senderCompatible: true, campaignCompatible: true }] }
+        : { audience: { selected: 3, eligible: 2, excluded: 1 } },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<NewCampaignPage />);
+    fireEvent.change(screen.getByPlaceholderText(/reativação de clientes/i), { target: { value: "Cupom" } });
+    fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continuar/i }));
+    await waitFor(() => expect(screen.getByRole("option", { name: /cupom/i })).toBeTruthy());
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "tpl-vars" } });
+    expect(screen.getByDisplayValue(/preenchido automaticamente/i)).toBeTruthy();
+    const continueButton = screen.getByRole("button", { name: /continuar/i }) as HTMLButtonElement;
+    expect(continueButton.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText(/valor de \{\{2\}\}/i), { target: { value: "LIVIA20" } });
+    expect(continueButton.disabled).toBe(false);
+    expect(screen.getByText(/Olá Nome do cliente, use LIVIA20/i)).toBeTruthy();
+  });
 });

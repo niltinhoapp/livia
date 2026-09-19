@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { sendTemplate } from "@/lib/whatsapp/client";
 import { marketingEligibilityOf } from "@/lib/campaigns";
 import { campaignsSendEnabled } from "@/lib/campaignConfig";
-import { templateRequiresParameters } from "@/lib/campaignTemplates";
+import { resolveCampaignTemplateParams, templateParameterBindingsAreValid } from "@/lib/campaignTemplates";
 import {
   applyCampaignRecipientOutcome,
   claimCampaignRecipients,
@@ -134,7 +134,7 @@ export async function dispatchCampaignBatch(
   } else if (campaign.status !== "running") {
     return { ...empty, aborted: "campaign_not_running" };
   }
-  if (!campaign.template?.name || !campaign.template.languageCode || templateRequiresParameters(campaign.template.components)) {
+  if (!campaign.template?.name || !campaign.template.languageCode || !templateParameterBindingsAreValid(campaign.template.components, campaign.template.parameterBindings)) {
     return { ...empty, aborted: "missing_template" };
   }
 
@@ -224,6 +224,15 @@ async function processOneRecipient(
     return applied === "applied" ? "failed" : "stale";
   }
 
+  const params = resolveCampaignTemplateParams(campaign.template, profile.name ?? recipient.customerName);
+  if (!params) {
+    const applied = await applyCampaignRecipientOutcome(establishmentId, campaignId, recipient.id, workerId, {
+      kind: "failed",
+      reason: "campaign_template_parameters_invalid",
+    });
+    return applied === "applied" ? "failed" : "stale";
+  }
+
   try {
     // Só o templateSnapshot já salvo na Campaign — o dispatcher nunca troca
     // por outro template.
@@ -233,7 +242,7 @@ async function processOneRecipient(
       recipient.customerPhone,
       campaign.template.name,
       campaign.template.languageCode,
-      [],
+      params,
     );
     const applied = await applyCampaignRecipientOutcome(establishmentId, campaignId, recipient.id, workerId, {
       kind: "sent",
