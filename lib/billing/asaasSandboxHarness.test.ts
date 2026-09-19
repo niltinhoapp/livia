@@ -34,6 +34,7 @@ function fakeClient(): AsaasClient {
     // OT-07E2: método novo do client, sem uso pelo harness — stub inerte
     // só para satisfazer o tipo AsaasClient.
     getPixQrCode: vi.fn(),
+    createCheckout: vi.fn(),
   };
 }
 

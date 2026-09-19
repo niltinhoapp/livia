@@ -59,6 +59,8 @@ import {
   resolveEstablishmentFromExternalReference,
   extractExternalReference,
   extractNextDueDate,
+  extractCheckoutSession,
+  extractSubscriptionId,
 } from "./asaasWebhookEvents";
 
 export interface ResolveAndApplyParams {
@@ -69,6 +71,12 @@ export interface ResolveAndApplyParams {
   domainEvent: BillingEventType;
   eventTimestamp: number | null;
   nextDueDate?: string;
+  // id da subscription Asaas dona deste evento, quando o payload a informa
+  // (ver extractSubscriptionId) — persistido em billing.externalSubscriptionId
+  // na mesma transação da transição, necessário para o caminho Hosted
+  // Checkout (nunca cria a subscription diretamente, só fica sabendo o id
+  // dela pelo próprio webhook).
+  subscriptionId?: string;
 }
 
 export interface AsaasWebhookProcessingDependencies {
@@ -81,6 +89,17 @@ export interface AsaasWebhookProcessingDependencies {
   // "invalid_envelope" | "ignored" | "unresolved_identity" (esses são
   // decididos antes de chegar aqui, sem precisar de transação).
   resolveAndApplyEvent: (params: ResolveAndApplyParams) => Promise<AsaasWebhookProcessingResult>;
+  // Fallback de identidade para o caminho Hosted Checkout (OT de migração):
+  // consultado SÓ quando resolveEstablishmentFromExternalReference não
+  // resolveu E o payload carrega um checkoutSession. Lê o vínculo
+  // checkoutId -> (establishmentId, generation) persistido por
+  // provisionBillingCheckout ANTES do redirecionamento — nunca infere nem
+  // faz lookup na Asaas. Ausência do vínculo (checkoutSession desconhecido
+  // ou nunca persistido pela Lívia) => null, fail-closed, igual ao
+  // contrato de resolveEstablishmentFromExternalReference.
+  resolveEstablishmentFromCheckoutSession: (
+    checkoutSession: string,
+  ) => Promise<{ establishmentId: string; generation: number } | null>;
   now: () => number;
 }
 
@@ -117,10 +136,20 @@ export async function processAsaasWebhookEvent(
     return { outcome: "ignored", event: envelope.event };
   }
 
-  // Resolução de identidade só acontece para eventos que realmente
-  // produzem transição — nunca lookup adicional na Asaas, nunca adivinha
-  // por customer/subscription (contrato OT-06B item 9).
-  const identity = resolveEstablishmentFromExternalReference(extractExternalReference(envelope.data));
+  // Resolução de identidade: externalReference continua a autoridade
+  // PRIMÁRIA (contrato original, fluxo PIX direto) — nunca lookup adicional
+  // na Asaas, nunca adivinha por customer/subscription (contrato OT-06B
+  // item 9). Fallback (OT de migração pro Hosted Checkout): SÓ quando
+  // externalReference não resolveu E o payload carrega um checkoutSession,
+  // consulta o vínculo persistido por provisionBillingCheckout. Nunca o
+  // inverso — um checkoutSession nunca é tentado antes de externalReference
+  // falhar, e um checkoutSession sem vínculo persistido pela Lívia nunca
+  // resolve identidade nenhuma (fail-closed, mesma garantia de
+  // resolveEstablishmentFromExternalReference).
+  const checkoutSession = extractCheckoutSession(envelope.data);
+  const identity =
+    resolveEstablishmentFromExternalReference(extractExternalReference(envelope.data)) ??
+    (checkoutSession ? await deps.resolveEstablishmentFromCheckoutSession(checkoutSession) : null);
   if (!identity) {
     // Idem: nada de establishment/billing em jogo, dedup simples basta.
     const isNew = await deps.reserveEventId(envelope.id);
@@ -129,6 +158,7 @@ export async function processAsaasWebhookEvent(
   }
 
   const eventTimestamp = parseAsaasEventTimestamp(envelope.dateCreatedRaw);
+  const subscriptionId = extractSubscriptionId(envelope.data);
 
   // A partir daqui, tudo que envolve ler/decidir/escrever sobre billing
   // acontece atomicamente — ver comentário no topo do arquivo.
@@ -140,6 +170,7 @@ export async function processAsaasWebhookEvent(
     domainEvent,
     eventTimestamp,
     nextDueDate: extractNextDueDate(envelope.data),
+    ...(subscriptionId !== null ? { subscriptionId } : {}),
   });
 }
 
@@ -156,7 +187,14 @@ function isAlreadyExists(err: unknown): boolean {
 // pagar custo de inicialização em nenhum outro caminho.
 export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasWebhookProcessingDependencies> {
   const { db } = await import("@/lib/firebase/admin");
+  const { resolveCheckoutCorrelation } = await import("./checkoutProvisioning");
   return {
+    resolveEstablishmentFromCheckoutSession: async (checkoutSession) => {
+      const correlation = await resolveCheckoutCorrelation(checkoutSession);
+      return correlation
+        ? { establishmentId: correlation.establishmentId, generation: correlation.subscriptionGeneration }
+        : null;
+    },
     reserveEventId: async (eventId) => {
       const ref = db.collection("_processed_asaas_events").doc(eventId);
       try {
@@ -279,6 +317,15 @@ export async function createAsaasWebhookProcessingDependencies(): Promise<AsaasW
           "billing.lastAsaasEventAt": params.eventTimestamp ?? now,
           "billing.updatedAt": now,
           ...(params.nextDueDate !== undefined ? { "billing.nextDueDate": params.nextDueDate } : {}),
+          // Necessário para o caminho Hosted Checkout (nunca cria a
+          // subscription diretamente — só sabe o id dela por este evento) e
+          // idempotente para o caminho PIX (já escrito síncrono em
+          // subscribe/route.ts com o MESMO valor; reescrever aqui não muda
+          // nada). params.generation já passou pelos guards de
+          // out_of_order/invalid_transition acima — nunca chega aqui um
+          // evento stale ou de geração superada.
+          ...(params.subscriptionId !== undefined ? { "billing.externalSubscriptionId": params.subscriptionId } : {}),
+          "billing.subscriptionGeneration": params.generation,
         });
         // Marker definitivo só é criado JUNTO com a escrita da transição,
         // na mesma transação — nunca antes, nunca separado.

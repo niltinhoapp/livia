@@ -129,6 +129,7 @@ export function createAsaasClient(config: AsaasClientConfig): AsaasClient {
     listSubscriptionPayments: (subscriptionId) =>
       listSubscriptionPayments(resolved, subscriptionId),
     getPixQrCode: (paymentId) => getPixQrCode(resolved, paymentId),
+    createCheckout: (input) => createCheckout(resolved, input),
   };
 }
 
@@ -152,6 +153,9 @@ export interface AsaasClient {
   // dentro do painel da Lívia em vez de redirecioná-lo para asaas.com, e
   // porque é o caminho que a própria documentação de PIX descreve.
   getPixQrCode(paymentId: string): Promise<AsaasResult<AsaasPixQrCode>>;
+  // POST /v3/checkouts — usado só pelo harness de homologação Sandbox nesta
+  // fase (ver comentário acima de createCheckout).
+  createCheckout(input: CreateCheckoutInput): Promise<AsaasResult<AsaasCheckout>>;
 }
 
 // Leitura mínima para homologar credencial/conectividade sem criar qualquer
@@ -448,6 +452,110 @@ async function getSubscription(
   return { ok: true, data: result.data };
 }
 
+// ---- Checkout hospedado (docs.asaas.com/reference/create-new-checkout,
+// confirmado em 2026-09) ----
+//
+// POST /v3/checkouts. Usado SÓ pelo harness de homologação Sandbox nesta
+// fase (OT de verificação empírica do Hosted Checkout) — nenhuma rota de
+// produto chama isto ainda. billingTypes/chargeTypes documentados: o
+// exemplo oficial de "Checkout com Assinatura (recorrente)" só mostra
+// CREDIT_CARD; a página dedicada de PIX ("Checkout para Pix") cobre
+// exclusivamente DETACHED e remete a assinatura pra doc de cartão — não há
+// confirmação oficial de PIX combinado com chargeTypes=RECURRENT (ver
+// auditoria da OT). Este módulo aceita ambos os valores no tipo porque a
+// Asaas os aceita para DETACHED; a decisão de QUAIS combinar em cada
+// chargeType é do chamador, nunca deste client.
+export type AsaasCheckoutBillingType = "PIX" | "CREDIT_CARD";
+export type AsaasCheckoutChargeType = "DETACHED" | "RECURRENT" | "INSTALLMENT";
+// Únicos 4 valores documentados (docs.asaas.com/docs/asaas-checkout).
+export type AsaasCheckoutStatus = "ACTIVE" | "CANCELED" | "EXPIRED" | "PAID";
+
+export interface CreateCheckoutItemInput {
+  name: string;
+  quantity: number;
+  value: number;
+  description?: string;
+}
+
+// Só os 3 campos documentados no schema CheckoutSessionSubscriptionDTO —
+// sem externalReference próprio (não existe no schema oficial; ver
+// auditoria da OT sobre onde o externalReference realmente aparece).
+export interface CreateCheckoutSubscriptionInput {
+  cycle: AsaasCycle;
+  nextDueDate: string;
+  endDate?: string;
+}
+
+export interface CreateCheckoutCallbackInput {
+  successUrl: string;
+  cancelUrl: string;
+  expiredUrl?: string;
+}
+
+export interface CreateCheckoutInput {
+  billingTypes: AsaasCheckoutBillingType[];
+  chargeTypes: AsaasCheckoutChargeType[];
+  callback: CreateCheckoutCallbackInput;
+  items: CreateCheckoutItemInput[];
+  externalReference?: string;
+  minutesToExpire?: number;
+  subscription?: CreateCheckoutSubscriptionInput;
+}
+
+// IMPORTANTE (mesmo espírito do comentário em AsaasSubscription): ok:true
+// aqui significa SOMENTE "o Checkout foi criado", nunca "o pagamento foi
+// confirmado" — a doc oficial é explícita: "creating the checkout returns
+// a payment page, not a financial confirmation". `status` é o espelho
+// BRUTO do Asaas — nunca a fonte de verdade de billingStatus.
+export interface AsaasCheckout {
+  id: string;
+  link: string;
+  status: AsaasCheckoutStatus;
+  externalReference?: string;
+}
+
+async function createCheckout(
+  config: ResolvedConfig,
+  input: CreateCheckoutInput,
+): Promise<AsaasResult<AsaasCheckout>> {
+  const body = {
+    billingTypes: input.billingTypes,
+    chargeTypes: input.chargeTypes,
+    callback: {
+      successUrl: input.callback.successUrl,
+      cancelUrl: input.callback.cancelUrl,
+      ...(input.callback.expiredUrl !== undefined ? { expiredUrl: input.callback.expiredUrl } : {}),
+    },
+    items: input.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity,
+      value: item.value,
+      ...(item.description !== undefined ? { description: item.description } : {}),
+    })),
+    ...(input.externalReference !== undefined ? { externalReference: input.externalReference } : {}),
+    ...(input.minutesToExpire !== undefined ? { minutesToExpire: input.minutesToExpire } : {}),
+    ...(input.subscription !== undefined
+      ? {
+          subscription: {
+            cycle: input.subscription.cycle,
+            nextDueDate: input.subscription.nextDueDate,
+            ...(input.subscription.endDate !== undefined ? { endDate: input.subscription.endDate } : {}),
+          },
+        }
+      : {}),
+  };
+  const result = await request<unknown>(config, "POST", "/checkouts", body);
+  if (!result.ok) return result;
+  if (!isAsaasCheckout(result.data)) {
+    return invalidResponse("Asaas: resposta de checkout sem os campos mínimos esperados.");
+  }
+  return { ok: true, data: result.data };
+}
+// Deliberadamente SEM getCheckout: a auditoria da OT não confirmou a
+// existência de um GET /v3/checkouts/{id} na documentação oficial — não
+// adiciona ao client um endpoint que não foi verificado. Se for confirmado
+// necessário, adicionar com a mesma disciplina do resto deste arquivo.
+
 async function listSubscriptions(
   config: ResolvedConfig,
   input: ListSubscriptionsInput,
@@ -612,6 +720,19 @@ function isAsaasSubscription(value: unknown): value is AsaasSubscription {
     typeof item.value === "number" && Number.isFinite(item.value) &&
     typeof item.nextDueDate === "string" &&
     typeof item.cycle === "string" && CYCLES.has(item.cycle as AsaasCycle)
+  );
+}
+
+const CHECKOUT_STATUSES = new Set<AsaasCheckoutStatus>(["ACTIVE", "CANCELED", "EXPIRED", "PAID"]);
+
+function isAsaasCheckout(value: unknown): value is AsaasCheckout {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.id === "string" && item.id.length > 0 &&
+    typeof item.link === "string" && item.link.length > 0 &&
+    typeof item.status === "string" && CHECKOUT_STATUSES.has(item.status as AsaasCheckoutStatus) &&
+    (item.externalReference === undefined || typeof item.externalReference === "string")
   );
 }
 
