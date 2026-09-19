@@ -5,6 +5,7 @@ import { establishmentRef, sub, db } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { isMarketingOptInSource, normalizeMarketingImportPhone, marketingEligibilityOf } from "@/lib/campaigns";
 import { generateRandomPin, encryptPin, decryptPin } from "@/lib/whatsapp/tokenCrypto";
+import { nextBillingStatus, type BillingEventType } from "@/lib/billing/stateMachine";
 import type { WhatsappConnectionMode } from "@/lib/whatsapp/coexistence";
 import type {
   Establishment,
@@ -86,6 +87,43 @@ export async function linkEstablishmentBilling(
     patch["billing.externalSubscriptionId"] = link.externalSubscriptionId;
   }
   await establishmentRef(id).update(patch);
+}
+
+export type ApplyBillingStatusExpiryResult = "applied" | "no_change";
+
+/**
+ * Dispara grace_expired/trial_expired (lib/billing/stateMachine.ts) contra o
+ * billing ATUAL do establishment, dentro de uma transação. Idempotente: se a
+ * transição não for mais válida (ex.: já suspenso, ou o billingStatus mudou
+ * entre a query do cron e esta chamada — pagamento confirmado no meio do
+ * caminho), é um no-op seguro, nunca força um estado. `suspendedAt` só é
+ * escrito aqui, exatamente no instante da transição para "suspended" —
+ * nenhum outro caminho do código grava este campo (nem o webhook do Asaas,
+ * que nunca produz essa transição sozinho).
+ */
+export async function applyBillingStatusExpiry(
+  establishmentId: string,
+  event: Extract<BillingEventType, "grace_expired" | "trial_expired">,
+  now = Date.now(),
+): Promise<ApplyBillingStatusExpiryResult> {
+  const ref = establishmentRef(establishmentId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return "no_change";
+    const est = snap.data() as Establishment;
+    if (!est.billing) return "no_change";
+
+    const result = nextBillingStatus(est.billing.billingStatus, { type: event });
+    if (!result.ok) return "no_change";
+
+    const patch: Record<string, unknown> = {
+      "billing.billingStatus": result.next,
+      "billing.updatedAt": now,
+    };
+    if (result.next === "suspended") patch["billing.suspendedAt"] = now;
+    tx.update(ref, patch);
+    return "applied";
+  });
 }
 
 // Cria (se novo) ou atualiza nome/tipo/config do bot do estabelecimento.

@@ -21,6 +21,24 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }, [loading, data, pathname, router]);
 
+  // Fase 1 do gating de billing (suspended/canceled/trial vencido):
+  // redireciona pra /painel/plano, a única área que precisa continuar
+  // acessível pra regularizar. Exclui a própria /painel/plano (senão
+  // looparia) e /painel/onboarding (guard acima tem prioridade pra conta
+  // nova). Só afeta NAVEGAÇÃO de painel — nunca toca API, webhook do
+  // WhatsApp/Asaas, nem Establishment.status/serviceActive (eixo separado,
+  // ver comentário em useShellData.ts).
+  useEffect(() => {
+    if (
+      !loading &&
+      data?.billingRestricted &&
+      pathname !== "/painel/plano" &&
+      pathname !== "/painel/onboarding"
+    ) {
+      router.replace("/painel/plano");
+    }
+  }, [loading, data, pathname, router]);
+
   return (
     <div className="flex min-h-screen bg-surface-muted">
       <Sidebar data={data} />

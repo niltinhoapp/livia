@@ -120,6 +120,36 @@ describe("PlanoPage (OT-07D)", () => {
     expect(screen.queryByText(/dias restantes|dia restante/)).toBeNull();
   });
 
+  it("suspensa: mostra badge de suspensão, orienta regularizar, mantém o CTA de contratação (fase 1 do gating)", async () => {
+    mockFetchOnce({
+      establishment: establishment({
+        billing: { billingStatus: "suspended", externalSubscriptionId: "sub_1", suspendedAt: Date.now(), updatedAt: 1 },
+      }),
+      exists: true,
+    });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText("Assinatura suspensa")).toBeTruthy();
+    expect(screen.getByText(/suspensa por falta de pagamento/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /contratação em breve/i })).toBeTruthy(); // PAYMENT_TEMPORARILY_DISABLED ainda true
+    expect(screen.queryByText(/assinaturas canceladas/i)).toBeNull();
+  });
+
+  it("cancelada: mostra badge de cancelamento, orienta suporte, NÃO mostra o CTA de autoatendimento", async () => {
+    mockFetchOnce({
+      establishment: establishment({
+        billing: { billingStatus: "canceled", externalSubscriptionId: "sub_1", updatedAt: 1 },
+      }),
+      exists: true,
+    });
+    render(<PlanoPage />);
+
+    expect(await screen.findByText("Assinatura cancelada")).toBeTruthy();
+    expect(screen.getByText(/fale com o suporte da lívia para reativar/i)).toBeTruthy();
+    expect(screen.getByText(/assinaturas canceladas não voltam automaticamente/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /contratação em breve|contratar lívia|ver cobrança pendente/i })).toBeNull();
+  });
+
   it("erro de carregamento: mostra aviso, não quebra a página", async () => {
     mockFetchOnce({}, false);
     render(<PlanoPage />);
