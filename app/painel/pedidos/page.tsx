@@ -207,7 +207,7 @@ function ProductEditor({ product, categories, onSaved, onCancel }: { product: Me
         <div className="flex flex-wrap items-center gap-2">
           <Input value={g.name} onChange={(e) => updateGroup(g.key, { name: e.target.value })} placeholder="Nome do grupo (ex.: Adicionais)" className="w-48" />
           <Toggle checked={g.required} onChange={(checked) => updateGroup(g.key, { required: checked, minSelections: checked ? Math.max(1, g.minSelections) : g.minSelections })} title="Obrigatório" />
-          <label className="flex items-center gap-1 text-xs text-ink-500">Mín. <Input value={String(g.minSelections)} onChange={(e) => updateGroup(g.key, { minSelections: Math.max(0, Number(e.target.value) || 0) })} inputMode="numeric" className="w-14" /></label>
+          <label className="flex items-center gap-1 text-xs text-ink-500">Mín. <Input value={String(g.minSelections)} onChange={(e) => updateGroup(g.key, { minSelections: Math.max(g.required ? 1 : 0, Number(e.target.value) || 0) })} inputMode="numeric" className="w-14" /></label>
           <label className="flex items-center gap-1 text-xs text-ink-500">Máx. <Input value={String(g.maxSelections)} onChange={(e) => updateGroup(g.key, { maxSelections: Math.max(0, Number(e.target.value) || 0) })} inputMode="numeric" className="w-14" /></label>
           <Button size="sm" variant="danger" onClick={() => removeGroup(g.key)}>Remover grupo</Button>
         </div>

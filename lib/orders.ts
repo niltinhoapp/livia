@@ -62,9 +62,13 @@ export function normalizeProduct(input: Partial<MenuProduct>, id: string, now: n
   const variants = Array.isArray(input.variants) ? input.variants.flatMap((v, index) => { const delta = cents(v?.priceDeltaCents); const name = text(v?.name, 100); return delta === null || !name ? [] : [{ id: text(v?.id, 80) || `variant-${index + 1}`, name, priceDeltaCents: delta, active: v?.active !== false }]; }) : [];
   const modifierGroups = Array.isArray(input.modifierGroups) ? input.modifierGroups.flatMap((g, groupIndex) => {
     const options = Array.isArray(g?.options) ? g.options.flatMap((o, optionIndex) => { const delta = cents(o?.priceDeltaCents); const name = text(o?.name, 100); return delta === null || !name ? [] : [{ id: text(o?.id, 80) || `option-${groupIndex + 1}-${optionIndex + 1}`, name, priceDeltaCents: delta, active: o?.active !== false }]; }) : [];
+    const name = text(g?.name, 100); if (!name || !options.length) return [];
+    const required = Boolean(g?.required);
     const max = Number.isInteger(g?.maxSelections) ? Math.max(0, Number(g.maxSelections)) : options.length;
-    const min = Number.isInteger(g?.minSelections) ? Math.max(0, Math.min(Number(g.minSelections), max)) : (g?.required ? 1 : 0);
-    const name = text(g?.name, 100); return name && options.length ? [{ id: text(g?.id, 80) || `group-${groupIndex + 1}`, name, required: Boolean(g?.required), minSelections: min, maxSelections: max, options }] : [];
+    const min = Number.isInteger(g?.minSelections) ? Math.max(0, Number(g.minSelections)) : (required ? 1 : 0);
+    if (required && min < 1) throw new Error(`Grupo obrigatório ${name} precisa de no mínimo uma seleção.`);
+    if (min > max) throw new Error(`Mínimo de seleções não pode ser maior que o máximo em ${name}.`);
+    return [{ id: text(g?.id, 80) || `group-${groupIndex + 1}`, name, required, minSelections: min, maxSelections: max, options }];
   }) : [];
   const name = text(input.name, 120); if (!name || !text(input.categoryId, 100)) throw new Error("Produto e categoria são obrigatórios.");
   return { id, categoryId: text(input.categoryId, 100), name, description: text(input.description, 500) || null, basePriceCents: price, active: input.active !== false, variants, modifierGroups, createdAt, updatedAt: now };
@@ -82,7 +86,8 @@ export function calculateItem(product: MenuProduct, variantId: string | null | u
   const unique = [...new Set(optionIds)]; const modifiers: OrderItem["modifiers"] = [];
   for (const group of product.modifierGroups) {
     const selected = unique.map((id) => group.options.find((o) => o.id === id && o.active)).filter(Boolean) as NonNullable<typeof group.options[number]>[];
-    if (selected.length < group.minSelections || selected.length > group.maxSelections) throw new Error(`Seleção inválida em ${group.name}.`);
+    const minimum = group.required ? Math.max(1, group.minSelections) : group.minSelections;
+    if (selected.length < minimum || selected.length > group.maxSelections) throw new Error(`Seleção inválida em ${group.name}.`);
     modifiers.push(...selected.map((o) => ({ optionId: o.id, name: o.name, priceDeltaCents: o.priceDeltaCents })));
   }
   const unknown = unique.filter((id) => !modifiers.some((m) => m.optionId === id)); if (unknown.length) throw new Error("Adicional indisponível.");

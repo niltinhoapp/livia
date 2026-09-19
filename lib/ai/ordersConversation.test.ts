@@ -16,9 +16,10 @@ vi.mock("@/lib/firebase/admin", async () => {
 
 type ModelMessage = { content: string | null; tool_calls?: unknown[] };
 let modelScript: ModelMessage[] = [];
+let completionInputs: unknown[][] = [];
 vi.mock("openai", () => ({
   default: class {
-    chat = { completions: { create: async () => ({ choices: [{ message: modelScript.shift() ?? { content: "ok" } }] }) } };
+    chat = { completions: { create: async (input: { messages?: unknown[] }) => { completionInputs.push(input.messages ?? []); return { choices: [{ message: modelScript.shift() ?? { content: "ok" } }] }; } } };
   },
 }));
 
@@ -108,6 +109,7 @@ beforeEach(async () => {
   fakeDb.reset();
   vi.setSystemTime(NOW);
   modelScript = [];
+  completionInputs = [];
   await seedMenu();
 });
 
@@ -209,6 +211,24 @@ describe("7) cliente pede dois ou mais itens numa única mensagem", () => {
     expect(o?.items).toHaveLength(2);
     expect(o?.items[0]?.productId).toBe(burger.id);
     expect(o?.items[1]?.productId).toBe(suco.id);
+  });
+
+  it("PASS/FAIL: a nona mutação é rejeitada com feedback explícito e nunca é anunciada como aplicada", async () => {
+    modelScript = [
+      toolBatch(...Array.from({ length: 9 }, (_, index) => ({ name: "add_order_item", args: { productId: burger.id, quantity: 1 }, id: `limit-${index + 1}` }))),
+      say("Adicionei os nove itens."),
+    ];
+    const { result } = await turn("quero nove x-burgers", [], null);
+    const draft = await activeOrder();
+    const ninthFeedback = completionInputs.flat().find((message) => (message as { tool_call_id?: string }).tool_call_id === "limit-9") as { content?: string } | undefined;
+
+    expect(toolNames(result)).toHaveLength(8);
+    expect(draft?.items).toHaveLength(8);
+    expect(new Set(draft?.items.map((item) => item.id)).size).toBe(8);
+    expect(draft).toMatchObject({ subtotalCents: 16000, totalCents: 16000, version: 9 });
+    expect(JSON.parse(ninthFeedback?.content ?? "{}")).toMatchObject({ ok: false, ignored: true, error: "order mutation limit reached for this turn", data: { limit: 8, executed: 8, operationExecuted: false } });
+    expect(result.reply).toContain("A última não foi realizada");
+    expect(result.reply).not.toContain("nove itens");
   });
 });
 

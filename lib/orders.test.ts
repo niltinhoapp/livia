@@ -6,6 +6,24 @@ import { calculateItem, deliveryFee, normalizeOrderSettings, normalizeProduct } 
 const product = () => normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [{ id: "double", name: "Duplo", priceDeltaCents: 800, active: true }], modifierGroups: [{ id: "extra", name: "Adicionais", required: false, minSelections: 0, maxSelections: 2, options: [{ id: "bacon", name: "Bacon", priceDeltaCents: 400, active: true }] }] }, "x", 1);
 
 describe("domínio de pedidos", () => {
+  it("rejeita grupo obrigatório com minSelections zero no backend", () => {
+    expect(() => normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [], modifierGroups: [{ id: "ponto", name: "Ponto", required: true, minSelections: 0, maxSelections: 1, options: [{ id: "ao-ponto", name: "Ao ponto", priceDeltaCents: 0, active: true }] }] }, "x", 1)).toThrow(/obrigatório.*mínimo/i);
+  });
+
+  it("aceita minSelections zero para grupo opcional e preserva limite máximo", () => {
+    const normalized = normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [], modifierGroups: [{ id: "extra", name: "Extra", required: false, minSelections: 0, maxSelections: 2, options: [{ id: "bacon", name: "Bacon", priceDeltaCents: 400, active: true }] }] }, "x", 1);
+    expect(normalized.modifierGroups[0]).toMatchObject({ required: false, minSelections: 0, maxSelections: 2 });
+  });
+
+  it("mantém obrigatório um grupo legado inválido já persistido", () => {
+    const legacy = { ...product(), modifierGroups: [{ id: "ponto", name: "Ponto", required: true, minSelections: 0, maxSelections: 1, options: [{ id: "ao-ponto", name: "Ao ponto", priceDeltaCents: 0, active: true }] }] };
+    expect(() => calculateItem(legacy, null, [], 1)).toThrow(/Seleção inválida/);
+  });
+
+  it("rejeita minSelections maior que maxSelections no backend", () => {
+    expect(() => normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [], modifierGroups: [{ id: "extra", name: "Extra", required: false, minSelections: 2, maxSelections: 1, options: [{ id: "bacon", name: "Bacon", priceDeltaCents: 400, active: true }] }] }, "x", 1)).toThrow(/mínimo.*máximo/i);
+  });
+
   it("calcula item apenas a partir de produto/variante/adicional reais", () => {
     const item = calculateItem(product(), "double", ["bacon"], 2, "sem cebola");
     expect(item.unitPriceCents).toBe(3200);

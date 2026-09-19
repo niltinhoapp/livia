@@ -1053,6 +1053,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     let agendaMutation: AgendaMutation | null = null;
     let blockedAgendaMutation: ToolName | null = null;
     let orderMutationAttempts = 0;
+    let orderMutationLimitReached = false;
     let orderConfirmedThisTurn = false;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
@@ -1176,7 +1177,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           continue;
         }
         if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
-          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn" }) });
+          orderMutationLimitReached = true;
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn", data: { limit: MAX_ORDER_MUTATIONS_PER_TURN, executed: orderMutationAttempts, operationExecuted: false } }) });
           continue;
         }
 
@@ -1260,6 +1262,14 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         statedDate,
         statedService,
       };
+    }
+
+    // A nona mutação não aconteceu. Não deixa texto livre do modelo afirmar o
+    // contrário só porque recebeu o erro da tool: a resposta ao cliente fica
+    // ancorada no limite que o backend efetivamente aplicou.
+    if (orderMutationLimitReached) {
+      reply = `Consegui aplicar até ${MAX_ORDER_MUTATIONS_PER_TURN} alterações neste pedido. A última não foi realizada; me diga como prefere ajustar.`;
+      handoff = false;
     }
 
     // Trava determinística do fluxo de consulta de agenda: se a consulta deu
