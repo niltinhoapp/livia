@@ -40,15 +40,15 @@ recomenda recriar algo que já funciona.
 |---|---|---|---|
 | Configuração de pedido (entrega, taxa, métodos, PIX) | API completa (`app/api/orders/settings/route.ts`) | Nenhuma tela do painel chama — estabelecimento travado no padrão (só retirada) | F2 |
 | `pixInstructions` | Campo persistido e validado | Nunca chega ao prompt nem a tool nenhuma | F3 |
-| Disponibilidade por categoria | `category.active` existe e é editável | Não bloqueia os produtos da categoria | F1 |
-| Taxa de entrega por bairro | Regras por bairro + fallback fixo | Comparação sem normalizar acento → cobra errado em silêncio | F1 |
+| ~~Disponibilidade por categoria~~ | Resolvido na F1: `categoryBlocksSale` + visão filtrada do catálogo para a IA | — | ✅ F1 |
+| ~~Taxa de entrega por bairro~~ | Resolvido na F1: `neighborhoodKey` normaliza acento, espaço e caixa | — | ✅ F1 |
 | Consulta ao cardápio pela IA | `search_menu`, `get_menu_product` | Sem "listar cardápio completo" | F3 |
 | Edição de item já no carrinho | `update_order_item` (quantidade, observação) | Não aceita variação nem adicional | F4 |
 | Estouro do tool loop (4 iterações) | Fallback existe para agenda | Sem equivalente para pedido — carrinho pela metade vira handoff | F4 |
 | Estados do pedido | Enum completo | `awaiting_confirmation` morto; nenhum estado de pagamento | F4 / F7 |
 | Naturalidade da conversa de pedido | Regras corretas e seguras | Bloco procedural, sem orientação de tom | F3 |
-| Política de confiança em preço (`evaluateTrust`) | Funciona para base de conhecimento | Ignora o cardápio — pode recusar preço que saberia responder | F1 |
-| Acesso ao painel de pedidos | Funciona | Gateado pelo mesmo flag que liga a IA | F1 |
+| ~~Política de confiança em preço (`evaluateTrust`)~~ | Resolvido na F1: com `ordersEnabled`, o cardápio é a fonte de preço | — | ✅ F1 |
+| ~~Acesso ao painel de pedidos~~ | Resolvido na F1: rotas de gestão e configuração desacopladas de `bot.ordersEnabled` | — | ✅ F1 |
 
 ## 3. Falta por completo
 

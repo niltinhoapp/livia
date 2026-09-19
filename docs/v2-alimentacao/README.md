@@ -9,7 +9,8 @@ o estado aqui antes de ser considerada concluída. Decisão tomada em
 conversa que não estiver registrada neste arquivo não existe.
 
 - Última atualização: 2026-09-19
-- Estado geral: **planejamento concluído, aguardando autorização da F1**
+- Estado geral: **F1 concluída na branch `feat/v2-f1-correcoes-base`,
+  aguardando validação. F2 não autorizada.**
 - Anexos:
   [`ESTADO-ATUAL.md`](./ESTADO-ATUAL.md) — auditoria do que já existe
   (pronto / parcial / falta) e referência técnica da importação por visão;
@@ -149,7 +150,7 @@ anterior** e reduziu o risco atribuído à F12.
 | Fase | Entrega | Depende de | Risco | Estado |
 |---|---|---|---|---|
 | F0 | Auditoria, pesquisa de provedores, arquitetura e plano | — | — | **Concluída** |
-| F1 | Correções de base: categoria desativada bloquear produtos; acento na taxa de bairro; desacoplar painel do toggle de IA; `evaluateTrust` considerar cardápio | — | Baixo | Aguardando autorização |
+| F1 | Correções de base: categoria desativada bloquear produtos; acento na taxa de bairro; desacoplar painel do toggle de IA; `evaluateTrust` considerar cardápio | — | Baixo | **Concluída** — ver 4.1 |
 | F2 | Tela de configuração de pedido no painel (retirada/entrega, taxas, métodos aceitos, instruções PIX), consumindo a API existente | F1 | Baixo | Pendente |
 | F3 | Conversa: tool de cardápio completo; `pixInstructions` chegando à Lívia; tom do prompt de pedido; perguntar em item ambíguo; destacar item repetido no resumo | F2 | Baixo | Pendente |
 | F4 | Robustez: fallback determinístico no estouro do tool loop; `update_order_item` aceitar variação/adicional; resolver `awaiting_confirmation` | F3 | Médio | Pendente |
@@ -167,6 +168,54 @@ Ordem de execução: **F1 → F2 → F3 → F4 → F5 → F6 → F7 → F8 → F
 F11 → F12 → F13**, com F9 livre para ser antecipada em paralelo a
 qualquer momento depois da F3, por não tocar pagamento nem o núcleo do
 pedido.
+
+### 4.1 F1 — o que mudou
+
+Branch `feat/v2-f1-correcoes-base` (a partir de `docs/v2-alimentacao`, que
+por sua vez sai de `main` `28a730a`). Sem merge.
+
+**Categoria desativada agora bloqueia os produtos dela.** A regra mora em
+`lib/orders.ts`: `categoryBlocksSale()` mais duas leituras filtradas
+(`listAvailableMenuProducts`, `getAvailableMenuProduct`) que as
+ferramentas da IA passaram a usar no lugar das listagens cruas. A trava é
+aplicada na montagem (`addOrderItem`) e relida dentro da transação de
+`confirmOrder`, para o caso de a categoria ser desativada entre o
+rascunho e a confirmação. **Produto órfão** (categoria inexistente)
+mantém o comportamento antigo de propósito: a correção não derruba item
+de catálogo legado. O painel continua enxergando tudo — o comerciante
+precisa ver o que está desligado para reativar.
+
+**Taxa de entrega por bairro parou de errar em silêncio.** A comparação
+passa por `neighborhoodKey()`, que remove acento, normaliza espaço e
+caixa dos dois lados. "Jardim América" cadastrado agora casa com "jardim
+america" dito no WhatsApp, em vez de cair na regra fixa cobrando outro
+valor.
+
+**Painel desacoplado do interruptor da IA.** `bot.ordersEnabled` passa a
+controlar só o que a IA faz na conversa. As rotas de gestão e de
+configuração (`/api/orders`, `/api/orders/[id]`, `/api/orders/settings`,
+`/api/menu/*`) não retornam mais 404 quando ele está desligado; a
+listagem devolve `ordersEnabled` junto, e a tela troca o bloqueio de
+página inteira por um aviso no topo. Decisão de escopo: as rotas de
+cardápio e de settings foram incluídas junto das de pedido porque a tela
+consome as três — soltar só uma deixaria o painel em estado de erro — e
+porque cadastrar cardápio antes de ligar o atendimento é o caminho
+previsto em "chegou, conectou, está pronto".
+
+**`evaluateTrust` reconhece o cardápio como fonte de preço.** Com
+`ordersEnabled`, a intenção `ask_price` não injeta mais a diretiva de
+"nenhum preço cadastrado, ofereça transferir" — que contradizia, no mesmo
+prompt, a instrução de consultar `search_menu`. Horário e endereço seguem
+dependendo da base de conhecimento, sem mudança.
+
+Testes: 1839 passando (eram 1820 na base), 19 novos em
+`lib/orders.categoryAvailability.test.ts`, `lib/orders.test.ts`,
+`lib/ai/trustPolicy.test.ts`, `app/api/orders/route.test.ts` e
+`app/api/orders/[id]/route.test.ts`. `tsc --noEmit` limpo.
+
+Custo conhecido: `addOrderItem` faz uma leitura extra de documento
+(categoria) por item adicionado, e `confirmOrder` uma por item na
+transação.
 
 ## 5. Trilha externa (PagBank e InfinitePay)
 

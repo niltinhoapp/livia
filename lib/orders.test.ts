@@ -42,6 +42,22 @@ describe("domínio de pedidos", () => {
     withoutBacon.modifierGroups[0]!.options[0]!.active = false;
     expect(() => calculateItem(withoutBacon, null, ["bacon"], 1)).toThrow(/Adicional indisponível/);
   });
+  it("casa o bairro independente de acento, caixa e espaçamento", () => {
+    // Regressão: "Jardim América" cadastrado não casava com "jardim america"
+    // digitado no WhatsApp, e a taxa caía sem aviso na regra fixa — cobrando
+    // o valor errado em silêncio.
+    const settings = normalizeOrderSettings({ deliveryEnabled: true, deliveryRules: [{ kind: "fixed", feeCents: 1500 }, { kind: "neighborhood", neighborhood: "Jardim América", feeCents: 600 }] });
+    expect(deliveryFee(settings, "delivery", "jardim america")).toBe(600);
+    expect(deliveryFee(settings, "delivery", "JARDIM AMÉRICA")).toBe(600);
+    expect(deliveryFee(settings, "delivery", "  Jardim   América ")).toBe(600);
+    expect(deliveryFee(settings, "delivery", "Jardim Europa")).toBe(1500);
+  });
+
+  it("casa o bairro quando o acento está no cadastro ou na fala do cliente", () => {
+    const semAcento = normalizeOrderSettings({ deliveryEnabled: true, deliveryRules: [{ kind: "fixed", feeCents: 1500 }, { kind: "neighborhood", neighborhood: "jardim america", feeCents: 600 }] });
+    expect(deliveryFee(semAcento, "delivery", "Jardim América")).toBe(600);
+  });
+
   it("determina taxa por bairro e nunca estima sem regra", () => {
     const settings = normalizeOrderSettings({ deliveryEnabled: true, deliveryRules: [{ kind: "fixed", feeCents: 900 }, { kind: "neighborhood", neighborhood: "Centro", feeCents: 500 }] });
     expect(deliveryFee(settings, "pickup")).toBe(0);

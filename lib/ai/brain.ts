@@ -253,7 +253,7 @@ function buildSystemPrompt(
   // ESPECÍFICA desta mensagem — mais eficaz do que confiar só na instrução
   // genérica. Determinístico (lib/ai/trustPolicy.ts): zero chamadas de IA
   // extras.
-  const trust = evaluateTrust(intent, kb);
+  const trust = evaluateTrust(intent, kb, { ordersEnabled: Boolean(bot.ordersEnabled) });
   if (!trust.hasSource && trust.directive) {
     sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
   }

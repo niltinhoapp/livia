@@ -38,6 +38,26 @@ describe("evaluateTrust", () => {
     expect(result.directive).toMatch(/não invente/i);
   });
 
+  it("ask_price com pedidos ligados: o cardápio é a fonte, nada de diretiva conflitante", () => {
+    // Lanchonete guarda preço no cardápio e deixa a seção de serviços da base
+    // vazia. Sem este caso, o prompt recebia "NENHUM preço está cadastrado,
+    // ofereça transferir" junto da instrução que manda consultar search_menu.
+    const result = evaluateTrust(intent("ask_price"), kb({}), { ordersEnabled: true });
+    expect(result.hasSource).toBe(true);
+    expect(result.directive).toBeUndefined();
+  });
+
+  it("ask_price sem pedidos ligados continua exigindo fonte na base", () => {
+    expect(evaluateTrust(intent("ask_price"), kb({}), { ordersEnabled: false }).hasSource).toBe(false);
+  });
+
+  it("pedidos ligados não afetam horário nem endereço", () => {
+    // O cardápio é fonte de PREÇO, não de horário ou endereço: esses seguem
+    // dependendo da base de conhecimento.
+    expect(evaluateTrust(intent("ask_hours"), kb({}), { ordersEnabled: true }).hasSource).toBe(false);
+    expect(evaluateTrust(intent("ask_address"), kb({}), { ordersEnabled: true }).hasSource).toBe(false);
+  });
+
   it("ask_price com serviço tendo priceText: tem fonte", () => {
     const result = evaluateTrust(
       intent("ask_price"),

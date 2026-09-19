@@ -18,16 +18,31 @@ export interface TrustEvaluation {
   directive?: string;
 }
 
+// Contexto do estabelecimento que muda ONDE mora a fonte de um dado.
+// Hoje só pedidos: com a vertical de alimentação ligada, preço mora no
+// cardápio, não na base de conhecimento.
+export interface TrustContext {
+  ordersEnabled?: boolean;
+}
+
 // Só os tipos de intenção que pedem um dado factual verificável do próprio
 // estabelecimento. As demais (agendamento, cancelamento, handoff, conversa
 // geral) não têm uma "fonte única" no mesmo sentido — a IA já tem regras e
 // ferramentas próprias para elas.
 const CHECKED_INTENTS = new Set(["ask_price", "ask_hours", "ask_address"]);
 
-export function evaluateTrust(intent: Intent, kb: KnowledgeBase | null): TrustEvaluation {
+export function evaluateTrust(intent: Intent, kb: KnowledgeBase | null, context: TrustContext = {}): TrustEvaluation {
   if (!CHECKED_INTENTS.has(intent.type)) return { hasSource: true };
 
   if (intent.type === "ask_price") {
+    // Lanchonete/restaurante guarda preço no CARDÁPIO, e a seção de serviços
+    // da base fica vazia justamente por isso. Sem esta checagem, toda
+    // pergunta de preço injetava "NENHUM preço está cadastrado... ofereça
+    // transferir" no mesmo prompt que manda consultar search_menu — duas
+    // instruções opostas, e a Livia podia recusar um preço que ela tinha
+    // como responder. A fonte existe: é o cardápio, com ferramenta própria.
+    if (context.ordersEnabled) return { hasSource: true };
+
     const hasPrice = Boolean(kb?.services?.some((s) => s.priceText)) || Boolean(kb?.faqs?.length);
     if (!hasPrice) {
       return {
