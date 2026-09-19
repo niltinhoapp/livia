@@ -84,6 +84,27 @@ export type WhatsAppTemplate = {
   senderCompatible: boolean;
 };
 
+function componentHasTemplateVariable(component: MetaTemplateComponent): boolean {
+  return /\{\{\s*[^}]+\s*\}\}/.test(JSON.stringify(component));
+}
+
+/** O sender só precisa enviar componentes que possuam parâmetros. Cabeçalho
+ * de texto, rodapé e botões estáticos já fazem parte do template aprovado e
+ * são renderizados pela própria Meta sem repetir seu conteúdo no payload. */
+export function templateComponentsAreSenderCompatible(components: MetaTemplateComponent[]): boolean {
+  return components.every((component) => {
+    const type = component.type.toUpperCase();
+    if (type === "BODY") return true;
+    if (type === "FOOTER") return !componentHasTemplateVariable(component);
+    if (type === "BUTTONS") return !componentHasTemplateVariable(component);
+    if (type === "HEADER") {
+      const format = String(component.format ?? "TEXT").toUpperCase();
+      return format === "TEXT" && !componentHasTemplateVariable(component);
+    }
+    return false;
+  });
+}
+
 export class WhatsAppTemplateError extends Error {
   constructor(public readonly code: "not_connected" | "missing_waba" | "meta_error" | "invalid_response" | "timeout" | "network_error", public readonly status?: number) {
     super(code);
@@ -419,7 +440,7 @@ export async function listMessageTemplates(
         ...(typeof item.category === "string" ? { category: item.category } : {}),
         components,
         approved: status === "APPROVED",
-        senderCompatible: components.every((component) => component.type.toUpperCase() === "BODY"),
+        senderCompatible: templateComponentsAreSenderCompatible(components),
       });
     }
     nextUrl = typeof payload.paging?.next === "string" && isAllowedMetaApiUrl(payload.paging.next) ? payload.paging.next : "";

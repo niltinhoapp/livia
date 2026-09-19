@@ -54,7 +54,7 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     expect(screen.getByRole("heading", { name: "Template" })).toBeTruthy();
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     expect(select.disabled).toBe(false);
-    expect(screen.getByText(/templates devem estar aprovados/i)).toBeTruthy();
+    expect(screen.getByText(/conteúdo vem do template aprovado/i)).toBeTruthy();
 
     const templateContinue = screen.getByRole("button", { name: /continuar/i }) as HTMLButtonElement;
     expect(templateContinue.disabled).toBe(true);
@@ -77,11 +77,11 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     expect(screen.getByRole("button", { name: "Confirmar envio" })).toBeTruthy();
   });
 
-  it("mostra e exige valores de variáveis antes de avançar", async () => {
+  it("carrega os valores aprovados e personaliza o nome sem preenchimento por contato", async () => {
     const fetchMock = vi.fn((url: string) => Promise.resolve({
       ok: true,
       json: async () => url.includes("templates")
-        ? { templates: [{ id: "tpl-vars", name: "cupom", language: "pt_BR", status: "APPROVED", components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}" }], senderCompatible: true, campaignCompatible: true }] }
+        ? { templates: [{ id: "tpl-vars", name: "cupom", language: "pt_BR", status: "APPROVED", components: [{ type: "BODY", text: "Olá {{1}}, use {{2}}", example: { body_text: [["Maria", "LIVIA20"]] } }], senderCompatible: true, campaignCompatible: true }] }
         : { audience: { selected: 3, eligible: 2, excluded: 1 } },
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -93,9 +93,8 @@ describe("Nova campanha — wizard (OT-FRONT-CAMPANHAS-01)", () => {
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "tpl-vars" } });
     expect(screen.getByDisplayValue(/preenchido automaticamente/i)).toBeTruthy();
     const continueButton = screen.getByRole("button", { name: /continuar/i }) as HTMLButtonElement;
-    expect(continueButton.disabled).toBe(true);
-    fireEvent.change(screen.getByPlaceholderText(/valor de \{\{2\}\}/i), { target: { value: "LIVIA20" } });
     expect(continueButton.disabled).toBe(false);
+    expect(screen.getByDisplayValue("LIVIA20")).toBeTruthy();
     expect(screen.getByText(/Olá Nome do cliente, use LIVIA20/i)).toBeTruthy();
   });
 });

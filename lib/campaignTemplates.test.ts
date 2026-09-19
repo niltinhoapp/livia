@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveCampaignTemplateParams, templateParameterBindingsAreValid, templateParameterIndexes } from "@/lib/campaignTemplates";
+import { resolveCampaignTemplateParams, templateBodyExampleValues, templateParameterBindingsAreValid, templateParameterIndexes } from "@/lib/campaignTemplates";
 
 const components = [{ type: "BODY", text: "Olá {{1}}, desconto {{2}}, cupom {{3}}" }];
 
@@ -24,5 +24,12 @@ describe("variáveis de templates de campanha", () => {
         { index: 3, source: "fixed", value: "LIVIA20" },
       ],
     }, "Ana")).toEqual(["Ana", "20%", "LIVIA20"]);
+  });
+
+  it("carrega os valores posicionais usados na aprovação da Meta", () => {
+    expect(templateBodyExampleValues([{
+      type: "BODY",
+      example: { body_text: [["Maria", "LIVIA20", "20%"]] },
+    }])).toEqual({ 1: "Maria", 2: "LIVIA20", 3: "20%" });
   });
 });
