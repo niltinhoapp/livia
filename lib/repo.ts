@@ -1095,6 +1095,22 @@ export async function listCampaignRecipients(establishmentId: string, campaignId
   return snap.docs.map((doc) => doc.data() as CampaignRecipient);
 }
 
+/** Remove somente um rascunho que falhou durante a preparação e seus
+ * recipients parciais. Campanhas preparadas/ativas nunca são apagadas aqui. */
+export async function deleteDraftCampaign(establishmentId: string, campaignId: string): Promise<boolean> {
+  const campaign = await getCampaign(establishmentId, campaignId);
+  if (!campaign || campaign.status !== "draft") return false;
+  const recipients = await sub(establishmentId, "campaignRecipients")
+    .where("campaignId", "==", campaignId)
+    .limit(MAX_SYNCHRONOUS_AUDIENCE)
+    .get();
+  const batch = db.batch();
+  for (const recipient of recipients.docs) batch.delete(recipient.ref);
+  batch.delete(sub(establishmentId, "campaigns").doc(campaignId));
+  await batch.commit();
+  return true;
+}
+
 export type CampaignAudienceSelection = "all_eligible" | "selected";
 export interface PrepareCampaignAudienceInput {
   selection: CampaignAudienceSelection;

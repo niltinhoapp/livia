@@ -71,11 +71,14 @@ export default function NewCampaignPage() {
     if (!selectedTemplate) return;
     setSaving(true);
     setError(null);
+    let createdCampaignId: string | null = null;
+    let audiencePrepared = false;
     try {
       const createResponse = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
       const created = await createResponse.json() as { campaign?: { id: string }; error?: string };
       if (!createResponse.ok || !created.campaign) throw new Error(created.error ?? "Não foi possível criar a campanha.");
-      const audienceResponse = await fetch(`/api/campaigns/${encodeURIComponent(created.campaign.id)}/audience`, {
+      createdCampaignId = created.campaign.id;
+      const audienceResponse = await fetch(`/api/campaigns/${encodeURIComponent(createdCampaignId)}/audience`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -92,15 +95,19 @@ export default function NewCampaignPage() {
       });
       const audienceBody = await audienceResponse.json().catch(() => ({})) as { error?: string };
       if (!audienceResponse.ok) throw new Error(audienceBody.error ?? "Não foi possível preparar os destinatários.");
+      audiencePrepared = true;
       if (sendNow) {
-        const sendResponse = await fetch(`/api/campaigns/${encodeURIComponent(created.campaign.id)}/send`, {
+        const sendResponse = await fetch(`/api/campaigns/${encodeURIComponent(createdCampaignId)}/send`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }),
         });
         const sendBody = await sendResponse.json().catch(() => ({})) as { error?: string };
         if (!sendResponse.ok) throw new Error(sendBody.error ?? "Não foi possível iniciar o envio.");
       }
-      window.location.href = `/painel/campanhas/${created.campaign.id}`;
+      window.location.href = `/painel/campanhas/${createdCampaignId}`;
     } catch (cause) {
+      if (createdCampaignId && !audiencePrepared) {
+        await fetch(`/api/campaigns/${encodeURIComponent(createdCampaignId)}`, { method: "DELETE" }).catch(() => undefined);
+      }
       setError(cause instanceof Error ? cause.message : "Não foi possível concluir a campanha.");
       setSaving(false);
     }
