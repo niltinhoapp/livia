@@ -29,7 +29,7 @@ const FUTURE_PLANS = [
 // desabilitada SÓ no front (o fluxo abaixo continua intacto, incluindo a
 // chamada real a POST /api/billing/subscribe). Reativar trocando esta
 // constante para false quando o Asaas for resolvido.
-const PAYMENT_TEMPORARILY_DISABLED = true;
+const PAYMENT_TEMPORARILY_DISABLED = false;
 
 type SubscribeStep = "idle" | "collecting" | "submitting" | "payment_required" | "processing" | "error";
 
