@@ -23,7 +23,8 @@ type Tab = "empresa" | "atendente" | "agenda" | "resumo";
 const TABS: { key: Tab; label: string }[] = [
   { key: "empresa", label: "Empresa" },
   { key: "atendente", label: "Atendente virtual" },
-  { key: "agenda", label: "Agenda" },\n  { key: "resumo", label: "Resumo diário" },
+  { key: "agenda", label: "Agenda" },
+  { key: "resumo", label: "Resumo diário" },
 ];
 
 export default function ConfigPanel() {
@@ -34,7 +35,8 @@ export default function ConfigPanel() {
   const [name, setName] = useState("");
   const [type, setType] = useState<EstablishmentType>("outro");
   const [bot, setBot] = useState<BotConfig | null>(null);
-  const [sched, setSched] = useState<ScheduleConfig | null>(null);\n  const [dailySummary, setDailySummary] = useState<DailyOwnerSummaryConfig>({ enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
+  const [sched, setSched] = useState<ScheduleConfig | null>(null);
+  const [dailySummary, setDailySummary] = useState<DailyOwnerSummaryConfig>({ enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
 
   const load = useCallback(() => {
     setLoadError(false);
@@ -43,7 +45,8 @@ export default function ConfigPanel() {
       .then(([e, s]) => {
         setName(e.establishment.name ?? "");
         setType(e.establishment.type ?? "outro");
-        setBot(e.establishment.bot);\n        setDailySummary(e.establishment.dailyOwnerSummary ?? { enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
+        setBot(e.establishment.bot);
+        setDailySummary(e.establishment.dailyOwnerSummary ?? { enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
         setSched(s.schedule);
         setState("idle");
       })
