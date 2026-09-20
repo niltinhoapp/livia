@@ -4,11 +4,13 @@ import { NextRequest } from "next/server";
 const resolveEstablishmentId = vi.fn();
 const getEstablishment = vi.fn();
 const prepareCampaignAudience = vi.fn();
+const countTrialCampaignRecipients = vi.fn();
 const listMessageTemplates = vi.fn();
 vi.mock("@/lib/auth/session", () => ({ resolveEstablishmentId: (...args: unknown[]) => resolveEstablishmentId(...args) }));
 vi.mock("@/lib/repo", () => ({
   getEstablishment: (...args: unknown[]) => getEstablishment(...args),
   prepareCampaignAudience: (...args: unknown[]) => prepareCampaignAudience(...args),
+  countTrialCampaignRecipients: (...args: unknown[]) => countTrialCampaignRecipients(...args),
 }));
 vi.mock("@/lib/whatsapp/client", () => ({
   listMessageTemplates: (...args: unknown[]) => listMessageTemplates(...args),
@@ -33,6 +35,7 @@ describe("POST /api/campaigns/:id/audience", () => {
     getEstablishment.mockResolvedValue({ id: "est-a", whatsapp });
     listMessageTemplates.mockResolvedValue([metaTemplate]);
     prepareCampaignAudience.mockResolvedValue({ selected: 1, eligible: 1, excluded: 0, recipientsCreated: 1 });
+    countTrialCampaignRecipients.mockResolvedValue(0);
   });
 
   it("materializa somente o template revalidado pela Meta para o tenant da sessão", async () => {
@@ -68,4 +71,21 @@ describe("POST /api/campaigns/:id/audience", () => {
     expect(response.status).toBe(400);
     expect(prepareCampaignAudience).not.toHaveBeenCalled();
   });
+  it("bloqueia quando a cota acumulada de 100 disparos do trial acabou", async () => {
+    getEstablishment.mockResolvedValue({ id: "est-a", whatsapp, billing: { billingStatus: "trial", updatedAt: Date.now() } });
+    countTrialCampaignRecipients.mockResolvedValue(100);
+    const response = await POST(request({ id: "tpl-1", name: "hello", languageCode: "pt_BR" }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "limite_total_trial_excedido", limit: 100, used: 100, remaining: 0 });
+    expect(prepareCampaignAudience).not.toHaveBeenCalled();
+  });
+
+  it("permite nova campanha enquanto houver saldo na cota acumulada do trial", async () => {
+    getEstablishment.mockResolvedValue({ id: "est-a", whatsapp, billing: { billingStatus: "trial", updatedAt: Date.now() } });
+    countTrialCampaignRecipients.mockResolvedValue(80);
+    const response = await POST(request({ id: "tpl-1", name: "hello", languageCode: "pt_BR" }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(200);
+    expect(prepareCampaignAudience).toHaveBeenCalled();
+  });
+
 });
