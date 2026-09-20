@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, upsertEstablishmentConfig, defaultBotConfig } from "@/lib/repo";
-import type { BotConfig, EstablishmentType } from "@/types";
+import type { BotConfig, EstablishmentType, DailyOwnerSummaryConfig } from "@/types";
 
 const TYPES: EstablishmentType[] = [
   "clinica",
@@ -56,7 +56,7 @@ export async function PUT(req: NextRequest) {
       }
     : undefined;
 
-  const est = await upsertEstablishmentConfig(id, {
+  const dailyOwnerSummary: DailyOwnerSummaryConfig | undefined = raw.dailyOwnerSummary\n    ? {\n        enabled: Boolean(raw.dailyOwnerSummary.enabled),\n        ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\\D/g, "").slice(0, 15),\n        templateName: String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),\n        templateLang: String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR",\n      }\n    : undefined;\n\n  const est = await upsertEstablishmentConfig(id, {
     name: raw.name !== undefined ? String(raw.name).trim() : undefined,
     type: raw.type && TYPES.includes(raw.type) ? raw.type : undefined,
     bot,
