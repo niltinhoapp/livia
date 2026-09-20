@@ -68,7 +68,7 @@ export default function CustomersPage() {
       <div className="mx-auto max-w-5xl">
         <Skeleton className="h-7 w-32" />
         <Skeleton className="mb-4 mt-2 h-4 w-80" />
-        <div className="flex h-[calc(100dvh-11rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
+        <div className="flex h-[calc(100dvh-11rem)] min-h-[520px] overflow-hidden rounded-card border border-line bg-white shadow-e2">
           <div className="w-full shrink-0 border-r border-line sm:w-80">
             <SkeletonList rows={7} />
           </div>
@@ -81,7 +81,7 @@ export default function CustomersPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="Clientes"
-        description="Acompanhe contatos e a autorização necessária para campanhas de marketing."
+        description="Histórico e contexto dos seus clientes em um só lugar, com controle de consentimento para campanhas."
         action={<Button onClick={() => setImportOpen((open) => !open)}><Plus className="h-4 w-4" /> Adicionar contatos</Button>}
       />
 
@@ -98,8 +98,8 @@ export default function CustomersPage() {
               <button
                 key={c.phone}
                 onClick={() => setSelectedPhone(c.phone)}
-                className={`flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition-colors duration-150 hover:bg-ink-50 ${
-                  selectedPhone === c.phone ? "bg-primary-light/50" : ""
+                className={`relative flex w-full items-center gap-3 border-b border-line px-4 py-3.5 text-left transition-colors duration-150 hover:bg-ink-50 ${
+                  selectedPhone === c.phone ? "bg-primary-light/60 before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-primary" : ""
                 }`}
               >
                 <Avatar name={c.name} phone={c.phone} size="md" />
@@ -160,12 +160,12 @@ function CustomerDetailPanel({ phone, onBack }: { phone: string; onBack: () => v
   const rel = RELATIONSHIP_LABEL[relationshipStatus];
 
   return (
-    <div className="p-5">
+    <div className="p-5 sm:p-6">
       <button onClick={onBack} className="mb-3 text-xs font-semibold text-ink-400 hover:text-primary sm:hidden">
         ← Voltar
       </button>
 
-      <div className="mb-4 flex items-start justify-between gap-3">
+      <div className="mb-5 flex items-start justify-between gap-3 border-b border-line pb-5">
         <div className="flex items-center gap-3">
           <Avatar name={profile.name} phone={profile.phone} size="lg" />
           <div>
@@ -178,7 +178,7 @@ function CustomerDetailPanel({ phone, onBack }: { phone: string; onBack: () => v
         <StatusBadge tone={rel.tone}>{rel.label}</StatusBadge>
       </div>
 
-      <div className="space-y-3 text-sm">
+      <div className="grid gap-3 text-sm sm:grid-cols-2">
         <Row icon={<Phone className="h-4 w-4" />} label="Marketing" value={MARKETING_LABEL[marketingStatus(profile)].label} />
         <Row icon={<Clock className="h-4 w-4" />} label="Última interação" value={relativeTime(profile.lastInteractionAt)} />
         {profile.lastIntent && (
@@ -285,7 +285,7 @@ function ContactImportForm({ onImported, onClose }: { onImported: () => void; on
   }
 
   return (
-    <Card className="mb-6 border-primary/20">
+    <Card className="mb-6 border-primary/20 bg-primary-light/10 shadow-e2">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h2 className="font-bold text-ink-900">Adicionar contatos para campanhas</h2>
