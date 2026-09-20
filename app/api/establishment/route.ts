@@ -39,6 +39,7 @@ export async function PUT(req: NextRequest) {
     name?: string;
     type?: EstablishmentType;
     bot?: Partial<BotConfig>;
+    dailyOwnerSummary?: Partial<DailyOwnerSummaryConfig>;
   } | null;
   if (!raw) return NextResponse.json({ error: "payload inválido" }, { status: 400 });
 
@@ -56,10 +57,20 @@ export async function PUT(req: NextRequest) {
       }
     : undefined;
 
-  const dailyOwnerSummary: DailyOwnerSummaryConfig | undefined = raw.dailyOwnerSummary\n    ? {\n        enabled: Boolean(raw.dailyOwnerSummary.enabled),\n        ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\\D/g, "").slice(0, 15),\n        templateName: String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),\n        templateLang: String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR",\n      }\n    : undefined;\n\n  const est = await upsertEstablishmentConfig(id, {
+  const dailyOwnerSummary: DailyOwnerSummaryConfig | undefined = raw.dailyOwnerSummary
+    ? {
+        enabled: Boolean(raw.dailyOwnerSummary.enabled),
+        ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\D/g, "").slice(0, 15),
+        templateName: String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),
+        templateLang: String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR",
+      }
+    : undefined;
+
+  const est = await upsertEstablishmentConfig(id, {
     name: raw.name !== undefined ? String(raw.name).trim() : undefined,
     type: raw.type && TYPES.includes(raw.type) ? raw.type : undefined,
     bot,
+    dailyOwnerSummary,
   });
   return NextResponse.json({ establishment: est });
 }
