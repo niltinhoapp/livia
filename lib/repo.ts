@@ -143,7 +143,8 @@ export async function upsertEstablishmentConfig(
         ...existing,
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.type !== undefined ? { type: data.type } : {}),
-        ...(data.bot !== undefined ? { bot: data.bot } : {}),\n        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
+        ...(data.bot !== undefined ? { bot: data.bot } : {}),
+        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       }
     : {
         id,
@@ -153,7 +154,8 @@ export async function upsertEstablishmentConfig(
         status: "active",
         createdAt: now,
         billing: initialTrialBilling(now),
-        bot: data.bot ?? defaultBotConfig(),\n        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
+        bot: data.bot ?? defaultBotConfig(),
+        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       };
   await establishmentRef(id).set(merged, { merge: true });
   return merged;
@@ -833,7 +835,8 @@ export async function applyKnowledgeCorrection(
     const label = CORRECTION_CATEGORY_LABEL[correction.category];
     const dateStr = new Date(now).toLocaleDateString("pt-BR");
     const line = `[${label} — ${dateStr}] ${correction.correctText}`;
-    const notes = kb.notes ? `${kb.notes}\n${line}` : line;
+    const notes = kb.notes ? `${kb.notes}
+${line}` : line;
     await saveKnowledgeBase(establishmentId, { ...kb, notes });
   }
 
@@ -2200,4 +2203,7 @@ function isAlreadyExists(err: unknown): boolean {
   if (e.code === 6 || e.code === "already-exists") return true;
   return typeof e.message === "string" && e.message.includes("ALREADY_EXISTS");
 }
-\nexport async function markDailyOwnerSummarySent(id: string, localDate: string): Promise<void> {\n  await establishmentRef(id).update({ "dailyOwnerSummary.lastSentDate": localDate });\n}\n
+
+export async function markDailyOwnerSummarySent(id: string, localDate: string): Promise<void> {
+  await establishmentRef(id).update({ "dailyOwnerSummary.lastSentDate": localDate });
+}
