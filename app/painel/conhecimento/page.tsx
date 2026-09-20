@@ -342,7 +342,7 @@ export default function KnowledgePanel() {
         </Button>
       </GuidedSection>
 
-      <div className="mt-6 rounded-card border border-line bg-white/95 px-4 py-3 shadow-e2 lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur">
+      <div className="mt-6 rounded-card border border-line bg-white/95 px-4 py-3 shadow-e2 dark:border-ink-700 dark:bg-ink-900/95 lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur">
         <div className="flex flex-wrap items-center gap-4">
           <div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Base de conhecimento</p><p className="text-xs text-ink-500">Salve para aplicar estas orientações nos próximos atendimentos.</p></div><Button loading={state === "saving"} onClick={save}>
             {state === "saving" ? "Salvando…" : "Salvar"}
