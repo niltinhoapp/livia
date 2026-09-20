@@ -7,53 +7,16 @@ import { Header } from "./Header";
 import { useShellData } from "@/components/hooks/useShellData";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-  // refetchKey = pathname: revalida "exists" a cada navegação, pra nunca
-  // decidir o redirect de onboarding com dado obsoleto (ver useShellData.ts).
-  const { data, loading } = useShellData(pathname);
-
-  // Conta nova (sem establishment ainda) cai direto no onboarding guiado, em
-  // vez de abrir um formulário de configurações vazio sem contexto.
-  useEffect(() => {
-    if (!loading && data && data.exists === false && pathname !== "/painel/onboarding") {
-      router.replace("/painel/onboarding");
-    }
-  }, [loading, data, pathname, router]);
-
-  // Fase 1 do gating de billing (suspended/canceled/trial vencido):
-  // redireciona pra /painel/plano, a única área que precisa continuar
-  // acessível pra regularizar. Exclui a própria /painel/plano (senão
-  // looparia) e /painel/onboarding (guard acima tem prioridade pra conta
-  // nova). Só afeta NAVEGAÇÃO de painel — nunca toca API, webhook do
-  // WhatsApp/Asaas, nem Establishment.status/serviceActive (eixo separado,
-  // ver comentário em useShellData.ts).
-  useEffect(() => {
-    if (
-      !loading &&
-      data?.billingRestricted &&
-      pathname !== "/painel/plano" &&
-      pathname !== "/painel/onboarding"
-    ) {
-      router.replace("/painel/plano");
-    }
-  }, [loading, data, pathname, router]);
-
+  const pathname = usePathname(); const router = useRouter(); const { data, loading } = useShellData(pathname);
+  useEffect(() => { if (!loading && data && data.exists === false && pathname !== "/painel/onboarding") router.replace("/painel/onboarding"); }, [loading, data, pathname, router]);
+  useEffect(() => { if (!loading && data?.billingRestricted && pathname !== "/painel/plano" && pathname !== "/painel/onboarding") router.replace("/painel/plano"); }, [loading, data, pathname, router]);
   return (
-    <div className="flex min-h-screen bg-surface-muted">
+    <div className="flex min-h-screen bg-gradient-to-br from-primary-50/70 via-surface-muted to-info-bg/20">
       <Sidebar data={data} />
-      <div className="flex min-h-screen flex-1 flex-col">
-        <Header data={data} />
-        {data && !data.serviceActive ? (
-          <div className="border-b border-warning/30 bg-warning-bg/50 px-4 py-3 text-sm text-warning-fg sm:px-6">
-            <strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo
-            automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo
-            registradas em Conversas. Fale com o suporte para reativar.
-          </div>
-        ) : null}
+      <div className="flex min-h-screen flex-1 flex-col"><Header data={data} />
+        {data && !data.serviceActive ? <div className="border-b border-warning/30 bg-warning-bg/70 px-4 py-3 text-sm text-warning-fg sm:px-6"><strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo registradas em Conversas. Fale com o suporte para reativar.</div> : null}
         <main className="flex-1 px-4 pb-24 pt-6 sm:px-6 lg:pb-10">{children}</main>
-      </div>
-      <MobileTabBar />
+      </div><MobileTabBar />
     </div>
   );
 }

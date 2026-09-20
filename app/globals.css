@@ -2,31 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: light;
-}
+:root { color-scheme: light; }
+html, body { height: 100%; }
+body { @apply bg-primary-50/40 text-ink-900 antialiased; }
+* { @apply border-line; }
 
-html,
-body {
-  height: 100%;
-}
-
-body {
-  @apply bg-white text-ink-900 antialiased;
-}
-
-* {
-  @apply border-line;
-}
-
-/* --------------------------------------------------------------------------
-   Foco global consistente (Fase 1). Aplica um anel de foco padrão a todos os
-   elementos interativos nativos que hoje não têm nenhum (chips, abas, links
-   da sidebar/tab bar, setas de dia, "Corrigir", etc.). Usa :where() —
-   especificidade 0 — para que qualquer foco definido no próprio componente
-   (ex.: Button, Input) continue prevalecendo. Só :focus-visible: não aparece
-   em clique de mouse, só em navegação por teclado.
-   -------------------------------------------------------------------------- */
 @layer base {
   :where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
     outline: 2px solid rgba(124, 58, 237, 0.55);
@@ -35,52 +15,22 @@ body {
   }
 }
 
-/* --------------------------------------------------------------------------
-   Hierarquia tipográfica (Fase 1). Classes semânticas prontas para uso
-   incremental nas fases seguintes — não substituem nada ainda.
-   -------------------------------------------------------------------------- */
 @layer components {
-  .t-display {
-    @apply text-display text-ink-900;
-  }
-  .t-h1 {
-    @apply text-h1 text-ink-900;
-  }
-  .t-h2 {
-    @apply text-h2 text-ink-900;
-  }
-  .t-h3 {
-    @apply text-h3 text-ink-900;
-  }
-  .t-body {
-    @apply text-body text-ink-700;
-  }
-  .t-muted {
-    @apply text-body text-ink-500;
-  }
-  .t-caption {
-    @apply text-caption text-ink-500;
-  }
+  .t-display { @apply text-display text-ink-900; }
+  .t-h1 { @apply text-h1 text-ink-900; }
+  .t-h2 { @apply text-h2 text-ink-900; }
+  .t-h3 { @apply text-h3 text-ink-900; }
+  .t-body { @apply text-body text-ink-700; }
+  .t-muted { @apply text-body text-ink-500; }
+  .t-caption { @apply text-caption text-ink-500; }
 }
 
-/* Utilitário explícito de foco, para casos onde :focus-visible não basta. */
 @layer utilities {
-  .focus-ring {
-    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2;
-  }
-  /* Transição sutil de entrada (ex.: troca de etapa no onboarding). Sem lib. */
-  .animate-fade-in {
-    animation: livia-fade-in 200ms ease-out both;
-  }
+  .focus-ring { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2; }
+  .animate-fade-in { animation: livia-fade-in 200ms ease-out both; }
 }
 
 @keyframes livia-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
