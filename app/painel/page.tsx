@@ -15,6 +15,7 @@ import {
   Users,
   UserCheck,
   ListChecks,
+  BellRing,
 } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -184,8 +185,39 @@ export default function DashboardPage() {
         )}
       </Card>
 
+      {metrics ? <AttentionCenter metrics={metrics} whatsappConnected={whatsappConnected} /> : null}
       {metrics ? <DailyPanel metrics={metrics} /> : <ComingSoonCard />}
     </div>
+  );
+}
+
+function AttentionCenter({ metrics, whatsappConnected }: { metrics: DashboardMetrics; whatsappConnected: boolean }) {
+  const items = [
+    ...(!whatsappConnected ? [{ label: "WhatsApp desconectado", href: "/painel/whatsapp", count: 1 }] : []),
+    ...(metrics.conversasPrecisandoHumano > 0 ? [{ label: "Conversas aguardando atendimento humano", href: "/painel/conversas", count: metrics.conversasPrecisandoHumano }] : []),
+    ...(metrics.pendenciasAbertas > metrics.conversasPrecisandoHumano ? [{ label: "Outras pendências abertas", href: "/painel/conversas", count: metrics.pendenciasAbertas - metrics.conversasPrecisandoHumano }] : []),
+    ...(metrics.oportunidadesAbertas > 0 ? [{ label: "Oportunidades encontradas pela Livia", href: "/painel/conversas", count: metrics.oportunidadesAbertas }] : []),
+  ];
+  if (items.length === 0) return null;
+  return (
+    <Card className="mt-4">
+      <div className="mb-3 flex items-center gap-2">
+        <BellRing className="h-4 w-4 text-warning-fg" />
+        <CardTitle>Precisa da sua atenção</CardTitle>
+        <StatusBadge tone="warning">{items.reduce((sum, item) => sum + item.count, 0)}</StatusBadge>
+      </div>
+      <div className="divide-y divide-line">
+        {items.map((item) => (
+          <Link key={item.label} href={item.href} className="flex items-center justify-between gap-3 py-3 hover:bg-line/10">
+            <div className="flex min-w-0 items-center gap-2">
+              <StatusBadge tone="warning">{item.count}</StatusBadge>
+              <p className="text-sm font-medium text-ink-800">{item.label}</p>
+            </div>
+            <ArrowRight className="h-3.5 w-3.5 shrink-0 text-ink-400" />
+          </Link>
+        ))}
+      </div>
+    </Card>
   );
 }
 
