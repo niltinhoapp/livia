@@ -44,6 +44,8 @@ export interface Establishment {
   billing?: EstablishmentBilling;
   // Configuração do bot (persona + regras).
   bot: BotConfig;
+  // Resumo operacional enviado ao proprietário no fim do expediente.
+  dailyOwnerSummary?: DailyOwnerSummaryConfig;
 }
 
 export interface DailyOwnerSummaryConfig {
