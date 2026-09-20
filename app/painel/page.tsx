@@ -102,13 +102,17 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <p className="mb-1 text-sm font-semibold text-primary">Olá 👋</p>
-      <h1 className="text-h1 text-ink-900">
-        {establishment.name || "Bem-vindo(a) à Livia"}
-      </h1>
-      <p className="mb-8 mt-1 text-sm text-ink-500">
-        {establishment.name ? ESTABLISHMENT_TYPE_LABELS[establishment.type] : "Vamos configurar seu atendimento."}
-      </p>
+      <div className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-line pb-5">
+        <div>
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">Visão geral</p>
+          <h1 className="text-h1 text-ink-900">{establishment.name || "Bem-vindo(a) à Livia"}</h1>
+          <p className="mt-1 text-sm text-ink-500">{establishment.name ? ESTABLISHMENT_TYPE_LABELS[establishment.type] : "Vamos configurar seu atendimento."}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/painel/conversas"><Button variant="secondary" size="sm"><MessageCircle className="h-4 w-4" /> Conversas</Button></Link>
+          <Link href="/painel/agenda"><Button size="sm"><CalendarDays className="h-4 w-4" /> Agenda</Button></Link>
+        </div>
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -157,9 +161,9 @@ export default function DashboardPage() {
         />
       </div>
 
-      <Card className="mt-4">
+      <Card className="mt-5">
         <div className="mb-4 flex items-center justify-between">
-          <CardTitle>Próximos agendamentos de hoje</CardTitle>
+          <div><CardTitle>Agenda de hoje</CardTitle><p className="-mt-2 text-xs text-ink-500">Próximos compromissos que precisam estar no seu radar.</p></div>
           <Link href="/painel/agenda">
             <Button variant="secondary" size="sm">
               Ver tudo
@@ -186,6 +190,7 @@ export default function DashboardPage() {
       </Card>
 
       {metrics ? <AttentionCenter metrics={metrics} whatsappConnected={whatsappConnected} /> : null}
+      <div className="my-7 flex items-center gap-3"><div className="h-px flex-1 bg-line" /><span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Desempenho de hoje</span><div className="h-px flex-1 bg-line" /></div>
       {metrics ? <DailyPanel metrics={metrics} /> : <ComingSoonCard />}
     </div>
   );
@@ -200,7 +205,7 @@ function AttentionCenter({ metrics, whatsappConnected }: { metrics: DashboardMet
   ];
   if (items.length === 0) return null;
   return (
-    <Card className="mt-4">
+    <Card className="mt-4 border-warning/30 bg-warning-bg/20">
       <div className="mb-3 flex items-center gap-2">
         <BellRing className="h-4 w-4 text-warning-fg" />
         <CardTitle>Precisa da sua atenção</CardTitle>
