@@ -87,7 +87,7 @@ export default function DashboardPage() {
         <Skeleton className="h-4 w-16" />
         <Skeleton className="mt-2 h-7 w-56" />
         <Skeleton className="mb-8 mt-2 h-4 w-40" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <SkeletonCard key={i} />
           ))}
@@ -102,15 +102,15 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-line pb-5">
+      <div className="mb-5 flex flex-col gap-4 border-b border-line pb-5 sm:mb-7 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
         <div>
           <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">Visão geral</p>
           <h1 className="text-h1 text-ink-900">{establishment.name || "Bem-vindo(a) à Livia"}</h1>
           <p className="mt-1 text-sm text-ink-500">{establishment.name ? ESTABLISHMENT_TYPE_LABELS[establishment.type] : "Vamos configurar seu atendimento."}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Link href="/painel/conversas"><Button variant="secondary" size="sm"><MessageCircle className="h-4 w-4" /> Conversas</Button></Link>
-          <Link href="/painel/agenda"><Button size="sm"><CalendarDays className="h-4 w-4" /> Agenda</Button></Link>
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
+          <Link href="/painel/conversas" className="min-w-0"><Button className="w-full" variant="secondary" size="sm"><MessageCircle className="h-4 w-4" /> Conversas</Button></Link>
+          <Link href="/painel/agenda" className="min-w-0"><Button className="w-full" size="sm"><CalendarDays className="h-4 w-4" /> Agenda</Button></Link>
         </div>
       </div>
 
@@ -161,8 +161,8 @@ export default function DashboardPage() {
         />
       </div>
 
-      <Card className="mt-5">
-        <div className="mb-4 flex items-center justify-between">
+      <Card className="mt-4 sm:mt-5">
+        <div className="mb-4 flex items-start justify-between gap-3">
           <div><CardTitle>Agenda de hoje</CardTitle><p className="-mt-2 text-xs text-ink-500">Próximos compromissos que precisam estar no seu radar.</p></div>
           <Link href="/painel/agenda">
             <Button variant="secondary" size="sm">
@@ -175,7 +175,7 @@ export default function DashboardPage() {
         ) : (
           <div className="divide-y divide-line">
             {activeToday.slice(0, 5).map((a) => (
-              <div key={a.id} className="flex items-center justify-between py-3">
+              <div key={a.id} className="flex items-center justify-between gap-3 py-3">
                 <div>
                   <p className="text-sm font-semibold text-ink-900">{a.serviceName}</p>
                   <p className="text-xs text-ink-500">{a.contactName ?? "Cliente"}</p>
@@ -190,7 +190,7 @@ export default function DashboardPage() {
       </Card>
 
       {metrics ? <AttentionCenter metrics={metrics} whatsappConnected={whatsappConnected} /> : null}
-      <div className="my-7 flex items-center gap-3"><div className="h-px flex-1 bg-line" /><span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Desempenho de hoje</span><div className="h-px flex-1 bg-line" /></div>
+      <div className="my-5 flex items-center gap-3 sm:my-7"><div className="h-px flex-1 bg-line" /><span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Desempenho de hoje</span><div className="h-px flex-1 bg-line" /></div>
       {metrics ? <DailyPanel metrics={metrics} /> : <ComingSoonCard />}
     </div>
   );
@@ -237,7 +237,7 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
           aparece quando há denominador (nunca 0% enganoso). */}
       <Card className="mt-4">
         <CardTitle>Funil de hoje</CardTitle>
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
           <FunnelStep label="Atendimentos" value={funnel.atendimentos} />
           <FunnelStep label="Intenção de agendar" value={funnel.intencaoAgendar} />
           <FunnelStep label="Agendamentos concluídos" value={funnel.agendamentosConcluidos} tone="text-success-fg" />
@@ -337,7 +337,7 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
 
 function FunnelStep({ label, value, tone }: { label: string; value: number; tone?: string }) {
   return (
-    <div className="rounded-control border border-line p-3 text-center">
+    <div className="rounded-control border border-line bg-ink-50/30 p-3 text-center">
       <p className={`text-xl font-bold ${tone ?? "text-ink-900"}`}>{value}</p>
       <p className="mt-0.5 text-xs text-ink-500">{label}</p>
     </div>
