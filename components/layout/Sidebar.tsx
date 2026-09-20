@@ -20,8 +20,8 @@ export function Sidebar({ data }: { data?: ShellData | null }) {
           <div key={g.id} className="space-y-1">
             <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-primary-300">{g.label}</p>
             {NAV_ITEMS.filter((i) => i.group === g.id).map((item) => {
-              const active = pathname === item.href; const Icon = item.icon;
-              return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={`flex items-center gap-3 rounded-control px-3 py-2.5 text-sm font-semibold transition-all duration-150 ${active ? "bg-white text-primary-800 shadow-e2" : "text-primary-100 hover:bg-white/10 hover:text-white"}`}><Icon className="h-[18px] w-[18px]" />{item.label}</Link>;
+              const active = item.href === "/painel" ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`); const Icon = item.icon;
+              return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-3 rounded-control px-3 py-2.5 text-sm font-semibold transition-all duration-150 ${active ? "bg-white text-primary-800 shadow-e2" : "text-primary-100 hover:bg-white/10 hover:text-white"}`}>{active && <span className="absolute -left-1 h-5 w-1 rounded-full bg-primary-300" />}<Icon className="h-[18px] w-[18px]" />{item.label}</Link>;
             })}
           </div>
         ))}
