@@ -63,13 +63,13 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const result = await activateCampaign(establishmentId, id, {
     mode: scheduledAt === null ? "now" : "scheduled",
     scheduledAt,
-    maxRecipients: campaignsMaxRecipientsPerCampaign(),
+    maxRecipients: campaignsMaxRecipientsPerCampaign(establishment),
   });
   if (result.kind === "invalid") return NextResponse.json({ error: result.reason }, { status: errorStatus(result.reason) });
   // Lote limitado: o endpoint nunca percorre uma campanha grande. O claim
   // persistente do dispatcher permite concorrência/retry sem duplicar envio.
   const dispatch = result.campaign.status === "running"
-    ? await dispatchCampaignBatch(establishmentId, id, { batchSize: campaignsMaxRecipientsPerCampaign() })
+    ? await dispatchCampaignBatch(establishmentId, id, { batchSize: campaignsMaxRecipientsPerCampaign(establishment) })
     : null;
   const campaign = await getCampaign(establishmentId, id) ?? result.campaign;
   return NextResponse.json({ campaign, activated: result.kind === "activated", idempotent: result.kind === "already_activated", dispatch }, { status: 200 });
