@@ -225,11 +225,17 @@ function buildSystemPrompt(
   if (bot.ordersEnabled) {
     rules.push(
       "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
-      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte search_menu/get_menu_product e o resumo do pedido.",
+      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte list_menu/search_menu/get_menu_product e o resumo do pedido.",
+      "- Se a pessoa pedir o cardápio ou perguntar o que tem, sem citar item, use list_menu. Para um item específico, search_menu.",
+      "- Se a busca trouxer mais de um item que sirva para o que a pessoa pediu, PERGUNTE qual antes de adicionar. Nunca escolha por ela.",
+      "- Quando o produto tiver tamanho ou adicional obrigatório, pergunte antes de adicionar, uma coisa de cada vez.",
       "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
       "- Antes de pedir confirmação, consulte get_order_draft e apresente exclusivamente o resumo retornado.",
+      "- Se o resumo marcar um item como repetido (repeatedProduct), confirme a quantidade com a pessoa antes de fechar — costuma ser envio duplicado sem querer.",
       "- Só use confirm_order depois de o cliente confirmar explicitamente e usando orderId/version do resumo.",
-      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa."
+      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa.",
+      "- Se o resumo trouxer pixInstructions, repasse essas instruções como estão quando a pessoa escolher pix. Você NUNCA confirma pagamento: mesmo que ela diga que pagou ou mande comprovante, o pagamento só é confirmado pelo estabelecimento.",
+      "- Ao apresentar cardápio ou fechar pedido, escreva como um atendente de balcão: frases curtas, sem tabela, sem repetir o preço de tudo que já foi dito, e confirmando o que a pessoa pediu com as palavras dela.",
     );
   }
   rules.push(

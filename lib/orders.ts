@@ -75,6 +75,19 @@ export async function listAvailableMenuProducts(establishmentId: string): Promis
   const blocked = new Set(categories.filter((c) => c.active === false).map((c) => c.id));
   return products.filter((p) => p.active && !blocked.has(p.categoryId));
 }
+// Cardápio inteiro, agrupado, só com o que pode ser vendido agora. Existe
+// para a pergunta mais comum de lanchonete — "manda o cardápio" — que antes
+// obrigava a IA a chutar uma palavra de busca e arriscava esconder categoria
+// inteira (ninguém pergunta por "refrigerante" antes de ver que há bebidas).
+export interface AvailableMenuCategory { id: string; name: string; products: MenuProduct[] }
+export async function listAvailableMenu(establishmentId: string): Promise<AvailableMenuCategory[]> {
+  const [products, categories] = await Promise.all([listMenuProducts(establishmentId), listMenuCategories(establishmentId)]);
+  const active = products.filter((p) => p.active);
+  return categories
+    .filter((c) => c.active !== false)
+    .map((c) => ({ id: c.id, name: c.name, products: active.filter((p) => p.categoryId === c.id) }))
+    .filter((c) => c.products.length > 0);
+}
 export async function getAvailableMenuProduct(establishmentId: string, productId: string): Promise<MenuProduct | null> {
   const product = await getMenuProduct(establishmentId, productId);
   if (!product?.active) return null;

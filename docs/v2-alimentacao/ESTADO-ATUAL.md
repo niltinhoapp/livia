@@ -39,14 +39,14 @@ recomenda recriar algo que já funciona.
 | Item | O que existe | O que falta | Fase |
 |---|---|---|---|
 | ~~Configuração de pedido (entrega, taxa, métodos, PIX)~~ | Resolvido na F2: `OrderSettingsEditor` na seção Operação da tela de Pedidos | — | ✅ F2 |
-| `pixInstructions` | Campo persistido e validado | Nunca chega ao prompt nem a tool nenhuma | F3 |
+| ~~`pixInstructions`~~ | Resolvido na F3: volta no resumo do pedido quando a forma é pix | — | ✅ F3 |
 | ~~Disponibilidade por categoria~~ | Resolvido na F1: `categoryBlocksSale` + visão filtrada do catálogo para a IA | — | ✅ F1 |
 | ~~Taxa de entrega por bairro~~ | Resolvido na F1: `neighborhoodKey` normaliza acento, espaço e caixa | — | ✅ F1 |
-| Consulta ao cardápio pela IA | `search_menu`, `get_menu_product` | Sem "listar cardápio completo" | F3 |
+| ~~Consulta ao cardápio pela IA~~ | Resolvido na F3: ferramenta `list_menu`, agrupada por categoria e com teto | — | ✅ F3 |
 | Edição de item já no carrinho | `update_order_item` (quantidade, observação) | Não aceita variação nem adicional | F4 |
 | Estouro do tool loop (4 iterações) | Fallback existe para agenda | Sem equivalente para pedido — carrinho pela metade vira handoff | F4 |
 | Estados do pedido | Enum completo | `awaiting_confirmation` morto; nenhum estado de pagamento | F4 / F7 |
-| Naturalidade da conversa de pedido | Regras corretas e seguras | Bloco procedural, sem orientação de tom | F3 |
+| ~~Naturalidade da conversa de pedido~~ | Resolvido na F3: orientação de tom e regra de perguntar em item ambíguo | — | ✅ F3 |
 | ~~Política de confiança em preço (`evaluateTrust`)~~ | Resolvido na F1: com `ordersEnabled`, o cardápio é a fonte de preço | — | ✅ F1 |
 | ~~Acesso ao painel de pedidos~~ | Resolvido na F1: rotas de gestão e configuração desacopladas de `bot.ordersEnabled` | — | ✅ F1 |
 

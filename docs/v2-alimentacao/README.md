@@ -9,7 +9,7 @@ o estado aqui antes de ser considerada concluída. Decisão tomada em
 conversa que não estiver registrada neste arquivo não existe.
 
 - Última atualização: 2026-09-20
-- Estado geral: **F1 e F2 concluídas, aguardando validação. Ainda sem
+- Estado geral: **F1, F2 e F3 concluídas, aguardando validação. Ainda sem
   push: o repositório não está autorizado para escrita nesta sessão (ver
   seção 8).**
 - Anexos:
@@ -153,7 +153,7 @@ anterior** e reduziu o risco atribuído à F12.
 | F0 | Auditoria, pesquisa de provedores, arquitetura e plano | — | — | **Concluída** |
 | F1 | Correções de base: categoria desativada bloquear produtos; acento na taxa de bairro; desacoplar painel do toggle de IA; `evaluateTrust` considerar cardápio | — | Baixo | **Concluída** — ver 4.1 |
 | F2 | Tela de configuração de pedido no painel (retirada/entrega, taxas, métodos aceitos, instruções PIX), consumindo a API existente | F1 | Baixo | **Concluída** — ver 4.2 |
-| F3 | Conversa: tool de cardápio completo; `pixInstructions` chegando à Lívia; tom do prompt de pedido; perguntar em item ambíguo; destacar item repetido no resumo | F2 | Baixo | Pendente |
+| F3 | Conversa: tool de cardápio completo; `pixInstructions` chegando à Lívia; tom do prompt de pedido; perguntar em item ambíguo; destacar item repetido no resumo | F2 | Baixo | **Concluída** — ver 4.3 |
 | F4 | Robustez: fallback determinístico no estouro do tool loop; `update_order_item` aceitar variação/adicional; resolver `awaiting_confirmation` | F3 | Médio | Pendente |
 | F5 | **Núcleo de pagamentos**: contrato, status neutros, registry, credenciais cifradas, rota de webhook genérica, adapter falso para teste — sem provedor real | F4 | Médio | Pendente |
 | F6 | **Adapter Asaas (pedido)** + tela "conectar pagamento" com chave do próprio comerciante | F5 | Médio | Pendente |
@@ -259,6 +259,52 @@ Testes: 1853 passando (1839 ao fim da F1), 14 novos em
 ida e volta entre `OrderSettings` e formulário, as quatro travas e o
 comportamento de carregar/salvar. Usei `fireEvent` em vez de
 `@testing-library/user-event` para não adicionar dependência ao projeto.
+`tsc --noEmit` limpo.
+
+---
+
+### 4.3 F3 — o que mudou
+
+Branch `feat/v2-f3-conversa`, a partir de `feat/v2-f2-config-pedidos`. Sem
+merge. Cinco itens, todos na camada de conversa — nenhum toca pagamento,
+visão ou o núcleo do pedido.
+
+**`list_menu`, a ferramenta que faltava.** A Livia só sabia buscar por
+palavra ou por id de produto já conhecido; diante de "manda o cardápio"
+ela tinha que chutar um termo e podia esconder categoria inteira (ninguém
+pergunta por "refrigerante" antes de saber que há bebidas). A nova
+ferramenta devolve o cardápio agrupado por categoria, reaproveitando a
+visão filtrada da F1 — produto e categoria desativados continuam fora.
+Cardápio acima de 60 itens é cortado com um sinal de `truncated`, para a
+Livia pedir direcionamento em vez de despejar tudo na conversa.
+
+**`pixInstructions` chega à Livia.** O campo passou a ser devolvido no
+resumo do pedido nos dois momentos em que a conversa precisa dele: quando
+o cliente escolhe pix (`set_order_payment`) e quando a Livia relê o
+pedido (`get_order_draft`). É texto para repassar, e só isso: o prompt
+diz, com todas as letras, que ela nunca confirma pagamento — nem por
+palavra do cliente, nem por comprovante. O estado do pagamento continua
+`pending` e só muda por evento do backend, que ainda não existe (F5-F8).
+
+**Item repetido é sinalizado.** O resumo marca `repeatedProduct` quando
+duas linhas trazem o mesmo produto com a mesma variação e os mesmos
+adicionais — o padrão de quem mandou a mesma mensagem duas vezes sem
+querer, já que mensagens iguais somam itens por decisão de produto. O
+prompt manda conferir a quantidade antes de fechar.
+
+**Ambiguidade vira pergunta.** Regra explícita: se a busca trouxer mais
+de um item que sirva, perguntar qual antes de adicionar, nunca escolher
+pela pessoa. Vale também para tamanho e adicional obrigatório.
+
+**Tom.** Uma linha de orientação para escrever como atendente de balcão —
+frases curtas, sem tabela, sem repetir preço já dito, confirmando com as
+palavras da própria pessoa. O bloco de pedidos era 100% procedural até
+aqui.
+
+Testes: 1870 passando (1853 ao fim da F2), 17 novos em
+`lib/ai/ordersMenuAndPix.test.ts` (ferramentas reais contra o
+firestoreFake) e `lib/ai/ordersPromptRules.test.ts` (regras que de fato
+entram no prompt, e ausência delas quando pedidos estão desligados).
 `tsc --noEmit` limpo.
 
 ---
