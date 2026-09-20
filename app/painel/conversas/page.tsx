@@ -179,7 +179,7 @@ export default function ConversationsPage() {
             <Skeleton key={i} className="h-7 w-24 rounded-full" />
           ))}
         </div>
-        <div className="flex h-[calc(100dvh-13rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
+        <div className="flex h-[calc(100dvh-13rem)] min-h-[520px] overflow-hidden rounded-card border border-line bg-white shadow-e2">
           <div className="w-full shrink-0 border-r border-line sm:w-80">
             <SkeletonList rows={7} />
           </div>
@@ -203,7 +203,7 @@ export default function ConversationsPage() {
     <div className="mx-auto max-w-6xl">
       <PageHeader
         title="Conversas"
-        description="Acompanhe o que a Livia está conversando no WhatsApp e assuma quando precisar."
+        description="Central de atendimento. Priorize o que exige ação humana e acompanhe a Livia em tempo real."
         action={
           <div className="flex items-center gap-2">
             {canClear && (
@@ -236,7 +236,7 @@ export default function ConversationsPage() {
         onCancel={() => setConfirmClear(false)}
       />
 
-      <div className="mb-3 flex flex-wrap gap-1.5">
+      <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-card border border-line bg-white p-2 shadow-e1">
         {FILTERS.map((f) => {
           const count = f.id === "all" ? withOpportunities.length : withOpportunities.filter((c) => matchesFilter(c, f.id)).length;
           return (
@@ -269,8 +269,8 @@ export default function ConversationsPage() {
                 <button
                   key={c.id}
                   onClick={() => setSelectedId(c.id)}
-                  className={`flex w-full items-start gap-3 border-b border-line px-4 py-3 text-left transition-colors duration-150 hover:bg-ink-50 ${
-                    selectedId === c.id ? "bg-primary-light/50" : ""
+                  className={`relative flex w-full items-start gap-3 border-b border-line px-4 py-3.5 text-left transition-colors duration-150 hover:bg-ink-50 ${
+                    selectedId === c.id ? "bg-primary-light/60 before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-primary" : ""
                   }`}
                 >
                   <Avatar name={c.contactName} phone={c.contactPhone} size="md" />
@@ -318,7 +318,7 @@ export default function ConversationsPage() {
 
         {/* Detalhes de contexto — coluna 3, só em telas largas (xl+) */}
         {selected && (
-          <aside className="hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-surface-muted/60 xl:flex">
+          <aside className="hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-ink-50/70 xl:flex">
             <ConversationContext conversation={selected} />
           </aside>
         )}

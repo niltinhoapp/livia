@@ -92,7 +92,7 @@ export function ConversationDetail({
 
   return (
     <>
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-line bg-white px-4 py-3 shadow-[0_1px_0_rgba(16,24,40,0.02)]">
         <div className="flex min-w-0 items-center gap-2.5">
           <button onClick={onBack} className="rounded-control p-1.5 text-ink-500 hover:bg-line/30 sm:hidden">
             <ArrowLeft className="h-4 w-4" />
@@ -117,13 +117,13 @@ export function ConversationDetail({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto bg-ink-50/40 p-4 sm:p-5">
         {messages === null ? (
           <LoadingState />
         ) : messages.length === 0 ? (
           <p className="text-center text-sm text-ink-400">Nenhuma mensagem ainda.</p>
         ) : (
-          <div className="space-y-3">
+          <div className="mx-auto max-w-3xl space-y-3">
             {messages.map((m, i) => (
               <MessageBubble
                 key={m.id}
@@ -183,10 +183,10 @@ function MessageBubble({
         <div
           className={`rounded-card px-3 py-2 text-sm ${
             fromCustomer
-              ? "rounded-bl-sm bg-ink-100 text-ink-900"
+              ? "rounded-bl-sm border border-line bg-white text-ink-900 shadow-e1"
               : message.role === "agent"
                 ? "rounded-br-sm bg-info text-white"
-                : "rounded-br-sm bg-primary text-white"
+                : "rounded-br-sm bg-primary text-white shadow-e1"
           }`}
         >
           {message.attachment && (
