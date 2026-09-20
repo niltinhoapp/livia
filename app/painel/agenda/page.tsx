@@ -120,6 +120,7 @@ export default function AgendaPanel() {
     <div className="mx-auto max-w-3xl">
       <PageHeader
         title="Agenda"
+        description="Organize o dia, acompanhe confirmações e aja rapidamente em cada atendimento."
         action={
           <Button size="sm" onClick={() => setShowNew((v) => !v)}>
             {showNew ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
@@ -128,15 +129,15 @@ export default function AgendaPanel() {
         }
       />
 
-      <div className="mb-5 flex items-center gap-3">
+      <div className="mb-5 flex items-center justify-between gap-3 rounded-card border border-line bg-white p-3 shadow-e1 sm:justify-start">
         <button
           onClick={() => go(-1)}
-          className="rounded-control border border-line p-2 text-ink-500 hover:bg-line/30"
+          className="rounded-control border border-line bg-white p-2.5 text-ink-600 shadow-e1 hover:bg-ink-50"
           aria-label="Dia anterior"
         >
           <ChevronLeft className="h-4 w-4" />
         </button>
-        <div className="min-w-[140px] text-center">
+        <div className="min-w-[150px] flex-1 text-center sm:flex-none">
           <p className="text-lg font-bold text-ink-900">{date && prettyDate(date)}</p>
           <button
             className="text-xs font-semibold text-primary hover:underline"
@@ -151,7 +152,7 @@ export default function AgendaPanel() {
         </div>
         <button
           onClick={() => go(1)}
-          className="rounded-control border border-line p-2 text-ink-500 hover:bg-line/30"
+          className="rounded-control border border-line bg-white p-2.5 text-ink-600 shadow-e1 hover:bg-ink-50"
           aria-label="Próximo dia"
         >
           <ChevronRight className="h-4 w-4" />
@@ -174,10 +175,10 @@ export default function AgendaPanel() {
       ) : active.length === 0 ? (
         <EmptyState title="Nenhum agendamento neste dia" description="Os agendamentos feitos pela Livia ou por você aparecem aqui." />
       ) : (
-        <div className="space-y-3">
+        <div className="relative space-y-3 before:absolute before:bottom-4 before:left-[37px] before:top-4 before:w-px before:bg-line">
           {active.map((a) => (
-            <Card key={a.id} className="flex items-start gap-4 p-4">
-              <div className="min-w-[52px] text-lg font-bold text-ink-900">{epochToHM(a.startAt, offset)}</div>
+            <Card key={a.id} className="relative flex items-start gap-4 p-4 hover:border-primary-100">
+              <div className="relative z-10 min-w-[52px] rounded-control bg-ink-900 px-2 py-1.5 text-center text-sm font-bold text-white shadow-e1">{epochToHM(a.startAt, offset)}</div>
               <div className="flex-1">
                 <p className="font-semibold text-ink-900">{a.serviceName}</p>
                 <p className="text-sm text-ink-500">
@@ -268,8 +269,8 @@ function NewAppointment({
   };
 
   return (
-    <Card className="mb-5 bg-primary-light/40">
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+    <Card className="mb-5 border-primary-100 bg-primary-light/20 shadow-e2">
+      <div className="mb-4"><p className="text-sm font-semibold text-ink-900">Novo agendamento</p><p className="mt-1 text-xs text-ink-500">Preencha os dados e escolha um horário disponível.</p></div><div className="mb-4 grid gap-3 sm:grid-cols-3">
         <div>
           <Label>Serviço</Label>
           <Input value={serviceName} onChange={(e) => setServiceName(e.target.value)} placeholder="Ex.: Consulta" />
