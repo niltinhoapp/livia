@@ -19,6 +19,7 @@ function formatDateTime(ts: number | null): string {
 export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | null; recipients: CampaignRecipient[] }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendLocked, setSendLocked] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
   if (!campaign) {
     return (
@@ -38,6 +39,8 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
   const canSendNow = campaign.status === "draft" && !!campaign.audience && !!campaign.template && recipients.length > 0;
 
   async function confirmSend() {
+    if (sending || sendLocked) return;
+    setSendLocked(true);
     setSending(true);
     setActivationError(null);
     try {
@@ -54,6 +57,7 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
     } catch (error) {
       setActivationError(error instanceof Error ? error.message : "Não foi possível ativar a campanha.");
       setSending(false);
+      setSendLocked(false);
     }
   }
 
@@ -92,7 +96,7 @@ export function CampaignDetail({ campaign, recipients }: { campaign: Campaign | 
       <ConfirmDialog
         open={confirmOpen}
         title="Confirmar envio"
-        description={`Campanha “${campaign.name}”, template “${campaign.template?.name ?? "—"}”, para ${recipients.length} recipients. As mensagens serão enviadas pelo WhatsApp. Confirme que esta audiência possui consentimento válido.`}
+        description={`Campanha “${campaign.name}”, template “${campaign.template?.name ?? "—"}”, para ${recipients.length} contatos. As mensagens serão enviadas pelo WhatsApp. Confirme que esta audiência possui consentimento válido.`}
         confirmLabel="Confirmar envio"
         confirmDisabled={sending}
         onConfirm={confirmSend}
