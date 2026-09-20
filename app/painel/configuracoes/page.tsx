@@ -77,17 +77,18 @@ export default function ConfigPanel() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <PageHeader title="Configurações" />
+      <PageHeader title="Configurações" description="Gerencie os dados do negócio, o comportamento da atendente e as regras da agenda." />
 
       <SegmentedControl
-        className="mb-5"
+        className="mb-5 rounded-card border border-line bg-white p-1 shadow-e1"
         items={TABS.map((t) => ({ id: t.key, label: t.label }))}
         value={tab}
         onChange={setTab}
       />
 
       {tab === "empresa" && (
-        <Card>
+        <Card className="shadow-e2">
+          <div className="mb-5 border-b border-line pb-4"><h2 className="font-semibold text-ink-900">Dados da empresa</h2><p className="mt-1 text-sm text-ink-500">Informações que identificam este estabelecimento dentro da Lívia.</p></div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <Label>Nome do negócio</Label>
@@ -108,7 +109,8 @@ export default function ConfigPanel() {
       )}
 
       {tab === "atendente" && (
-        <Card>
+        <Card className="shadow-e2">
+          <div className="mb-5 border-b border-line pb-4"><h2 className="font-semibold text-ink-900">Comportamento da atendente</h2><p className="mt-1 text-sm text-ink-500">Defina identidade, automações e situações que exigem atendimento humano.</p></div>
           <div className="mb-4 grid gap-4 sm:grid-cols-2">
             <div>
               <Label>Nome da atendente</Label>
@@ -150,7 +152,8 @@ export default function ConfigPanel() {
       )}
 
       {tab === "agenda" && (
-        <Card>
+        <Card className="shadow-e2">
+          <div className="mb-5 border-b border-line pb-4"><h2 className="font-semibold text-ink-900">Regras da agenda</h2><p className="mt-1 text-sm text-ink-500">Configure duração, disponibilidade e lembretes usados nos agendamentos.</p></div>
           <div className="mb-5 grid gap-4 sm:grid-cols-3">
             <div>
               <Label>Duração padrão (min)</Label>
@@ -232,7 +235,7 @@ export default function ConfigPanel() {
         </Card>
       )}
 
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-5 flex flex-wrap items-center gap-4 rounded-card border border-line bg-white/95 p-3 shadow-e2 lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Alterações nas configurações</p><p className="text-xs text-ink-500">Salve para aplicar as mudanças ao funcionamento da Lívia.</p></div>
         <Button disabled={state === "saving"} onClick={save}>
           {state === "saving" ? "Salvando…" : "Salvar configurações"}
         </Button>
