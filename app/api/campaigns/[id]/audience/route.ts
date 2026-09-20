@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
-import { getEstablishment, prepareCampaignAudience } from "@/lib/repo";
+import { countTrialCampaignRecipients, getEstablishment, prepareCampaignAudience } from "@/lib/repo";
 import { campaignTemplateSnapshot, isCampaignTemplateCompatible, templateParameterBindingsAreValid } from "@/lib/campaignTemplates";
 import { listMessageTemplates, WhatsAppTemplateError } from "@/lib/whatsapp/client";
 import type { CampaignTemplateParameterBinding } from "@/types";
@@ -23,6 +23,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     const establishment = await getEstablishment(establishmentId);
     if (!establishment?.whatsapp || establishment.whatsapp.status !== "connected") {
       return NextResponse.json({ error: "WhatsApp não está conectado" }, { status: 409 });
+    }
+    if (establishment.billing?.billingStatus === "trial") {
+      const used = await countTrialCampaignRecipients(establishmentId);
+      const remaining = Math.max(0, 100 - used);
+      const requestedCount = body.selection === "selected" && Array.isArray(body.phones)
+        ? new Set(body.phones.filter((phone): phone is string => typeof phone === "string")).size
+        : undefined;
+      if (remaining < 1 || (requestedCount !== undefined && requestedCount > remaining)) {
+        return NextResponse.json({ error: "limite_total_trial_excedido", limit: 100, used, remaining }, { status: 409 });
+      }
     }
     const templates = await listMessageTemplates(establishment.whatsapp, establishmentId);
     const template = templates.find((item) => item.id === requestedTemplate.id && item.name === requestedTemplate.name && item.language === requestedTemplate.languageCode);
