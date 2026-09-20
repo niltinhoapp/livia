@@ -1,36 +1,9 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-:root { color-scheme: light; }
-html, body { height: 100%; }
-body { @apply bg-primary-50/40 text-ink-900 antialiased; }
-* { @apply border-line; }
-
-@layer base {
-  :where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
-    outline: 2px solid rgba(124, 58, 237, 0.55);
-    outline-offset: 2px;
-    border-radius: 6px;
-  }
-}
-
-@layer components {
-  .t-display { @apply text-display text-ink-900; }
-  .t-h1 { @apply text-h1 text-ink-900; }
-  .t-h2 { @apply text-h2 text-ink-900; }
-  .t-h3 { @apply text-h3 text-ink-900; }
-  .t-body { @apply text-body text-ink-700; }
-  .t-muted { @apply text-body text-ink-500; }
-  .t-caption { @apply text-caption text-ink-500; }
-}
-
-@layer utilities {
-  .focus-ring { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2; }
-  .animate-fade-in { animation: livia-fade-in 200ms ease-out both; }
-}
-
-@keyframes livia-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
-}
+:root { color-scheme: light; } html.dark { color-scheme: dark; } html,body{height:100%} body{@apply bg-primary-50/40 text-ink-900 antialiased} html.dark body{background:#0c111d;color:#f2f4f7} *{@apply border-line}
+@layer base {:where(a,button,input,select,textarea,[role="button"],[tabindex]):focus-visible{outline:2px solid rgba(124,58,237,.55);outline-offset:2px;border-radius:6px}}
+@layer components {.t-display{@apply text-display text-ink-900}.t-h1{@apply text-h1 text-ink-900}.t-h2{@apply text-h2 text-ink-900}.t-h3{@apply text-h3 text-ink-900}.t-body{@apply text-body text-ink-700}.t-muted{@apply text-body text-ink-500}.t-caption{@apply text-caption text-ink-500}}
+@layer utilities {.focus-ring{@apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2}.animate-fade-in{animation:livia-fade-in 200ms ease-out both}}
+@keyframes livia-fade-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+html.dark .bg-white{background-color:#161d2b!important} html.dark .bg-surface-muted,html.dark .bg-ink-50{background-color:#101828!important} html.dark .text-ink-900{color:#f9fafb!important} html.dark .text-ink-800,html.dark .text-ink-700{color:#e4e7ec!important} html.dark .text-ink-600,html.dark .text-ink-500{color:#d0d5dd!important} html.dark .text-ink-400{color:#98a2b3!important} html.dark .border-line,html.dark .border-primary-100{border-color:#344054!important} html.dark input,html.dark textarea,html.dark select{background-color:#101828!important;color:#f9fafb!important;border-color:#475467!important}
