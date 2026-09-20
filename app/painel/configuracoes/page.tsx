@@ -7,7 +7,7 @@
 // Tenant vem da sessão (cookie httpOnly criado no login); o painel só é
 // renderizado se app/painel/layout.tsx confirmar uma sessão válida.
 import { useCallback, useEffect, useState } from "react";
-import type { BotConfig, EstablishmentType, ScheduleConfig, DayHours } from "@/types";
+import type { BotConfig, EstablishmentType, ScheduleConfig, DayHours, DailyOwnerSummaryConfig } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select, FieldHelp } from "@/components/ui/Field";
@@ -19,11 +19,12 @@ import { ESTABLISHMENT_TYPE_LABELS, WEEKDAY_LABELS } from "@/components/lib/labe
 
 const TYPES = Object.entries(ESTABLISHMENT_TYPE_LABELS) as [EstablishmentType, string][];
 
-type Tab = "empresa" | "atendente" | "agenda";
+type Tab = "empresa" | "atendente" | "agenda" | "resumo";
 const TABS: { key: Tab; label: string }[] = [
   { key: "empresa", label: "Empresa" },
   { key: "atendente", label: "Atendente virtual" },
   { key: "agenda", label: "Agenda" },
+  { key: "resumo", label: "Resumo diário" },
 ];
 
 export default function ConfigPanel() {
@@ -35,6 +36,7 @@ export default function ConfigPanel() {
   const [type, setType] = useState<EstablishmentType>("outro");
   const [bot, setBot] = useState<BotConfig | null>(null);
   const [sched, setSched] = useState<ScheduleConfig | null>(null);
+  const [dailySummary, setDailySummary] = useState<DailyOwnerSummaryConfig>({ enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
 
   const load = useCallback(() => {
     setLoadError(false);
@@ -44,6 +46,7 @@ export default function ConfigPanel() {
         setName(e.establishment.name ?? "");
         setType(e.establishment.type ?? "outro");
         setBot(e.establishment.bot);
+        setDailySummary(e.establishment.dailyOwnerSummary ?? { enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
         setSched(s.schedule);
         setState("idle");
       })
@@ -62,13 +65,13 @@ export default function ConfigPanel() {
     setState("saving");
     const headers = { "Content-Type": "application/json" };
     const [r1, r2] = await Promise.all([
-      fetch("/api/establishment", { method: "PUT", headers, body: JSON.stringify({ name, type, bot }) }),
+      fetch("/api/establishment", { method: "PUT", headers, body: JSON.stringify({ name, type, bot, dailyOwnerSummary: dailySummary }) }),
       fetch("/api/schedule", { method: "PUT", headers, body: JSON.stringify(sched) }),
     ]);
     const ok = r1.ok && r2.ok;
     setState(ok ? "saved" : "error");
     if (ok) setTimeout(() => setState("idle"), 2000);
-  }, [name, type, bot, sched]);
+  }, [name, type, bot, sched, dailySummary]);
 
   if (state === "loading") return <LoadingState />;
   if (loadError || !bot || !sched) return <ErrorState onRetry={load} />;
@@ -232,6 +235,19 @@ export default function ConfigPanel() {
               />
             </div>
           </div>
+        </Card>
+      )}
+
+      {tab === "resumo" && (
+        <Card className="shadow-e2">
+          <div className="mb-5 border-b border-line pb-4"><h2 className="font-semibold text-ink-900">Resumo diário no WhatsApp</h2><p className="mt-1 text-sm text-ink-500">Ao fim do expediente, a Lívia envia ao proprietário uma prestação de contas do dia.</p></div>
+          <Toggle checked={dailySummary.enabled} onChange={(v) => setDailySummary({ ...dailySummary, enabled: v })} title="Enviar resumo diário" desc="O envio acontece depois do horário de fechamento configurado na agenda." />
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div><Label>WhatsApp do proprietário</Label><Input inputMode="tel" value={dailySummary.ownerPhone} onChange={(e) => setDailySummary({ ...dailySummary, ownerPhone: e.target.value })} placeholder="5511999999999" /><FieldHelp>Use DDI + DDD + número.</FieldHelp></div>
+            <div><Label>Template aprovado na Meta</Label><Input value={dailySummary.templateName} onChange={(e) => setDailySummary({ ...dailySummary, templateName: e.target.value })} placeholder="resumo_diario_livia" /><FieldHelp>Necessário para o envio proativo.</FieldHelp></div>
+            <div><Label>Idioma do template</Label><Input value={dailySummary.templateLang} onChange={(e) => setDailySummary({ ...dailySummary, templateLang: e.target.value })} placeholder="pt_BR" /></div>
+          </div>
+          <div className="mt-5 rounded-control border border-primary/20 bg-primary-light/10 p-4"><p className="text-sm font-semibold text-ink-900">O que o proprietário recebe</p><p className="mt-1 text-xs leading-relaxed text-ink-500">Atendimentos do dia, agendamentos realizados, oportunidades encontradas e conversas que precisam de atenção.</p></div>
         </Card>
       )}
 

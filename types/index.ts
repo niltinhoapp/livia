@@ -44,6 +44,16 @@ export interface Establishment {
   billing?: EstablishmentBilling;
   // Configuração do bot (persona + regras).
   bot: BotConfig;
+  // Resumo operacional enviado ao proprietário no fim do expediente.
+  dailyOwnerSummary?: DailyOwnerSummaryConfig;
+}
+
+export interface DailyOwnerSummaryConfig {
+  enabled: boolean;
+  ownerPhone: string;
+  templateName: string;
+  templateLang: string;
+  lastSentDate?: string; // YYYY-MM-DD no fuso configurado da agenda
 }
 
 export type PanelAccess = "allowed" | "blocked";

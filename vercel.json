@@ -1,9 +1,21 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["gru1"],
+  "regions": [
+    "gru1"
+  ],
   "framework": "nextjs",
   "crons": [
-    { "path": "/api/cron/reminders", "schedule": "0 11 * * *" },
-    { "path": "/api/cron/billing-expiry", "schedule": "0 12 * * *" }
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/billing-expiry",
+      "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/daily-owner-summary",
+      "schedule": "30 2 * * *"
+    }
   ]
 }

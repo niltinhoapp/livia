@@ -134,7 +134,7 @@ export async function applyBillingStatusExpiry(
 // Cria (se novo) ou atualiza nome/tipo/config do bot do estabelecimento.
 export async function upsertEstablishmentConfig(
   id: string,
-  data: { name?: string; type?: EstablishmentType; bot?: BotConfig },
+  data: { name?: string; type?: EstablishmentType; bot?: BotConfig; dailyOwnerSummary?: Establishment["dailyOwnerSummary"] },
 ): Promise<Establishment> {
   const existing = await getEstablishment(id);
   const now = Date.now();
@@ -144,6 +144,7 @@ export async function upsertEstablishmentConfig(
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.type !== undefined ? { type: data.type } : {}),
         ...(data.bot !== undefined ? { bot: data.bot } : {}),
+        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       }
     : {
         id,
@@ -154,6 +155,7 @@ export async function upsertEstablishmentConfig(
         createdAt: now,
         billing: initialTrialBilling(now),
         bot: data.bot ?? defaultBotConfig(),
+        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       };
   await establishmentRef(id).set(merged, { merge: true });
   return merged;
@@ -833,7 +835,8 @@ export async function applyKnowledgeCorrection(
     const label = CORRECTION_CATEGORY_LABEL[correction.category];
     const dateStr = new Date(now).toLocaleDateString("pt-BR");
     const line = `[${label} — ${dateStr}] ${correction.correctText}`;
-    const notes = kb.notes ? `${kb.notes}\n${line}` : line;
+    const notes = kb.notes ? `${kb.notes}
+${line}` : line;
     await saveKnowledgeBase(establishmentId, { ...kb, notes });
   }
 
@@ -2199,4 +2202,8 @@ function isAlreadyExists(err: unknown): boolean {
   if (!e) return false;
   if (e.code === 6 || e.code === "already-exists") return true;
   return typeof e.message === "string" && e.message.includes("ALREADY_EXISTS");
+}
+
+export async function markDailyOwnerSummarySent(id: string, localDate: string): Promise<void> {
+  await establishmentRef(id).update({ "dailyOwnerSummary.lastSentDate": localDate });
 }
