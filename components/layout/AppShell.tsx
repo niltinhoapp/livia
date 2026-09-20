@@ -11,11 +11,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => { if (!loading && data && data.exists === false && pathname !== "/painel/onboarding") router.replace("/painel/onboarding"); }, [loading, data, pathname, router]);
   useEffect(() => { if (!loading && data?.billingRestricted && pathname !== "/painel/plano" && pathname !== "/painel/onboarding") router.replace("/painel/plano"); }, [loading, data, pathname, router]);
   return (
-    <div className="flex min-h-screen bg-gradient-to-br from-primary-50/70 via-surface-muted to-info-bg/20">
+    <div className="flex min-h-screen bg-primary-50">
       <Sidebar data={data} />
-      <div className="flex min-h-screen flex-1 flex-col"><Header data={data} />
-        {data && !data.serviceActive ? <div className="border-b border-warning/30 bg-warning-bg/70 px-4 py-3 text-sm text-warning-fg sm:px-6"><strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo registradas em Conversas. Fale com o suporte para reativar.</div> : null}
-        <main className="flex-1 px-4 pb-24 pt-6 sm:px-6 lg:pb-10">{children}</main>
+      <div className="flex min-h-screen flex-1 flex-col"><div className="border-b-4 border-primary"><Header data={data} /></div>
+        {data && !data.serviceActive ? <div className="border-b border-warning/30 bg-warning-bg px-4 py-3 text-sm text-warning-fg sm:px-6"><strong className="font-semibold">Atendimento pausado.</strong> A Livia não está respondendo automaticamente no WhatsApp: sua conta está suspensa. As mensagens dos clientes continuam sendo registradas em Conversas. Fale com o suporte para reativar.</div> : null}
+        <main className="flex-1 bg-gradient-to-br from-primary-50 via-ink-50 to-info-bg/40 px-4 pb-24 pt-6 sm:px-6 lg:pb-10">{children}</main>
       </div><MobileTabBar />
     </div>
   );
