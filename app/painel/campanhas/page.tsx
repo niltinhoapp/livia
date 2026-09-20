@@ -35,7 +35,7 @@ export default function CampaignsPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="Campanhas"
-        description="Crie campanhas pelo WhatsApp e acompanhe os resultados."
+        description="Planeje seus envios, acompanhe a entrega e entenda o resultado de cada campanha."
         action={
           <div className="flex gap-2">
             <Link href="/painel/campanhas/templates">
@@ -51,7 +51,7 @@ export default function CampaignsPage() {
       />
 
       {/* -------- Resumo -------- */}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label="Campanhas" value={campaigns.length} tone="primary" icon={<Megaphone className="h-5 w-5" />} />
         <StatCard label="Enviados" value={totals.sent} tone="info" icon={<Send className="h-5 w-5" />} />
         <StatCard label="Entregues" value={totals.delivered} tone="info" icon={<CheckCheck className="h-5 w-5" />} />
@@ -65,6 +65,7 @@ export default function CampaignsPage() {
       </div>
 
       {/* -------- Listagem -------- */}
+      {campaigns.length > 0 && <div className="mb-3 flex items-end justify-between gap-3"><div><h2 className="text-base font-semibold text-ink-900">Histórico de campanhas</h2><p className="mt-1 text-xs text-ink-500">Envios e resultados registrados para este estabelecimento.</p></div></div>}
       {campaigns.length === 0 ? (
         <EmptyState
           icon={<Megaphone className="h-5 w-5" />}
