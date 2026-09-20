@@ -2,7 +2,7 @@ import { forwardRef } from "react";
 import type { InputHTMLAttributes, TextareaHTMLAttributes, SelectHTMLAttributes, ReactNode } from "react";
 
 const controlBase =
-  "w-full rounded-control border px-3 py-2.5 text-sm text-ink-900 placeholder:text-ink-400 transition-colors duration-150 focus:outline-none disabled:bg-line/20 disabled:text-ink-400";
+  "w-full min-h-11 rounded-control border bg-white px-3 py-2.5 text-sm text-ink-900 placeholder:text-ink-400 transition-colors duration-150 focus:outline-none disabled:bg-line/20 disabled:text-ink-400";
 const controlValid = "border-line focus:border-primary focus:ring-2 focus:ring-primary/20";
 const controlInvalid = "border-danger focus:border-danger focus:ring-2 focus:ring-danger/20";
 
