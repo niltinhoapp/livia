@@ -38,7 +38,7 @@ export function CampaignsTable({ campaigns, onDeleted }: { campaigns: Campaign[]
   return (
     <>
       {/* Desktop: tabela */}
-      <div className="hidden overflow-hidden rounded-control border border-line sm:block">
+      <div className="hidden overflow-hidden rounded-card border border-line bg-white shadow-e1 sm:block">
         <table className="w-full text-sm">
           <thead className="bg-surface-muted text-left text-xs font-semibold uppercase tracking-wide text-ink-400">
             <tr>
@@ -58,7 +58,7 @@ export function CampaignsTable({ campaigns, onDeleted }: { campaigns: Campaign[]
             {campaigns.map((c) => {
               const status = CAMPAIGN_STATUS_LABEL[c.status];
               return (
-                <tr key={c.id}>
+                <tr key={c.id} className="transition-colors hover:bg-ink-50/70">
                   <td className="px-4 py-3 font-medium text-ink-900">{c.name}</td>
                   <td className="px-4 py-3 text-ink-500">{c.template?.name ?? "—"}</td>
                   <td className="px-4 py-3 text-ink-500">
@@ -87,7 +87,7 @@ export function CampaignsTable({ campaigns, onDeleted }: { campaigns: Campaign[]
                       )}
                       <Link
                         href={`/painel/campanhas/${c.id}`}
-                        className="inline-flex items-center gap-0.5 text-sm font-semibold text-primary hover:underline"
+                        className="inline-flex items-center gap-0.5 rounded-control px-2 py-1 text-sm font-semibold text-primary hover:bg-primary-light"
                       >
                         Ver <ChevronRight className="h-3.5 w-3.5" />
                       </Link>
@@ -105,7 +105,7 @@ export function CampaignsTable({ campaigns, onDeleted }: { campaigns: Campaign[]
         {campaigns.map((c) => {
           const status = CAMPAIGN_STATUS_LABEL[c.status];
           return (
-            <div key={c.id} className="rounded-control border border-line p-3">
+            <div key={c.id} className="rounded-card border border-line bg-white p-4 shadow-e1">
               <Link href={`/painel/campanhas/${c.id}`} className="block">
               <div className="flex items-center justify-between gap-2">
                 <p className="font-semibold text-ink-900">{c.name}</p>
