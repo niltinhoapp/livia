@@ -46,7 +46,7 @@ export interface Establishment {
   bot: BotConfig;
 }
 
-export type PanelAccess = "allowed" | "blocked";
+export interface DailyOwnerSummaryConfig {\n  enabled: boolean;\n  ownerPhone: string;\n  templateName: string;\n  templateLang: string;\n  lastSentDate?: string; // YYYY-MM-DD no fuso configurado da agenda\n}\n\nexport type PanelAccess = "allowed" | "blocked";
 
 // Estado comercial canônico — decidido pela Lívia, nunca o vocabulário bruto
 // do Asaas (isso fica em `subscriptionStatus`, só diagnóstico). Ver
