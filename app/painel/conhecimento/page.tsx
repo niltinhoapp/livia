@@ -153,12 +153,12 @@ export default function KnowledgePanel() {
     <div className="mx-auto max-w-3xl">
       <PageHeader
         title="Ensine a Livia"
-        description="Conte pra Livia como seu negócio funciona. Quanto mais completo, melhor ela atende — e ela só fala o que estiver aqui, nunca inventa."
+        description="Defina as informações e regras que orientam o atendimento da Livia. Revise com calma e mantenha esta base sempre atualizada."
       />
 
       {/* ---- Primeira entrada: nada foi preenchido ainda ---- */}
       {showFirstVisitChoice ? (
-        <Card className="mb-5 border-primary/30 bg-primary-light/30">
+        <Card className="mb-5 border-primary/30 bg-primary-light/20 shadow-e2">
           <div className="mb-2 flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
             <p className="text-sm font-semibold text-ink-900">Como você quer começar?</p>
@@ -183,7 +183,7 @@ export default function KnowledgePanel() {
           </div>
         </Card>
       ) : (
-        <Card className="mb-5 border-dashed bg-primary-light/30">
+        <Card className="mb-5 border-primary/20 bg-primary-light/10 shadow-e1">
           <div className="mb-3 flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
             <p className="text-sm font-semibold text-ink-900">Não sabe por onde começar?</p>
@@ -342,9 +342,9 @@ export default function KnowledgePanel() {
         </Button>
       </GuidedSection>
 
-      <div className="mt-6 border-t border-line bg-white/90 py-3 lg:sticky lg:bottom-0 lg:z-10 lg:-mx-6 lg:px-6 lg:backdrop-blur">
-        <div className="flex items-center gap-4">
-          <Button loading={state === "saving"} onClick={save}>
+      <div className="mt-6 rounded-card border border-line bg-white/95 px-4 py-3 shadow-e2 lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Base de conhecimento</p><p className="text-xs text-ink-500">Salve para aplicar estas orientações nos próximos atendimentos.</p></div><Button loading={state === "saving"} onClick={save}>
             {state === "saving" ? "Salvando…" : "Salvar"}
           </Button>
           {state === "saved" && <span className="text-sm font-semibold text-success-fg">Salvo!</span>}
