@@ -18,6 +18,7 @@ import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
+import { composeOrderReply, type OrderSummaryForReply } from "@/lib/ai/orderReply";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -225,11 +226,18 @@ function buildSystemPrompt(
   if (bot.ordersEnabled) {
     rules.push(
       "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
-      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte search_menu/get_menu_product e o resumo do pedido.",
+      "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte list_menu/search_menu/get_menu_product e o resumo do pedido.",
+      "- Se a pessoa pedir o cardápio ou perguntar o que tem, sem citar item, use list_menu. Para um item específico, search_menu.",
+      "- Se a busca trouxer mais de um item que sirva para o que a pessoa pediu, PERGUNTE qual antes de adicionar. Nunca escolha por ela.",
+      "- Quando o produto tiver tamanho ou adicional obrigatório, pergunte antes de adicionar, uma coisa de cada vez.",
       "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
+      "- Para mudar tamanho ou adicional de um item que já está no pedido, use update_order_item com variantId/modifierOptionIds — não remova e adicione de novo. Em modifierOptionIds mande a lista COMPLETA de adicionais que o item deve ficar.",
       "- Antes de pedir confirmação, consulte get_order_draft e apresente exclusivamente o resumo retornado.",
+      "- Se o resumo marcar um item como repetido (repeatedProduct), confirme a quantidade com a pessoa antes de fechar — costuma ser envio duplicado sem querer.",
       "- Só use confirm_order depois de o cliente confirmar explicitamente e usando orderId/version do resumo.",
-      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa."
+      "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa.",
+      "- Se o resumo trouxer pixInstructions, repasse essas instruções como estão quando a pessoa escolher pix. Você NUNCA confirma pagamento: mesmo que ela diga que pagou ou mande comprovante, o pagamento só é confirmado pelo estabelecimento.",
+      "- Ao apresentar cardápio ou fechar pedido, escreva como um atendente de balcão: frases curtas, sem tabela, sem repetir o preço de tudo que já foi dito, e confirmando o que a pessoa pediu com as palavras dela.",
     );
   }
   rules.push(
@@ -253,7 +261,7 @@ function buildSystemPrompt(
   // ESPECÍFICA desta mensagem — mais eficaz do que confiar só na instrução
   // genérica. Determinístico (lib/ai/trustPolicy.ts): zero chamadas de IA
   // extras.
-  const trust = evaluateTrust(intent, kb);
+  const trust = evaluateTrust(intent, kb, { ordersEnabled: Boolean(bot.ordersEnabled) });
   if (!trust.hasSource && trust.directive) {
     sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
   }
@@ -914,6 +922,12 @@ const MAX_ORDER_MUTATIONS_PER_TURN = 8;
 const ORDER_DRAFT_MUTATION_TOOLS = new Set<ToolName>([
   "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment",
 ]);
+// Ferramentas cujo retorno é o resumo canônico do pedido — a fonte do
+// fallback de estouro do loop (ver ultimoPedido).
+const ORDER_SUMMARY_TOOLS = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order", "get_order_draft",
+]);
+
 
 function isTrivialPostOrderConfirmation(
   customerText: string,
@@ -1055,6 +1069,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     let orderMutationAttempts = 0;
     let orderMutationLimitReached = false;
     let orderConfirmedThisTurn = false;
+  // Último resumo REAL do pedido devolvido por uma ferramenta neste turno.
+  // Serve ao fallback do estouro do loop: se o carrinho já tem item gravado,
+  // transferir sem contar isso deixa o cliente sem saber que metade do pedido
+  // dele existe — o mesmo erro que o fallback da agenda já evita.
+  let ultimoPedido: OrderSummaryForReply | null = null;
   let handoffRequested = false;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
@@ -1229,6 +1248,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
             // instante de outro dia (assertSameDay em lib/ai/tools.ts).
             if (data?.date) toolCtx.discussedDate = data.date;
           }
+        }
+        if (result.ok && ORDER_SUMMARY_TOOLS.has(name)) {
+          const summary = result.data as OrderSummaryForReply | null;
+          if (summary?.items) ultimoPedido = summary;
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
       }
@@ -1542,6 +1565,19 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     return {
       ...base,
       reply: `Estes são os horários livres: ${horarios}. Qual deles fica melhor pra você?`,
+      handoff: false,
+    };
+  }
+
+  // Pedido em andamento (ou já confirmado) neste turno: o carrinho existe de
+  // verdade no Firestore. Cair no handoff genérico aqui deixaria o cliente
+  // sem saber que o pedido dele está montado — e a conversa muda, esperando
+  // alguém no painel. O resumo abaixo vem do backend, nunca do modelo.
+  const pedidoParaResponder = ultimoPedido ? composeOrderReply(ultimoPedido) : null;
+  if (pedidoParaResponder) {
+    return {
+      ...base,
+      reply: pedidoParaResponder,
       handoff: false,
     };
   }

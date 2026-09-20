@@ -8,6 +8,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { Toggle } from "@/components/ui/Toggle";
+import { OrderSettingsEditor } from "./OrderSettingsEditor";
 
 const money = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const labels: Record<OrderStatus, { label: string; tone: StatusTone }> = { draft: { label: "Rascunho", tone: "neutral" }, awaiting_confirmation: { label: "Aguardando confirmação", tone: "warning" }, confirmed: { label: "Novo", tone: "warning" }, accepted: { label: "Aceito", tone: "info" }, preparing: { label: "Preparando", tone: "info" }, ready_for_pickup: { label: "Pronto para retirada", tone: "success" }, out_for_delivery: { label: "Saiu para entrega", tone: "info" }, completed: { label: "Concluído", tone: "success" }, cancelled: { label: "Cancelado", tone: "danger" }, rejected: { label: "Recusado", tone: "danger" } };
@@ -24,16 +25,20 @@ function reaisText(cents: number): string {
 }
 
 export default function PedidosPage() {
-  const [orders, setOrders] = useState<FoodOrder[]>([]); const [categories, setCategories] = useState<MenuCategory[]>([]); const [products, setProducts] = useState<MenuProduct[]>([]); const [state, setState] = useState<"loading" | "ready" | "disabled" | "error">("loading");
-  const load = useCallback(async () => { setState("loading"); const [o, c, p] = await Promise.all([fetch("/api/orders"), fetch("/api/menu/categories"), fetch("/api/menu/products")]); if (o.status === 404) { setState("disabled"); return; } if (!o.ok || !c.ok || !p.ok) { setState("error"); return; } const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]); setOrders(oj.orders ?? []); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready"); }, []);
+  const [orders, setOrders] = useState<FoodOrder[]>([]); const [categories, setCategories] = useState<MenuCategory[]>([]); const [products, setProducts] = useState<MenuProduct[]>([]); const [ordersEnabled, setOrdersEnabled] = useState(true); const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  // Com a IA de pedidos desligada, a tela continua inteira: o comerciante
+  // ainda precisa tocar os pedidos em andamento e mexer no cardápio. O que
+  // muda é só o aviso no topo.
+  const load = useCallback(async () => { setState("loading"); const [o, c, p] = await Promise.all([fetch("/api/orders"), fetch("/api/menu/categories"), fetch("/api/menu/products")]); if (!o.ok || !c.ok || !p.ok) { setState("error"); return; } const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]); setOrders(oj.orders ?? []); setOrdersEnabled(oj.ordersEnabled !== false); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready"); }, []);
   useEffect(() => { load(); }, [load]);
   const transition = async (id: string, status: OrderStatus) => { const r = await fetch(`/api/orders/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); if (r.ok) load(); };
   if (state === "loading") return <LoadingState />;
   if (state === "error") return <ErrorState onRetry={load} />;
-  if (state === "disabled") return <div className="mx-auto max-w-3xl"><PageHeader title="Pedidos" /><EmptyState title="Pedidos ainda não estão habilitados" description="Ative “Permitir pedidos pela IA” em Configurações para cadastrar o cardápio e receber pedidos." /></div>;
   return <div className="mx-auto max-w-5xl"><PageHeader title="Pedidos" description="Acompanhe novos pedidos e mantenha o cliente informado pela conversa." action={<Button variant="secondary" size="sm" onClick={load}>Atualizar</Button>} />
+    {!ordersEnabled && <Card className="mb-4 p-4"><p className="font-semibold">A Livia não está aceitando pedidos novos</p><p className="mt-1 text-sm text-ink-500">Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.</p></Card>}
     <section className="grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Fila de pedidos</h2>{orders.filter((o) => o.status !== "draft").length === 0 ? <EmptyState title="Nenhum pedido confirmado" description="Pedidos confirmados pelo WhatsApp aparecem aqui." /> : <div className="space-y-3">{orders.filter((o) => o.status !== "draft").map((o) => <Card key={o.id} className="p-4"><div className="flex justify-between gap-3"><div><p className="font-semibold">{o.contactName ?? o.contactPhone}</p><p className="text-xs text-ink-500">{o.fulfillment === "delivery" ? `Entrega: ${o.deliveryAddress?.raw ?? "endereço pendente"}` : "Retirada"} · {o.payment.method ?? "pagamento pendente"}</p></div><StatusBadge tone={labels[o.status].tone}>{labels[o.status].label}</StatusBadge></div><ul className="mt-3 text-sm text-ink-700">{o.items.map((i) => <li key={i.id}>{i.quantity}× {i.productName}{i.variantName ? ` · ${i.variantName}` : ""}{i.notes ? ` (${i.notes})` : ""}</li>)}</ul><p className="mt-3 font-bold">Total: {money(o.totalCents)}</p><div className="mt-3 flex flex-wrap gap-2">{next[o.status]?.map((n) => <Button key={n.status} size="sm" onClick={() => transition(o.id, n.status)}>{n.label}</Button>)}{["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery"].includes(o.status) && <Button size="sm" variant="danger" onClick={() => transition(o.id, "cancelled")}>Cancelar</Button>}</div></Card>)}</div>}</div>
-    <div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuEditor categories={categories} products={products} onChanged={load} /></div></section></div>;
+    <div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuEditor categories={categories} products={products} onChanged={load} /></div></section>
+    <section className="mt-6"><h2 className="mb-3 text-lg font-bold">Operação</h2><OrderSettingsEditor /></section></div>;
 }
 
 function MenuEditor({ categories, products, onChanged }: { categories: MenuCategory[]; products: MenuProduct[]; onChanged: () => void }) {

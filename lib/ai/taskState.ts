@@ -23,6 +23,7 @@ export type ToolName =
   | "reschedule_appointment"
   | "cancel_appointment"
   | "request_human_handoff"
+  | "list_menu"
   | "search_menu"
   | "get_menu_product"
   | "get_order_draft"

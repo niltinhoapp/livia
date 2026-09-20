@@ -50,6 +50,49 @@ export async function getMenuProduct(establishmentId: string, productId: string)
   const snap = await sub(establishmentId, "menuProducts").doc(productId).get();
   return snap.exists ? snap.data() as MenuProduct : null;
 }
+export async function getMenuCategory(establishmentId: string, categoryId: string): Promise<MenuCategory | null> {
+  const snap = await sub(establishmentId, "menuCategories").doc(categoryId).get();
+  return snap.exists ? snap.data() as MenuCategory : null;
+}
+
+// Categoria desativada tira do ar TODOS os produtos dela. Antes, só
+// `product.active` contava: desativar "Sobremesas" porque acabou o sorvete
+// não impedia a Livia de seguir vendendo cada sobremesa individualmente.
+//
+// Categoria ausente não bloqueia de propósito — produto órfão (categoria
+// removida ou catálogo legado) mantém o comportamento antigo, para que a
+// correção não derrube venda de item que hoje funciona.
+export function categoryBlocksSale(category: MenuCategory | null | undefined): boolean {
+  return category ? category.active === false : false;
+}
+
+// Visão do catálogo para o caminho de PEDIDO (IA e montagem): só o que pode
+// ser vendido agora. O painel continua usando listMenuProducts/getMenuProduct,
+// que devolvem tudo — o comerciante precisa enxergar e reativar o que está
+// desligado.
+export async function listAvailableMenuProducts(establishmentId: string): Promise<MenuProduct[]> {
+  const [products, categories] = await Promise.all([listMenuProducts(establishmentId), listMenuCategories(establishmentId)]);
+  const blocked = new Set(categories.filter((c) => c.active === false).map((c) => c.id));
+  return products.filter((p) => p.active && !blocked.has(p.categoryId));
+}
+// Cardápio inteiro, agrupado, só com o que pode ser vendido agora. Existe
+// para a pergunta mais comum de lanchonete — "manda o cardápio" — que antes
+// obrigava a IA a chutar uma palavra de busca e arriscava esconder categoria
+// inteira (ninguém pergunta por "refrigerante" antes de ver que há bebidas).
+export interface AvailableMenuCategory { id: string; name: string; products: MenuProduct[] }
+export async function listAvailableMenu(establishmentId: string): Promise<AvailableMenuCategory[]> {
+  const [products, categories] = await Promise.all([listMenuProducts(establishmentId), listMenuCategories(establishmentId)]);
+  const active = products.filter((p) => p.active);
+  return categories
+    .filter((c) => c.active !== false)
+    .map((c) => ({ id: c.id, name: c.name, products: active.filter((p) => p.categoryId === c.id) }))
+    .filter((c) => c.products.length > 0);
+}
+export async function getAvailableMenuProduct(establishmentId: string, productId: string): Promise<MenuProduct | null> {
+  const product = await getMenuProduct(establishmentId, productId);
+  if (!product?.active) return null;
+  return categoryBlocksSale(await getMenuCategory(establishmentId, product.categoryId)) ? null : product;
+}
 export async function saveMenuCategory(establishmentId: string, input: Partial<MenuCategory>, id?: string): Promise<MenuCategory> {
   const now = Date.now(); const ref = id ? sub(establishmentId, "menuCategories").doc(id) : sub(establishmentId, "menuCategories").doc();
   const previous = id ? await ref.get() : null;
@@ -94,11 +137,24 @@ export function calculateItem(product: MenuProduct, variantId: string | null | u
   const unitPriceCents = product.basePriceCents + (variant?.priceDeltaCents ?? 0) + modifiers.reduce((sum, m) => sum + m.priceDeltaCents, 0);
   return { id: "", productId: product.id, productName: product.name, variantId: variant?.id ?? null, variantName: variant?.name ?? null, quantity, unitPriceCents, modifiers, notes: text(notes, 300) || null, lineTotalCents: unitPriceCents * quantity };
 }
+// Bairro dito no WhatsApp quase nunca vem escrito igual ao cadastro
+// ("jardim america" x "Jardim América", espaço duplo, caixa alta). Sem
+// normalizar acento e espaçamento, a regra do bairro não casava e a taxa
+// caía silenciosamente na regra fixa — cobrança errada sem erro, sem log e
+// sem aviso ao cliente ou ao painel.
+const neighborhoodKey = (value: unknown) =>
+  text(value, 80)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase("pt-BR");
+
 export function deliveryFee(settings: OrderSettings, fulfillment: FoodOrder["fulfillment"], neighborhood?: string | null): number {
   if (fulfillment !== "delivery") return 0;
   if (!settings.deliveryEnabled) throw new Error("Entrega não está disponível.");
-  const key = text(neighborhood, 80).toLocaleLowerCase("pt-BR");
-  const rule = settings.deliveryRules.find((r) => r.kind === "neighborhood" && r.neighborhood.toLocaleLowerCase("pt-BR") === key) ?? settings.deliveryRules.find((r) => r.kind === "fixed");
+  const key = neighborhoodKey(neighborhood);
+  const rule = settings.deliveryRules.find((r) => r.kind === "neighborhood" && neighborhoodKey(r.neighborhood) === key) ?? settings.deliveryRules.find((r) => r.kind === "fixed");
   if (!rule) throw new Error("Não há taxa configurada para esse endereço."); return rule.feeCents;
 }
 function recalculate(order: FoodOrder, settings: OrderSettings): FoodOrder {
@@ -125,11 +181,56 @@ async function mutateDraft(establishmentId: string, conversationId: string, cont
   return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const current = snap.data() as FoodOrder; if (operationId && current.appliedOperationIds?.includes(operationId)) return current; if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser alterado."); const changed = await mutation(current, settings); const updated = { ...recalculate(changed, settings), status: "draft" as const, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: Date.now() }; tx.set(ref, updated); return updated; });
 }
 export async function addOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, productId: string, variantId: string | null, modifierOptionIds: string[], quantity: number, notes?: string | null, operationId?: string, allowCreateAfterConfirmation = false) {
-  const product = await getMenuProduct(establishmentId, productId); if (!product) throw new Error("Produto não encontrado."); const item = calculateItem(product, variantId, modifierOptionIds, quantity, notes); item.id = sub(establishmentId, "orders").doc().id;
+  const product = await getMenuProduct(establishmentId, productId); if (!product) throw new Error("Produto não encontrado.");
+  if (categoryBlocksSale(await getMenuCategory(establishmentId, product.categoryId))) throw new Error("Produto indisponível.");
+  const item = calculateItem(product, variantId, modifierOptionIds, quantity, notes); item.id = sub(establishmentId, "orders").doc().id;
   return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => ({ ...order, items: [...order.items, item] }), allowCreateAfterConfirmation);
 }
-export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: { quantity?: number; notes?: string | null }, operationId?: string) {
-  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => { const item = order.items.find((i) => i.id === itemId); if (!item) throw new Error("Item não encontrado."); const quantity = input.quantity ?? item.quantity; if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("Quantidade inválida."); const next = { ...item, quantity, notes: input.notes === undefined ? item.notes : text(input.notes, 300) || null, lineTotalCents: item.unitPriceCents * quantity }; return { ...order, items: order.items.map((i) => i.id === itemId ? next : i) }; });
+// Trocar tamanho ou adicional de um item que já está no carrinho.
+//
+// Antes, `update_order_item` só mexia em quantidade e observação: "troca a
+// pizza pra grande" ou "tira a cebola do que já pedi" exigia que o modelo
+// decidisse sozinho decompor em remove + add, sem rede de segurança. Agora a
+// troca é uma operação só — e o preço NUNCA vem do modelo: a composição nova
+// é recalculada por `calculateItem` a partir do produto real, com as mesmas
+// travas de disponibilidade, variação e grupo obrigatório da montagem.
+export interface UpdateOrderItemInput {
+  quantity?: number;
+  notes?: string | null;
+  // `undefined` = não mexe; `null` = remove a variação escolhida.
+  variantId?: string | null;
+  modifierOptionIds?: string[];
+}
+export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: UpdateOrderItemInput, operationId?: string) {
+  const changesComposition = input.variantId !== undefined || input.modifierOptionIds !== undefined;
+  let recomposed: OrderItem | null = null;
+  if (changesComposition) {
+    // Produto lido fora da transação, igual faz addOrderItem: o que entra na
+    // transação já é um item calculado pelo backend.
+    const current = await getActiveOrder(establishmentId, conversationId);
+    const item = current?.items.find((i) => i.id === itemId);
+    if (!item) throw new Error("Item não encontrado.");
+    const product = await getMenuProduct(establishmentId, item.productId);
+    if (!product) throw new Error("Produto não encontrado.");
+    if (categoryBlocksSale(await getMenuCategory(establishmentId, product.categoryId))) throw new Error("Produto indisponível.");
+    recomposed = calculateItem(
+      product,
+      input.variantId === undefined ? item.variantId : input.variantId,
+      input.modifierOptionIds === undefined ? item.modifiers.map((m) => m.optionId) : input.modifierOptionIds,
+      input.quantity ?? item.quantity,
+      input.notes === undefined ? item.notes : input.notes,
+    );
+    recomposed.id = item.id;
+  }
+  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => {
+    const item = order.items.find((i) => i.id === itemId); if (!item) throw new Error("Item não encontrado.");
+    if (recomposed) {
+      // O item pode ter mudado entre a leitura do produto e a transação.
+      if (recomposed.productId !== item.productId) throw new Error("Item não encontrado.");
+      return { ...order, items: order.items.map((i) => i.id === itemId ? recomposed! : i) };
+    }
+    const quantity = input.quantity ?? item.quantity; if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("Quantidade inválida."); const next = { ...item, quantity, notes: input.notes === undefined ? item.notes : text(input.notes, 300) || null, lineTotalCents: item.unitPriceCents * quantity }; return { ...order, items: order.items.map((i) => i.id === itemId ? next : i) };
+  });
 }
 export async function removeOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, operationId?: string) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => order.items.some((i) => i.id === itemId) ? { ...order, items: order.items.filter((i) => i.id !== itemId) } : (() => { throw new Error("Item não encontrado."); })()); }
 export async function setOrderFulfillment(establishmentId: string, conversationId: string, phone: string, name: string | null, fulfillment: "pickup" | "delivery", operationId?: string) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (fulfillment === "pickup" && !settings.pickupEnabled) throw new Error("Retirada não está disponível."); if (fulfillment === "delivery" && !settings.deliveryEnabled) throw new Error("Entrega não está disponível."); return { ...order, fulfillment, deliveryAddress: fulfillment === "pickup" ? null : order.deliveryAddress }; }); }
@@ -148,6 +249,10 @@ export async function confirmOrder(establishmentId: string, orderId: string, exp
       const productSnap = await tx.get(sub(establishmentId, "menuProducts").doc(item.productId));
       if (!productSnap.exists) throw new Error(`${item.productName} não está mais disponível.`);
       const product = productSnap.data() as MenuProduct;
+      // Mesma trava da montagem, relida aqui dentro: a categoria pode ter
+      // sido desativada entre o rascunho e a confirmação.
+      const categorySnap = await tx.get(sub(establishmentId, "menuCategories").doc(product.categoryId));
+      if (categoryBlocksSale(categorySnap.exists ? categorySnap.data() as MenuCategory : null)) throw new Error(`${item.productName} não está mais disponível.`);
       let current: OrderItem;
       try { current = calculateItem(product, item.variantId, item.modifiers.map((m) => m.optionId), item.quantity, item.notes); }
       catch { throw new Error(`${item.productName} mudou ou não está mais disponível.`); }
