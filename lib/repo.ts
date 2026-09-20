@@ -1095,6 +1095,14 @@ export async function listCampaignRecipients(establishmentId: string, campaignId
   return snap.docs.map((doc) => doc.data() as CampaignRecipient);
 }
 
+/** Total de destinatários já materializados em campanhas do tenant.
+ * Durante o trial, este total funciona como cota acumulada entre TODAS as
+ * campanhas: 10x10, 5x20 ou 1x100 consomem a mesma cota de 100. */
+export async function countTrialCampaignRecipients(establishmentId: string): Promise<number> {
+  const snap = await sub(establishmentId, "campaignRecipients").count().get();
+  return snap.data().count;
+}
+
 /** Remove somente um rascunho que falhou durante a preparação e seus
  * recipients parciais. Campanhas preparadas/ativas nunca são apagadas aqui. */
 export async function deleteDraftCampaign(establishmentId: string, campaignId: string): Promise<boolean> {
