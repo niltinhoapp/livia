@@ -4,7 +4,7 @@ import { getDashboardMetrics } from "@/lib/dashboard";
 import { getScheduleConfig } from "@/lib/scheduling";
 import { markDailyOwnerSummarySent } from "@/lib/repo";
 import { sendTemplate } from "@/lib/whatsapp/client";
-import type { Establishment, DayHours } from "@/types";
+import type { Establishment } from "@/types";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
       const schedule = await getScheduleConfig(est.id);
       const local = new Date(now + schedule.utcOffsetMinutes * 60000);
       const date = local.toISOString().slice(0, 10);
-      const day = schedule.days[String(local.getUTCDay())] as DayHours | null | undefined;
+      const day = schedule.days[String(local.getUTCDay())];
       if (!day || cfg.lastSentDate === date) { skipped++; continue; }
       const [hh, mm] = day.close.split(":").map(Number);
       const closeMinute = hh * 60 + mm, currentMinute = local.getUTCHours() * 60 + local.getUTCMinutes();
