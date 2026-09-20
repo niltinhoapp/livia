@@ -244,8 +244,6 @@ export default function ConfigPanel() {
           <Toggle checked={dailySummary.enabled} onChange={(v) => setDailySummary({ ...dailySummary, enabled: v })} title="Enviar resumo diário" desc="Escolha abaixo o horário em que o proprietário deve receber o resumo." />
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div><Label>WhatsApp do proprietário</Label><Input inputMode="tel" value={dailySummary.ownerPhone} onChange={(e) => setDailySummary({ ...dailySummary, ownerPhone: e.target.value })} placeholder="5511999999999" /><FieldHelp>Use DDI + DDD + número.</FieldHelp></div>
-            <div><Label>Template aprovado na Meta</Label><Input value={dailySummary.templateName} onChange={(e) => setDailySummary({ ...dailySummary, templateName: e.target.value })} placeholder="resumo_diario_livia" /><FieldHelp>Necessário para o envio proativo.</FieldHelp></div>
-            <div><Label>Idioma do template</Label><Input value={dailySummary.templateLang} onChange={(e) => setDailySummary({ ...dailySummary, templateLang: e.target.value })} placeholder="pt_BR" /></div>
             <div><Label>Horário do resumo</Label><Input type="time" value={dailySummary.sendTime ?? "18:00"} onChange={(e) => setDailySummary({ ...dailySummary, sendTime: e.target.value })} /><FieldHelp>Horário local configurado na agenda.</FieldHelp></div>
           </div>
           <div className="mt-5 rounded-control border border-primary/20 bg-primary-light/10 p-4"><p className="text-sm font-semibold text-ink-900">O que o proprietário recebe</p><p className="mt-1 text-xs leading-relaxed text-ink-500">Atendimentos do dia, agendamentos realizados, oportunidades encontradas e conversas que precisam de atenção.</p></div>
