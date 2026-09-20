@@ -8,9 +8,10 @@ entregue à operação.
 o estado aqui antes de ser considerada concluída. Decisão tomada em
 conversa que não estiver registrada neste arquivo não existe.
 
-- Última atualização: 2026-09-19
-- Estado geral: **F1 concluída na branch `feat/v2-f1-correcoes-base`,
-  aguardando validação. F2 não autorizada.**
+- Última atualização: 2026-09-20
+- Estado geral: **F1 e F2 concluídas, aguardando validação. Ainda sem
+  push: o repositório não está autorizado para escrita nesta sessão (ver
+  seção 8).**
 - Anexos:
   [`ESTADO-ATUAL.md`](./ESTADO-ATUAL.md) — auditoria do que já existe
   (pronto / parcial / falta) e referência técnica da importação por visão;
@@ -151,7 +152,7 @@ anterior** e reduziu o risco atribuído à F12.
 |---|---|---|---|---|
 | F0 | Auditoria, pesquisa de provedores, arquitetura e plano | — | — | **Concluída** |
 | F1 | Correções de base: categoria desativada bloquear produtos; acento na taxa de bairro; desacoplar painel do toggle de IA; `evaluateTrust` considerar cardápio | — | Baixo | **Concluída** — ver 4.1 |
-| F2 | Tela de configuração de pedido no painel (retirada/entrega, taxas, métodos aceitos, instruções PIX), consumindo a API existente | F1 | Baixo | Pendente |
+| F2 | Tela de configuração de pedido no painel (retirada/entrega, taxas, métodos aceitos, instruções PIX), consumindo a API existente | F1 | Baixo | **Concluída** — ver 4.2 |
 | F3 | Conversa: tool de cardápio completo; `pixInstructions` chegando à Lívia; tom do prompt de pedido; perguntar em item ambíguo; destacar item repetido no resumo | F2 | Baixo | Pendente |
 | F4 | Robustez: fallback determinístico no estouro do tool loop; `update_order_item` aceitar variação/adicional; resolver `awaiting_confirmation` | F3 | Médio | Pendente |
 | F5 | **Núcleo de pagamentos**: contrato, status neutros, registry, credenciais cifradas, rota de webhook genérica, adapter falso para teste — sem provedor real | F4 | Médio | Pendente |
@@ -216,6 +217,51 @@ Testes: 1839 passando (eram 1820 na base), 19 novos em
 Custo conhecido: `addOrderItem` faz uma leitura extra de documento
 (categoria) por item adicionado, e `confirmOrder` uma por item na
 transação.
+
+### 4.2 F2 — o que mudou
+
+Branch `feat/v2-f2-config-pedidos`, a partir de `feat/v2-f1-correcoes-base`.
+Sem merge.
+
+A API `/api/orders/settings` existia desde o MVP e **nenhuma tela a
+consumia**: o estabelecimento ficava preso no padrão (só retirada, entrega
+desligada, taxa R$ 0, todos os métodos aceitos, sem chave PIX), e só dava
+pra mudar chamando a API na mão. A F2 é a interface que faltava — sem
+nenhuma regra nova de domínio e sem tocar em contrato de backend.
+
+Novo componente `app/painel/pedidos/OrderSettingsEditor.tsx`, montado numa
+seção "Operação" na própria tela de Pedidos (a página em si mudou em 3
+linhas). Cobre: retirada e entrega; taxa padrão e taxa por bairro, com
+adicionar e remover; formas de pagamento aceitas; e instruções de PIX,
+que só aparecem quando PIX está entre as formas aceitas.
+
+Duas decisões que valem registro:
+
+A **taxa padrão é opcional e explícita**. No backend, a regra `fixed` é o
+fallback para bairro não listado; deixar de enviá-la faz a Livia recusar
+endereço fora da lista em vez de chutar um valor. Em vez de esconder isso,
+a tela expõe como escolha ("Cobrar uma taxa padrão"), com o efeito
+descrito em texto.
+
+As **travas são de formulário, não de domínio**. A tela recusa salvar sem
+retirada nem entrega, sem nenhuma forma de pagamento, com taxa inválida,
+ou com entrega ligada e nenhuma taxa configurada — situações em que o
+estabelecimento ficaria impossibilitado de fechar pedido. Quem valida o
+dado de verdade continua sendo `normalizeOrderSettings`; nada foi
+adicionado lá.
+
+O campo `pixInstructions` passa a ser preenchível, mas **ainda não chega
+à Livia** — isso é F3. O texto na tela diz isso ao comerciante, junto do
+aviso de que a confirmação de pagamento continua sendo dele.
+
+Testes: 1853 passando (1839 ao fim da F1), 14 novos em
+`app/painel/pedidos/OrderSettingsEditor.test.tsx` cobrindo a conversão de
+ida e volta entre `OrderSettings` e formulário, as quatro travas e o
+comportamento de carregar/salvar. Usei `fireEvent` em vez de
+`@testing-library/user-event` para não adicionar dependência ao projeto.
+`tsc --noEmit` limpo.
+
+---
 
 ## 5. Trilha externa (PagBank e InfinitePay)
 
@@ -286,3 +332,37 @@ liberada comercialmente.
   descartada e motivo — inclusive quando corrigir algo que já estava
   escrito aqui (ver seção 5 como exemplo).
 - Premissa só sai da seção 1 por decisão explícita registrada na seção 3.
+
+---
+
+## 8. Pendência aberta: escrita no repositório
+
+As branches da V2 existem e estão commitadas, mas **ainda não subiram**.
+O proxy da sessão recusa `git push` com "não está no conjunto de
+repositórios autorizados"; leitura (`clone`, `fetch`) funciona
+normalmente, então a base segue sendo acompanhada.
+
+O que foi verificado na documentação oficial: a integração de GitHub do
+Claude é **somente leitura** (sincroniza arquivos para chat e Projects,
+não concede push), e não existe no Cowork controle para adicionar um
+repositório ao conjunto autorizado do proxy — há issue aberta no
+repositório do Claude Code relatando exatamente esta mensagem de erro.
+Ou seja: não é configuração que o dono do produto tenha deixado de
+fazer.
+
+Enquanto isso:
+
+- cada fase é entregue também como patch (`git format-patch`), aplicável
+  com `git am`, para que nenhum trabalho dependa da vida deste container;
+- a alternativa definitiva em avaliação é vincular a sessão ao computador
+  do dono do produto pelo app de desktop, e empurrar de lá com as
+  credenciais dele;
+- nenhum commit é recriado ou reescrito enquanto isso não se resolve.
+
+Branches locais, em ordem:
+
+| Branch | Commit | Conteúdo |
+|---|---|---|
+| `docs/v2-alimentacao` | `fb6091a` | Documentação da V2 |
+| `feat/v2-f1-correcoes-base` | `025ecb6` | F1 |
+| `feat/v2-f2-config-pedidos` | (este) | F2 |

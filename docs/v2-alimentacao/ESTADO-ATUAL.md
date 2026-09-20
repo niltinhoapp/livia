@@ -38,7 +38,7 @@ recomenda recriar algo que já funciona.
 
 | Item | O que existe | O que falta | Fase |
 |---|---|---|---|
-| Configuração de pedido (entrega, taxa, métodos, PIX) | API completa (`app/api/orders/settings/route.ts`) | Nenhuma tela do painel chama — estabelecimento travado no padrão (só retirada) | F2 |
+| ~~Configuração de pedido (entrega, taxa, métodos, PIX)~~ | Resolvido na F2: `OrderSettingsEditor` na seção Operação da tela de Pedidos | — | ✅ F2 |
 | `pixInstructions` | Campo persistido e validado | Nunca chega ao prompt nem a tool nenhuma | F3 |
 | ~~Disponibilidade por categoria~~ | Resolvido na F1: `categoryBlocksSale` + visão filtrada do catálogo para a IA | — | ✅ F1 |
 | ~~Taxa de entrega por bairro~~ | Resolvido na F1: `neighborhoodKey` normaliza acento, espaço e caixa | — | ✅ F1 |
