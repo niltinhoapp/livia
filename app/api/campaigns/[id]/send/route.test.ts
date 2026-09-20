@@ -63,9 +63,25 @@ describe("POST /api/campaigns/:id/send", () => {
     expect(activateCampaign).toHaveBeenCalledWith("est-a", "c1", {
       mode: "now",
       scheduledAt: null,
-      maxRecipients: 5,
+      maxRecipients: 200,
     });
-    expect(dispatchCampaignBatch).toHaveBeenCalledWith("est-a", "c1", { batchSize: 5 });
+    expect(dispatchCampaignBatch).toHaveBeenCalledWith("est-a", "c1", { batchSize: 200 });
+  });
+
+  it("limita campanha de conta em trial a 100 destinatários", async () => {
+    getEstablishment.mockResolvedValue({
+      id: "est-a",
+      whatsapp: { status: "connected" },
+      billing: { billingStatus: "trial", trialEndsAt: Date.now() + 60_000, updatedAt: Date.now() },
+    });
+    const response = await POST(req({ confirm: true }), { params: Promise.resolve({ id: "c1" }) });
+    expect(response.status).toBe(200);
+    expect(activateCampaign).toHaveBeenCalledWith("est-a", "c1", {
+      mode: "now",
+      scheduledAt: null,
+      maxRecipients: 100,
+    });
+    expect(dispatchCampaignBatch).toHaveBeenCalledWith("est-a", "c1", { batchSize: 100 });
   });
 
   it("retry/double click retorna ativação idempotente", async () => {
@@ -138,7 +154,7 @@ describe("POST /api/campaigns/:id/send", () => {
     expect(activateCampaign).toHaveBeenCalledWith("est-a", "c1", {
       mode: "scheduled",
       scheduledAt: future,
-      maxRecipients: 5,
+      maxRecipients: 200,
     });
   });
 });
