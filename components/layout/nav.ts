@@ -25,9 +25,9 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/painel/pedidos", label: "Pedidos", mobileLabel: "Pedidos", icon: ShoppingBag, group: "operacao" },
   { href: "/painel/conversas", label: "Conversas", mobileLabel: "Chat", icon: MessagesSquare, group: "operacao" },
   { href: "/painel/clientes", label: "Clientes", mobileLabel: "Clientes", icon: Users, group: "operacao" },
-  { href: "/painel/campanhas", label: "Campanhas", mobileLabel: "Campanhas", icon: Megaphone, group: "operacao" },
+  { href: "/painel/campanhas", label: "Campanhas", mobileLabel: "Campanha", icon: Megaphone, group: "operacao" },
   { href: "/painel/whatsapp", label: "WhatsApp", mobileLabel: "WhatsApp", icon: MessageCircle, group: "ajustes" },
-  { href: "/painel/conhecimento", label: "Conhecimento", mobileLabel: "Saber", icon: BookOpen, group: "ajustes" },
+  { href: "/painel/conhecimento", label: "Conhecimento", mobileLabel: "Base", icon: BookOpen, group: "ajustes" },
   { href: "/painel/plano", label: "Plano e cobrança", mobileLabel: "Plano", icon: CreditCard, group: "ajustes" },
-  { href: "/painel/configuracoes", label: "Configurações", mobileLabel: "Config", icon: Settings, group: "ajustes" },
+  { href: "/painel/configuracoes", label: "Configurações", mobileLabel: "Ajustes", icon: Settings, group: "ajustes" },
 ];
