@@ -134,7 +134,7 @@ export async function applyBillingStatusExpiry(
 // Cria (se novo) ou atualiza nome/tipo/config do bot do estabelecimento.
 export async function upsertEstablishmentConfig(
   id: string,
-  data: { name?: string; type?: EstablishmentType; bot?: BotConfig },
+  data: { name?: string; type?: EstablishmentType; bot?: BotConfig; dailyOwnerSummary?: Establishment["dailyOwnerSummary"] },
 ): Promise<Establishment> {
   const existing = await getEstablishment(id);
   const now = Date.now();
@@ -143,7 +143,7 @@ export async function upsertEstablishmentConfig(
         ...existing,
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.type !== undefined ? { type: data.type } : {}),
-        ...(data.bot !== undefined ? { bot: data.bot } : {}),
+        ...(data.bot !== undefined ? { bot: data.bot } : {}),\n        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       }
     : {
         id,
@@ -153,7 +153,7 @@ export async function upsertEstablishmentConfig(
         status: "active",
         createdAt: now,
         billing: initialTrialBilling(now),
-        bot: data.bot ?? defaultBotConfig(),
+        bot: data.bot ?? defaultBotConfig(),\n        ...(data.dailyOwnerSummary !== undefined ? { dailyOwnerSummary: data.dailyOwnerSummary } : {}),
       };
   await establishmentRef(id).set(merged, { merge: true });
   return merged;
@@ -2200,3 +2200,4 @@ function isAlreadyExists(err: unknown): boolean {
   if (e.code === 6 || e.code === "already-exists") return true;
   return typeof e.message === "string" && e.message.includes("ALREADY_EXISTS");
 }
+\nexport async function markDailyOwnerSummarySent(id: string, localDate: string): Promise<void> {\n  await establishmentRef(id).update({ "dailyOwnerSummary.lastSentDate": localDate });\n}\n
