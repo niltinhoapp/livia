@@ -54,7 +54,7 @@ export function MobileTabBar() {
               {extraItems.map((item) => {
                 const active = isActive(item.href);
                 const Icon = item.icon;
-                return <Link key={item.href} href={item.href} onClick={() => setOpen(false)} className={`flex min-h-12 items-center gap-3 rounded-control border px-3 py-2.5 text-sm font-semibold ${active ? "border-primary/30 bg-primary-50 text-primary-700 dark:bg-primary-900/40 dark:text-primary-200" : "border-line bg-white text-ink-700 dark:border-ink-700 dark:bg-ink-900"}`}><Icon className="h-4 w-4 shrink-0" />{item.label}</Link>;
+                return <Link key={item.href} href={item.href} onClick={() => setOpen(false)} className={`flex min-h-12 items-center gap-3 rounded-control border px-3 py-2.5 text-sm font-semibold ${active ? "border-primary/30 bg-primary-50 text-primary-700 dark:bg-primary-900/40 dark:text-primary-200" : "border-line bg-white text-ink-700 dark:border-ink-700 dark:bg-ink-900"}`}><Icon className="h-4 w-4 shrink-0" />{item.mobileLabel}</Link>;
               })}
             </div>
           </div>
