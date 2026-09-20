@@ -848,6 +848,15 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   }
 
   logStage("invoking AI", { msgId: msg.id, estId: est.id, conversationId: conversation.id, intent: detectedIntent.type });
+  // Lê o estado do carrinho DEPOIS de persistir a mensagem. O brain só recebe
+  // a autorização estrutural para confirmar quando existe um resumo pendente;
+  // texto do modelo não pode fabricar pedido, versão ou confirmação.
+  const activeOrder = est.bot.ordersEnabled
+    ? await (await import("@/lib/orders")).getActiveOrder(est.id, normalizePhone(contactPhone))
+    : null;
+  const orderAwaitingConfirmation = activeOrder?.status === "awaiting_confirmation"
+    ? { orderId: activeOrder.id, version: activeOrder.version }
+    : null;
   let brainResult: Awaited<ReturnType<typeof think>>;
   try {
     brainResult = await think({
@@ -860,6 +869,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       task: existingTask,
       intent: detectedIntent,
       hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
+      orderAwaitingConfirmation,
     });
   } catch (err) {
     // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).

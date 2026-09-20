@@ -159,10 +159,13 @@ describe("travas contra mutação duplicada", () => {
     const added = await runTool("add_order_item", { productId: pizza.id, quantity: 1, variantId: "media" }, ctx());
     await runTool("set_order_fulfillment", { fulfillment: "pickup" }, ctx());
     const ready = await runTool("set_order_payment", { method: "cash" }, ctx());
-    const { id, version } = ready.data as { id: string; version: number };
+    const { id } = ready.data as { id: string; version: number };
+    const prepared = await runTool("prepare_order_confirmation", { __operationId: "prepare-1" }, ctx());
+    const { version } = prepared.data as { version: number };
+    const confirmationCtx = (): ToolContext => ({ ...ctx(), orderConfirmation: { orderId: id, version, explicitlyConfirmed: true } });
 
-    const first = await runTool("confirm_order", { orderId: id, version }, ctx());
-    const again = await runTool("confirm_order", { orderId: id, version }, ctx());
+    const first = await runTool("confirm_order", { __operationId: "confirm-1" }, confirmationCtx());
+    const again = await runTool("confirm_order", { __operationId: "confirm-1" }, confirmationCtx());
     const mutation = await runTool("update_order_item", { itemId: itemIdOf(added.data), quantity: 5 }, ctx());
 
     expect(first.ok).toBe(true);

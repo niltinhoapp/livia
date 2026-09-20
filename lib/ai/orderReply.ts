@@ -13,7 +13,13 @@
 
 export interface OrderSummaryForReply {
   status?: string;
-  items?: { name: string; quantity: number; variant?: string | null }[];
+  items?: { name: string; quantity: number; variant?: string | null; modifiers?: string[]; notes?: string | null; lineTotalCents?: number }[];
+  subtotalCents?: number;
+  discountCents?: number;
+  deliveryFeeCents?: number;
+  fulfillment?: "pickup" | "delivery" | null;
+  deliveryAddress?: { raw: string; neighborhood: string | null; reference: string | null } | null;
+  payment?: { method: string | null } | null;
   totalCents?: number;
 }
 
@@ -28,4 +34,30 @@ export function composeOrderReply(order: OrderSummaryForReply): string | null {
     return `Pedido confirmado: ${linhas}.${total} Já mandei para a cozinha e te aviso quando estiver pronto.`;
   }
   return `Até aqui seu pedido está assim: ${linhas}.${total} Quer adicionar mais alguma coisa ou pode fechar?`;
+}
+
+// A frase de fechamento é montada exclusivamente do retorno canônico da
+// ferramenta. Ela não depende de o modelo repetir corretamente item, taxa ou
+// total antes de pedir o "sim" do cliente.
+export function composeOrderConfirmationRequest(order: OrderSummaryForReply): string | null {
+  const items = order.items ?? [];
+  if (!items.length || typeof order.totalCents !== "number") return null;
+  const lines = items.map((item) => {
+    const details = [item.variant, ...(item.modifiers ?? []), item.notes ? `obs.: ${item.notes}` : null].filter(Boolean).join(", ");
+    const value = typeof item.lineTotalCents === "number" ? ` — ${brl(item.lineTotalCents)}` : "";
+    return `• ${item.quantity}x ${item.name}${details ? ` (${details})` : ""}${value}`;
+  });
+  const fulfillment = order.fulfillment === "delivery" ? `Entrega${order.deliveryAddress ? `: ${order.deliveryAddress.raw}` : ""}` : "Retirada no local";
+  const payment = order.payment?.method ? `Pagamento: ${order.payment.method}.` : "";
+  return [
+    "Confira seu pedido:",
+    ...lines,
+    typeof order.subtotalCents === "number" ? `Subtotal: ${brl(order.subtotalCents)}.` : "",
+    typeof order.discountCents === "number" && order.discountCents > 0 ? `Desconto: ${brl(order.discountCents)}.` : "",
+    typeof order.deliveryFeeCents === "number" ? `Taxa de entrega: ${brl(order.deliveryFeeCents)}.` : "",
+    `Total: ${brl(order.totalCents)}.`,
+    fulfillment,
+    payment,
+    "Se estiver tudo certo, responda “confirmo” ou “pode fechar”.",
+  ].filter(Boolean).join("\n");
 }

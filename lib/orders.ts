@@ -159,7 +159,8 @@ export function deliveryFee(settings: OrderSettings, fulfillment: FoodOrder["ful
 }
 function recalculate(order: FoodOrder, settings: OrderSettings): FoodOrder {
   const subtotalCents = order.items.reduce((sum, item) => sum + item.lineTotalCents, 0); const deliveryFeeCents = deliveryFee(settings, order.fulfillment, order.deliveryAddress?.neighborhood);
-  return { ...order, subtotalCents, deliveryFeeCents, totalCents: subtotalCents + deliveryFeeCents };
+  const discountCents = Math.max(0, order.discountCents ?? 0);
+  return { ...order, subtotalCents, discountCents, deliveryFeeCents, totalCents: subtotalCents + deliveryFeeCents - discountCents };
 }
 async function draftFor(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId?: string, allowCreateAfterConfirmation = false): Promise<FoodOrder> {
   const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
@@ -172,13 +173,13 @@ async function draftFor(establishmentId: string, conversationId: string, contact
       if (!allowCreateAfterConfirmation) throw new Error("O pedido anterior já foi confirmado; inicie um novo pedido explicitamente.");
     }
     const ref = sub(establishmentId, "orders").doc(); const now = Date.now();
-    const order: FoodOrder = { id: ref.id, establishmentId, conversationId, contactPhone: normalizePhone(contactPhone), contactName, status: "draft", fulfillment: null, deliveryAddress: null, deliveryFeeCents: 0, payment: { method: null, status: "unpaid", changeForCents: null }, items: [], subtotalCents: 0, totalCents: 0, version: 1, createdAt: now, updatedAt: now, confirmedAt: null };
+    const order: FoodOrder = { id: ref.id, establishmentId, conversationId, contactPhone: normalizePhone(contactPhone), contactName, status: "draft", fulfillment: null, deliveryAddress: null, deliveryFeeCents: 0, discountCents: 0, payment: { method: null, status: "unpaid", changeForCents: null }, items: [], subtotalCents: 0, totalCents: 0, version: 1, confirmationRequestedAt: null, snapshot: null, createdAt: now, updatedAt: now, confirmedAt: null };
     tx.set(ref, order); tx.set(conversationRef, { activeOrderId: ref.id }, { merge: true }); return order;
   });
 }
 async function mutateDraft(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId: string | undefined, mutation: (order: FoodOrder, settings: OrderSettings) => Promise<FoodOrder> | FoodOrder, allowCreateAfterConfirmation = false): Promise<FoodOrder> {
   const draft = await draftFor(establishmentId, conversationId, contactPhone, contactName, operationId, allowCreateAfterConfirmation); const ref = orderRef(establishmentId, draft.id); const settings = await getOrderSettings(establishmentId);
-  return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const current = snap.data() as FoodOrder; if (operationId && current.appliedOperationIds?.includes(operationId)) return current; if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser alterado."); const changed = await mutation(current, settings); const updated = { ...recalculate(changed, settings), status: "draft" as const, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: Date.now() }; tx.set(ref, updated); return updated; });
+  return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const current = snap.data() as FoodOrder; if (operationId && current.appliedOperationIds?.includes(operationId)) return current; if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser alterado."); const changed = await mutation(current, settings); const updated = { ...recalculate(changed, settings), status: "draft" as const, confirmationRequestedAt: null, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: Date.now() }; tx.set(ref, updated); return updated; });
 }
 export async function addOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, productId: string, variantId: string | null, modifierOptionIds: string[], quantity: number, notes?: string | null, operationId?: string, allowCreateAfterConfirmation = false) {
   const product = await getMenuProduct(establishmentId, productId); if (!product) throw new Error("Produto não encontrado.");
@@ -238,29 +239,62 @@ export async function setOrderAddress(establishmentId: string, conversationId: s
 export async function setOrderPayment(establishmentId: string, conversationId: string, phone: string, name: string | null, method: OrderPaymentMethod, changeForCents?: number | null, operationId?: string) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (!settings.acceptedPaymentMethods.includes(method)) throw new Error("Forma de pagamento não aceita."); const change = changeForCents == null ? null : cents(changeForCents); if (changeForCents != null && change === null) throw new Error("Troco inválido."); return { ...order, payment: { method, status: method === "pix" ? "pending" : "unpaid", changeForCents: change } }; }); }
 export async function getOrder(establishmentId: string, orderId: string) { const snap = await orderRef(establishmentId, orderId).get(); return snap.exists ? snap.data() as FoodOrder : null; }
 export async function getActiveOrder(establishmentId: string, conversationId: string) { const conv = await sub(establishmentId, "conversations").doc(conversationId).get(); const id = conv.exists ? (conv.data() as { activeOrderId?: string }).activeOrderId : undefined; return id ? getOrder(establishmentId, id) : null; }
-export async function confirmOrder(establishmentId: string, orderId: string, expectedVersion: number, phone: string): Promise<FoodOrder> {
+async function refreshOrderForConfirmation(tx: FirebaseFirestore.Transaction, establishmentId: string, order: FoodOrder, settings: OrderSettings): Promise<FoodOrder> {
+  if (!order.items.length || !order.fulfillment || !order.payment.method || (order.fulfillment === "delivery" && !order.deliveryAddress)) throw new Error("Faltam dados para confirmar o pedido.");
+  if (order.fulfillment === "pickup" && !settings.pickupEnabled) throw new Error("Retirada não está mais disponível.");
+  if (order.fulfillment === "delivery" && !settings.deliveryEnabled) throw new Error("Entrega não está mais disponível.");
+  if (!settings.acceptedPaymentMethods.includes(order.payment.method)) throw new Error("Forma de pagamento não aceita.");
+  const refreshedItems: OrderItem[] = [];
+  for (const item of order.items) {
+    const productSnap = await tx.get(sub(establishmentId, "menuProducts").doc(item.productId));
+    if (!productSnap.exists) throw new Error(`${item.productName} não está mais disponível.`);
+    const product = productSnap.data() as MenuProduct;
+    const categorySnap = await tx.get(sub(establishmentId, "menuCategories").doc(product.categoryId));
+    if (categoryBlocksSale(categorySnap.exists ? categorySnap.data() as MenuCategory : null)) throw new Error(`${item.productName} não está mais disponível.`);
+    let current: OrderItem;
+    try { current = calculateItem(product, item.variantId, item.modifiers.map((m) => m.optionId), item.quantity, item.notes); }
+    catch { throw new Error(`${item.productName} mudou ou não está mais disponível.`); }
+    refreshedItems.push({ ...current, id: item.id });
+  }
+  const recalculated = recalculate({ ...order, items: refreshedItems }, settings);
+  if (recalculated.discountCents > recalculated.subtotalCents + recalculated.deliveryFeeCents) throw new Error("Desconto inválido.");
+  return recalculated;
+}
+
+// Produz o único resumo que pode ser confirmado. A mudança de estado e a
+// versão são persistidas: qualquer alteração posterior volta o pedido a draft
+// e obriga uma nova apresentação antes de fechar.
+export async function prepareOrderConfirmation(establishmentId: string, conversationId: string, phone: string, operationId?: string): Promise<FoodOrder> {
+  const settings = await getOrderSettings(establishmentId);
+  const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
+  return db.runTransaction(async (tx) => {
+    const conversation = await tx.get(conversationRef);
+    const orderId = conversation.exists ? (conversation.data() as { activeOrderId?: string }).activeOrderId : undefined;
+    if (!orderId) throw new Error("Não há pedido em aberto para resumir.");
+    const ref = orderRef(establishmentId, orderId); const snap = await tx.get(ref);
+    if (!snap.exists) throw new Error("Pedido não encontrado.");
+    const current = snap.data() as FoodOrder;
+    if (normalizePhone(current.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente.");
+    if (operationId && current.appliedOperationIds?.includes(operationId)) return current;
+    if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser confirmado.");
+    const refreshed = await refreshOrderForConfirmation(tx, establishmentId, current, settings);
+    if (current.status === "awaiting_confirmation") return current;
+    const now = Date.now();
+    const prepared: FoodOrder = { ...refreshed, status: "awaiting_confirmation", confirmationRequestedAt: now, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: now };
+    tx.set(ref, prepared); return prepared;
+  });
+}
+
+export async function confirmOrder(establishmentId: string, orderId: string, expectedVersion: number, phone: string, operationId?: string): Promise<FoodOrder> {
   const ref = orderRef(establishmentId, orderId); const settings = await getOrderSettings(establishmentId);
-  return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; if (normalizePhone(order.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente."); if (order.status === "confirmed") return order; if (!ACTIVE_DRAFT.has(order.status) || order.version !== expectedVersion) throw new Error("O pedido mudou; confira o resumo atualizado antes de confirmar."); if (!order.items.length || !order.fulfillment || !order.payment.method || (order.fulfillment === "delivery" && !order.deliveryAddress)) throw new Error("Faltam dados para confirmar o pedido.");
-    // Rele produto, variante e adicionais na mesma transação. Uma mudança de
-    // catálogo não pode confirmar um snapshot antigo com preço ou composição
-    // diferente; o cliente precisa receber um resumo novo, nunca um total
-    // silenciosamente alterado.
-    for (const item of order.items) {
-      const productSnap = await tx.get(sub(establishmentId, "menuProducts").doc(item.productId));
-      if (!productSnap.exists) throw new Error(`${item.productName} não está mais disponível.`);
-      const product = productSnap.data() as MenuProduct;
-      // Mesma trava da montagem, relida aqui dentro: a categoria pode ter
-      // sido desativada entre o rascunho e a confirmação.
-      const categorySnap = await tx.get(sub(establishmentId, "menuCategories").doc(product.categoryId));
-      if (categoryBlocksSale(categorySnap.exists ? categorySnap.data() as MenuCategory : null)) throw new Error(`${item.productName} não está mais disponível.`);
-      let current: OrderItem;
-      try { current = calculateItem(product, item.variantId, item.modifiers.map((m) => m.optionId), item.quantity, item.notes); }
-      catch { throw new Error(`${item.productName} mudou ou não está mais disponível.`); }
-      if (current.unitPriceCents !== item.unitPriceCents || current.lineTotalCents !== item.lineTotalCents || current.productName !== item.productName) {
-        throw new Error(`${item.productName} mudou de preço; confira o resumo atualizado antes de confirmar.`);
-      }
+  return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; if (normalizePhone(order.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente."); if (order.status === "confirmed") return order; if (order.status !== "awaiting_confirmation" || order.version !== expectedVersion) throw new Error("O pedido mudou; confira o resumo atualizado antes de confirmar.");
+    const refreshed = await refreshOrderForConfirmation(tx, establishmentId, order, settings);
+    for (let index = 0; index < order.items.length; index++) {
+      const before = order.items[index]; const current = refreshed.items[index];
+      if (!current || current.unitPriceCents !== before.unitPriceCents || current.lineTotalCents !== before.lineTotalCents || current.productName !== before.productName) throw new Error(`${before.productName} mudou de preço; confira o resumo atualizado antes de confirmar.`);
     }
-    const now = Date.now(); const confirmed = { ...recalculate(order, settings), status: "confirmed" as const, version: order.version + 1, confirmedAt: now, updatedAt: now }; tx.set(ref, confirmed); tx.set(sub(establishmentId, "conversations").doc(order.conversationId), { activeOrderId: null, lastConfirmedOrderId: order.id }, { merge: true }); return confirmed;
+    if (refreshed.subtotalCents !== order.subtotalCents || refreshed.deliveryFeeCents !== order.deliveryFeeCents || refreshed.discountCents !== order.discountCents || refreshed.totalCents !== order.totalCents) throw new Error("O total mudou; confira o resumo atualizado antes de confirmar.");
+    const now = Date.now(); const snapshot = { items: refreshed.items, subtotalCents: refreshed.subtotalCents, discountCents: refreshed.discountCents, deliveryFeeCents: refreshed.deliveryFeeCents, totalCents: refreshed.totalCents, fulfillment: refreshed.fulfillment!, deliveryAddress: refreshed.deliveryAddress, payment: refreshed.payment as NonNullable<FoodOrder["snapshot"]>["payment"], createdAt: now }; const confirmed: FoodOrder = { ...refreshed, status: "confirmed", snapshot, version: order.version + 1, appliedOperationIds: operationId ? [...(order.appliedOperationIds ?? []).slice(-49), operationId] : order.appliedOperationIds, confirmedAt: now, updatedAt: now }; tx.set(ref, confirmed); tx.set(sub(establishmentId, "conversations").doc(order.conversationId), { activeOrderId: null, lastConfirmedOrderId: order.id }, { merge: true }); return confirmed;
   });
 }
 const TRANSITIONS: Partial<Record<OrderStatus, OrderStatus[]>> = { confirmed: ["accepted", "rejected", "cancelled"], accepted: ["preparing", "cancelled"], preparing: ["ready_for_pickup", "out_for_delivery", "cancelled"], ready_for_pickup: ["completed", "cancelled"], out_for_delivery: ["completed", "cancelled"] };

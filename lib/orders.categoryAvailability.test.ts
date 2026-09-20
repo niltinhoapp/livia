@@ -26,6 +26,7 @@ import {
   confirmOrder,
   getAvailableMenuProduct,
   listAvailableMenuProducts,
+  prepareOrderConfirmation,
   saveMenuCategory,
   saveMenuProduct,
   setOrderFulfillment,
@@ -91,7 +92,8 @@ describe("disponibilidade por categoria", () => {
     const { category, product } = await seedCategoryAndProduct(true);
     await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1);
     await setOrderFulfillment(EST, CONV, PHONE, NAME, "pickup");
-    const ready = await setOrderPayment(EST, CONV, PHONE, NAME, "cash");
+    await setOrderPayment(EST, CONV, PHONE, NAME, "cash");
+    const ready = await prepareOrderConfirmation(EST, CONV, PHONE);
 
     await saveMenuCategory(EST, { name: category.name, active: false }, category.id);
 

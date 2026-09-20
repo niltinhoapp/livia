@@ -33,6 +33,7 @@ export type ToolName =
   | "set_order_fulfillment"
   | "set_order_address"
   | "set_order_payment"
+  | "prepare_order_confirmation"
   | "confirm_order"
   | "get_order_status";
 
