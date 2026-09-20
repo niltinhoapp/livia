@@ -81,7 +81,7 @@ export async function PUT(req: NextRequest) {
         // Template/idioma são configuração técnica: a tela não os expõe.
         // Preserva os valores já provisionados no tenant.
         templateName: previousSummary?.templateName ?? String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),
-        templateLang: previousSummary?.templateLang ?? String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR",
+        templateLang: previousSummary?.templateLang ?? (String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR"),
         sendTime,
         ...(previousSummary?.lastSentDate ? { lastSentDate: previousSummary.lastSentDate } : {}),
       }
