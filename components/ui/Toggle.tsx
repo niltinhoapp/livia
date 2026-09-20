@@ -7,7 +7,7 @@ interface ToggleProps {
 
 export function Toggle({ checked, onChange, title, desc }: ToggleProps) {
   return (
-    <label className="flex cursor-pointer items-start gap-3 py-2.5">
+    <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-control py-2.5 focus-within:ring-2 focus-within:ring-primary/45 focus-within:ring-offset-2">
       <span className="relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center">
         <input
           type="checkbox"
