@@ -36,7 +36,7 @@ export default function ConfigPanel() {
   const [type, setType] = useState<EstablishmentType>("outro");
   const [bot, setBot] = useState<BotConfig | null>(null);
   const [sched, setSched] = useState<ScheduleConfig | null>(null);
-  const [dailySummary, setDailySummary] = useState<DailyOwnerSummaryConfig>({ enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
+  const [dailySummary, setDailySummary] = useState<DailyOwnerSummaryConfig>({ enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR", sendTime: "18:00" });
 
   const load = useCallback(() => {
     setLoadError(false);
@@ -46,7 +46,7 @@ export default function ConfigPanel() {
         setName(e.establishment.name ?? "");
         setType(e.establishment.type ?? "outro");
         setBot(e.establishment.bot);
-        setDailySummary(e.establishment.dailyOwnerSummary ?? { enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR" });
+        setDailySummary(e.establishment.dailyOwnerSummary ?? { enabled: false, ownerPhone: "", templateName: "", templateLang: "pt_BR", sendTime: "18:00" });
         setSched(s.schedule);
         setState("idle");
       })
@@ -241,17 +241,16 @@ export default function ConfigPanel() {
       {tab === "resumo" && (
         <Card className="shadow-e2">
           <div className="mb-5 border-b border-line pb-4"><h2 className="font-semibold text-ink-900">Resumo diário no WhatsApp</h2><p className="mt-1 text-sm text-ink-500">Ao fim do expediente, a Lívia envia ao proprietário uma prestação de contas do dia.</p></div>
-          <Toggle checked={dailySummary.enabled} onChange={(v) => setDailySummary({ ...dailySummary, enabled: v })} title="Enviar resumo diário" desc="O envio acontece depois do horário de fechamento configurado na agenda." />
+          <Toggle checked={dailySummary.enabled} onChange={(v) => setDailySummary({ ...dailySummary, enabled: v })} title="Enviar resumo diário" desc="Escolha abaixo o horário em que o proprietário deve receber o resumo." />
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div><Label>WhatsApp do proprietário</Label><Input inputMode="tel" value={dailySummary.ownerPhone} onChange={(e) => setDailySummary({ ...dailySummary, ownerPhone: e.target.value })} placeholder="5511999999999" /><FieldHelp>Use DDI + DDD + número.</FieldHelp></div>
-            <div><Label>Template aprovado na Meta</Label><Input value={dailySummary.templateName} onChange={(e) => setDailySummary({ ...dailySummary, templateName: e.target.value })} placeholder="resumo_diario_livia" /><FieldHelp>Necessário para o envio proativo.</FieldHelp></div>
-            <div><Label>Idioma do template</Label><Input value={dailySummary.templateLang} onChange={(e) => setDailySummary({ ...dailySummary, templateLang: e.target.value })} placeholder="pt_BR" /></div>
+            <div><Label>Horário do resumo</Label><Input type="time" value={dailySummary.sendTime ?? "18:00"} onChange={(e) => setDailySummary({ ...dailySummary, sendTime: e.target.value })} /><FieldHelp>Horário local configurado na agenda.</FieldHelp></div>
           </div>
           <div className="mt-5 rounded-control border border-primary/20 bg-primary-light/10 p-4"><p className="text-sm font-semibold text-ink-900">O que o proprietário recebe</p><p className="mt-1 text-xs leading-relaxed text-ink-500">Atendimentos do dia, agendamentos realizados, oportunidades encontradas e conversas que precisam de atenção.</p></div>
         </Card>
       )}
 
-      <div className="mt-5 flex flex-wrap items-center gap-4 rounded-card border border-line bg-white/95 p-3 shadow-e2 lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Alterações nas configurações</p><p className="text-xs text-ink-500">Salve para aplicar as mudanças ao funcionamento da Lívia.</p></div>
+      <div className="mt-5 flex flex-wrap items-center gap-4 rounded-card border border-line bg-white/95 p-3 shadow-e2 dark:bg-[#161d2b] lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Alterações nas configurações</p><p className="text-xs text-ink-500">Salve para aplicar as mudanças ao funcionamento da Lívia.</p></div>
         <Button disabled={state === "saving"} onClick={save}>
           {state === "saving" ? "Salvando…" : "Salvar configurações"}
         </Button>

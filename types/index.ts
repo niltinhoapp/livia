@@ -53,6 +53,7 @@ export interface DailyOwnerSummaryConfig {
   ownerPhone: string;
   templateName: string;
   templateLang: string;
+  sendTime?: string; // "HH:mm" no fuso configurado da agenda
   lastSentDate?: string; // YYYY-MM-DD no fuso configurado da agenda
 }
 
