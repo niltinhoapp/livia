@@ -20,11 +20,10 @@ export async function GET(req: NextRequest) {
       const schedule = await getScheduleConfig(est.id);
       const local = new Date(now + schedule.utcOffsetMinutes * 60000);
       const date = local.toISOString().slice(0, 10);
-      const day = schedule.days[String(local.getUTCDay())];
-      if (!day || cfg.lastSentDate === date) { skipped++; continue; }
-      const [hh, mm] = day.close.split(":").map(Number);
-      const closeMinute = hh * 60 + mm, currentMinute = local.getUTCHours() * 60 + local.getUTCMinutes();
-      if (currentMinute < closeMinute || currentMinute > closeMinute + 90) { skipped++; continue; }
+      if (cfg.lastSentDate === date) { skipped++; continue; }
+      const [hh, mm] = (cfg.sendTime || "18:00").split(":").map(Number);
+      const sendMinute = hh * 60 + mm, currentMinute = local.getUTCHours() * 60 + local.getUTCMinutes();
+      if (currentMinute < sendMinute) { skipped++; continue; }
       const start = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - schedule.utcOffsetMinutes * 60000;
       const metrics = await getDashboardMetrics(est.id, start, now);
       await sendTemplate(est.whatsapp, est.id, cfg.ownerPhone, cfg.templateName, cfg.templateLang || "pt_BR", [
