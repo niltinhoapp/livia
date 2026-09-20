@@ -9,7 +9,7 @@ o estado aqui antes de ser considerada concluída. Decisão tomada em
 conversa que não estiver registrada neste arquivo não existe.
 
 - Última atualização: 2026-09-20
-- Estado geral: **F1, F2 e F3 concluídas, aguardando validação. Ainda sem
+- Estado geral: **F1, F2, F3 e F4 concluídas, aguardando validação. Ainda sem
   push: o repositório não está autorizado para escrita nesta sessão (ver
   seção 8).**
 - Anexos:
@@ -154,7 +154,7 @@ anterior** e reduziu o risco atribuído à F12.
 | F1 | Correções de base: categoria desativada bloquear produtos; acento na taxa de bairro; desacoplar painel do toggle de IA; `evaluateTrust` considerar cardápio | — | Baixo | **Concluída** — ver 4.1 |
 | F2 | Tela de configuração de pedido no painel (retirada/entrega, taxas, métodos aceitos, instruções PIX), consumindo a API existente | F1 | Baixo | **Concluída** — ver 4.2 |
 | F3 | Conversa: tool de cardápio completo; `pixInstructions` chegando à Lívia; tom do prompt de pedido; perguntar em item ambíguo; destacar item repetido no resumo | F2 | Baixo | **Concluída** — ver 4.3 |
-| F4 | Robustez: fallback determinístico no estouro do tool loop; `update_order_item` aceitar variação/adicional; resolver `awaiting_confirmation` | F3 | Médio | Pendente |
+| F4 | Robustez: fallback determinístico no estouro do tool loop; `update_order_item` aceitar variação/adicional; travas de mutação duplicada | F3 | Médio | **Concluída** — ver 4.4 |
 | F5 | **Núcleo de pagamentos**: contrato, status neutros, registry, credenciais cifradas, rota de webhook genérica, adapter falso para teste — sem provedor real | F4 | Médio | Pendente |
 | F6 | **Adapter Asaas (pedido)** + tela "conectar pagamento" com chave do próprio comerciante | F5 | Médio | Pendente |
 | F7 | **Fluxo conversacional de pagamento**: tools, estado `awaiting_payment → paid`, reconciliação por webhook, trava de nunca aprovar por comprovante | F6 | **Alto** | Pendente |
@@ -306,6 +306,65 @@ Testes: 1870 passando (1853 ao fim da F2), 17 novos em
 firestoreFake) e `lib/ai/ordersPromptRules.test.ts` (regras que de fato
 entram no prompt, e ausência delas quando pedidos estão desligados).
 `tsc --noEmit` limpo.
+
+---
+
+### 4.4 F4 — o que mudou
+
+Branch `feat/v2-f4-robustez`, a partir de `feat/v2-f3-conversa`. Sem merge.
+
+**Fallback quando o loop de ferramentas estoura.** O loop tem 4 iterações.
+Existia fallback determinístico para agenda, mas nada equivalente para
+pedido: se o modelo gastasse as iterações com itens já gravados no
+Firestore, a conversa caía no handoff genérico — a Livia parava de
+responder e o cliente ficava sem saber que o pedido dele estava montado.
+Agora o turno guarda o último resumo REAL devolvido por uma ferramenta de
+pedido e, no estouro, responde com ele: itens, total e o que falta
+decidir. Pedido já confirmado é anunciado como confirmado. Sem nada
+aproveitável, o handoff continua sendo a resposta certa — isso não mudou.
+
+A montagem do texto vive em `lib/ai/orderReply.ts`, módulo puro sem I/O,
+como os outros resolvedores determinísticos de `lib/ai`. O texto vem
+sempre do resumo do backend, nunca do modelo.
+
+**`update_order_item` aceita variação e adicionais.** "Troca a pizza pra
+grande" ou "tira a cebola do que já pedi" exigia que o modelo decidisse
+sozinho decompor em remove + add, sem rede de segurança. Agora é uma
+operação só, e o preço nunca vem do modelo: a composição nova é
+recalculada por `calculateItem` a partir do produto real, com as mesmas
+travas de disponibilidade, variação e grupo obrigatório da montagem.
+Variação inativa e adicional inexistente são recusados, e o item fica
+como estava. Quantidade e observação seguem funcionando sozinhas, sem
+tocar na composição.
+
+**Mutação duplicada.** Aqui a decisão foi NÃO adicionar guarda nova.
+Deduplicar chamadas idênticas dentro do mesmo lote parecia a correção
+óbvia, mas quebraria um fluxo legítimo já coberto por teste: nove
+`add_order_item` idênticos num lote é como o modelo expressa "quero nove
+x-burgers". As proteções reais já existem em camadas distintas —
+idempotência por `operationId` do tool call, dedupe de `wamid` no
+webhook, bloqueio de segunda confirmação no turno, `confirmOrder`
+idempotente para pedido já confirmado, e o teto de 8 mutações por turno.
+O que faltava era travá-las por teste nesta vertical, e é o que a F4 faz.
+
+**Nunca inventar.** A nova rota de troca não aceita preço, nome nem
+disponibilidade vindos do modelo: tudo é relido do catálogo. O prompt
+ganhou a instrução de usar `update_order_item` com os IDs reais em vez de
+remover e adicionar de novo, e de mandar a lista COMPLETA de adicionais.
+
+**Garantias da F3 preservadas.** Teste dedicado: trocar a composição de um
+item não mexe no estado do pagamento, `pixInstructions` continua chegando
+e `payment.status` segue `pending` — nada nesta fase aproxima a Livia de
+dar pagamento por confirmado.
+
+Testes: 1886 passando (1870 ao fim da F3), 16 novos em
+`lib/ai/ordersRobustness.test.ts` (ferramentas reais contra o
+firestoreFake) e `lib/ai/ordersLoopOverflow.test.ts` (pipeline real, com o
+modelo roteirizado para gastar as 4 iterações). `tsc --noEmit` limpo.
+
+Fora de escopo por decisão: o status `awaiting_confirmation`, que segue
+sem uso real. Mexer nele sem o estado de pagamento da F7 seria decidir
+duas vezes.
 
 ---
 

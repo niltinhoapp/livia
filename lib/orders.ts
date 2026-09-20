@@ -186,8 +186,51 @@ export async function addOrderItem(establishmentId: string, conversationId: stri
   const item = calculateItem(product, variantId, modifierOptionIds, quantity, notes); item.id = sub(establishmentId, "orders").doc().id;
   return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => ({ ...order, items: [...order.items, item] }), allowCreateAfterConfirmation);
 }
-export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: { quantity?: number; notes?: string | null }, operationId?: string) {
-  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => { const item = order.items.find((i) => i.id === itemId); if (!item) throw new Error("Item não encontrado."); const quantity = input.quantity ?? item.quantity; if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("Quantidade inválida."); const next = { ...item, quantity, notes: input.notes === undefined ? item.notes : text(input.notes, 300) || null, lineTotalCents: item.unitPriceCents * quantity }; return { ...order, items: order.items.map((i) => i.id === itemId ? next : i) }; });
+// Trocar tamanho ou adicional de um item que já está no carrinho.
+//
+// Antes, `update_order_item` só mexia em quantidade e observação: "troca a
+// pizza pra grande" ou "tira a cebola do que já pedi" exigia que o modelo
+// decidisse sozinho decompor em remove + add, sem rede de segurança. Agora a
+// troca é uma operação só — e o preço NUNCA vem do modelo: a composição nova
+// é recalculada por `calculateItem` a partir do produto real, com as mesmas
+// travas de disponibilidade, variação e grupo obrigatório da montagem.
+export interface UpdateOrderItemInput {
+  quantity?: number;
+  notes?: string | null;
+  // `undefined` = não mexe; `null` = remove a variação escolhida.
+  variantId?: string | null;
+  modifierOptionIds?: string[];
+}
+export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: UpdateOrderItemInput, operationId?: string) {
+  const changesComposition = input.variantId !== undefined || input.modifierOptionIds !== undefined;
+  let recomposed: OrderItem | null = null;
+  if (changesComposition) {
+    // Produto lido fora da transação, igual faz addOrderItem: o que entra na
+    // transação já é um item calculado pelo backend.
+    const current = await getActiveOrder(establishmentId, conversationId);
+    const item = current?.items.find((i) => i.id === itemId);
+    if (!item) throw new Error("Item não encontrado.");
+    const product = await getMenuProduct(establishmentId, item.productId);
+    if (!product) throw new Error("Produto não encontrado.");
+    if (categoryBlocksSale(await getMenuCategory(establishmentId, product.categoryId))) throw new Error("Produto indisponível.");
+    recomposed = calculateItem(
+      product,
+      input.variantId === undefined ? item.variantId : input.variantId,
+      input.modifierOptionIds === undefined ? item.modifiers.map((m) => m.optionId) : input.modifierOptionIds,
+      input.quantity ?? item.quantity,
+      input.notes === undefined ? item.notes : input.notes,
+    );
+    recomposed.id = item.id;
+  }
+  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => {
+    const item = order.items.find((i) => i.id === itemId); if (!item) throw new Error("Item não encontrado.");
+    if (recomposed) {
+      // O item pode ter mudado entre a leitura do produto e a transação.
+      if (recomposed.productId !== item.productId) throw new Error("Item não encontrado.");
+      return { ...order, items: order.items.map((i) => i.id === itemId ? recomposed! : i) };
+    }
+    const quantity = input.quantity ?? item.quantity; if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("Quantidade inválida."); const next = { ...item, quantity, notes: input.notes === undefined ? item.notes : text(input.notes, 300) || null, lineTotalCents: item.unitPriceCents * quantity }; return { ...order, items: order.items.map((i) => i.id === itemId ? next : i) };
+  });
 }
 export async function removeOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, operationId?: string) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => order.items.some((i) => i.id === itemId) ? { ...order, items: order.items.filter((i) => i.id !== itemId) } : (() => { throw new Error("Item não encontrado."); })()); }
 export async function setOrderFulfillment(establishmentId: string, conversationId: string, phone: string, name: string | null, fulfillment: "pickup" | "delivery", operationId?: string) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (fulfillment === "pickup" && !settings.pickupEnabled) throw new Error("Retirada não está disponível."); if (fulfillment === "delivery" && !settings.deliveryEnabled) throw new Error("Entrega não está disponível."); return { ...order, fulfillment, deliveryAddress: fulfillment === "pickup" ? null : order.deliveryAddress }; }); }

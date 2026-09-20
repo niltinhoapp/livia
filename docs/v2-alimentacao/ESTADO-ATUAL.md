@@ -43,9 +43,9 @@ recomenda recriar algo que já funciona.
 | ~~Disponibilidade por categoria~~ | Resolvido na F1: `categoryBlocksSale` + visão filtrada do catálogo para a IA | — | ✅ F1 |
 | ~~Taxa de entrega por bairro~~ | Resolvido na F1: `neighborhoodKey` normaliza acento, espaço e caixa | — | ✅ F1 |
 | ~~Consulta ao cardápio pela IA~~ | Resolvido na F3: ferramenta `list_menu`, agrupada por categoria e com teto | — | ✅ F3 |
-| Edição de item já no carrinho | `update_order_item` (quantidade, observação) | Não aceita variação nem adicional | F4 |
-| Estouro do tool loop (4 iterações) | Fallback existe para agenda | Sem equivalente para pedido — carrinho pela metade vira handoff | F4 |
-| Estados do pedido | Enum completo | `awaiting_confirmation` morto; nenhum estado de pagamento | F4 / F7 |
+| ~~Edição de item já no carrinho~~ | Resolvido na F4: `update_order_item` aceita variação e adicionais, recalculados pelo backend | — | ✅ F4 |
+| ~~Estouro do tool loop (4 iterações)~~ | Resolvido na F4: fallback responde com o pedido real (`lib/ai/orderReply.ts`) | — | ✅ F4 |
+| Estados do pedido | Enum completo | `awaiting_confirmation` morto; nenhum estado de pagamento | F7 |
 | ~~Naturalidade da conversa de pedido~~ | Resolvido na F3: orientação de tom e regra de perguntar em item ambíguo | — | ✅ F3 |
 | ~~Política de confiança em preço (`evaluateTrust`)~~ | Resolvido na F1: com `ordersEnabled`, o cardápio é a fonte de preço | — | ✅ F1 |
 | ~~Acesso ao painel de pedidos~~ | Resolvido na F1: rotas de gestão e configuração desacopladas de `bot.ordersEnabled` | — | ✅ F1 |
