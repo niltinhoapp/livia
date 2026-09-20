@@ -77,7 +77,7 @@ export default function CampaignsPage() {
           }
         />
       ) : (
-        <CampaignsTable campaigns={campaigns} />
+        <CampaignsTable campaigns={campaigns} onDeleted={(id) => setCampaigns((current) => current.filter((campaign) => campaign.id !== id))} />
       )}
     </div>
   );
