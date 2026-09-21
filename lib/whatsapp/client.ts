@@ -359,6 +359,28 @@ export async function sendText(
   return { waMessageId: data.messages?.[0]?.id };
 }
 
+// TTS sempre gera Ogg/Opus: formato compacto e reproduzível nativamente pelo
+// WhatsApp. O binário só existe em memória durante upload; nunca é logado.
+export async function sendAudio(
+  wa: EstablishmentWhatsapp,
+  establishmentId: string,
+  toPhone: string,
+  bytes: Uint8Array,
+  mimeType = "audio/ogg",
+): Promise<{ waMessageId?: string }> {
+  if (!ALLOWED_AUDIO_MIME_TYPES.has(mimeType) || !bytes.length || bytes.length > MAX_INBOUND_AUDIO_BYTES) throw new WhatsAppMediaError("unsupported_mime");
+  const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
+  const form = new FormData(); const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer; form.set("messaging_product", "whatsapp"); form.set("file", new Blob([body], { type: mimeType }), "reply.ogg");
+  const upload = await fetch(`${GRAPH}/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form });
+  if (!upload.ok) throw new Error(`WhatsApp audio upload failed: ${upload.status}`);
+  const mediaId = (await upload.json().catch(() => ({})) as { id?: string }).id;
+  if (!mediaId) throw new Error("WhatsApp audio upload invalid response");
+  const response = await fetch(`${GRAPH}/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: normalizePhone(toPhone), type: "audio", audio: { id: mediaId } }) });
+  if (!response.ok) throw new Error(`WhatsApp audio send failed: ${response.status}`);
+  const data = (await response.json().catch(() => ({}))) as { messages?: { id: string }[] };
+  return { waMessageId: data.messages?.[0]?.id };
+}
+
 // Envia mensagem de TEMPLATE (HSM). Necessária para envios PROATIVOS fora da
 // janela de 24h — é o caso do lembrete de agendamento. O template precisa
 // estar aprovado na WABA do estabelecimento. `params` preenche as variáveis

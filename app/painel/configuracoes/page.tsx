@@ -138,6 +138,12 @@ export default function ConfigPanel() {
               title="Trava de saúde (recomendado p/ clínicas)"
               desc="A Livia nunca dá diagnóstico ou orientação médica; sempre encaminha para um profissional."
             />
+            <Toggle
+              checked={Boolean(bot.voiceRepliesEnabled)}
+              onChange={(v) => setBot({ ...bot, voiceRepliesEnabled: v })}
+              title="Responder por voz a áudios"
+              desc="Quando o cliente enviar áudio, a Lívia transcreve e responde com a mesma mensagem em áudio."
+            />
           </div>
 
           <div className="mt-4">

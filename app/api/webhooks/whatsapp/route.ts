@@ -41,6 +41,7 @@ import {
 } from "@/lib/repo";
 import {
   sendText,
+  sendAudio,
   markAsRead,
   downloadWhatsAppAudio,
   downloadWhatsAppMedia,
@@ -68,6 +69,7 @@ import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
 import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription";
+import { synthesizeSpeech, SpeechError } from "@/lib/ai/speech";
 import type {
   Establishment,
   EstablishmentWhatsapp,
@@ -948,7 +950,20 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
 
   let sent: { waMessageId?: string };
   try {
-    sent = await sendText(wa, est.id, contactPhone, replyToSend);
+    // TTS só acontece depois de think()/tools: o texto final é a fonte de
+    // verdade. Uma falha aqui jamais chama IA ou ferramentas novamente.
+    if (inbound.kind === "audio" && est.bot.voiceRepliesEnabled) {
+      try {
+        logStage("TTS started", { msgId: msg.id, estId: est.id, conversationId: conversation.id, textLength: replyToSend.length });
+        const speech = await synthesizeSpeech(replyToSend);
+        logStage("TTS completed", { msgId: msg.id, estId: est.id, conversationId: conversation.id, provider: speech.provider, model: speech.model, voice: speech.voice, sizeBytes: speech.bytes.length });
+        sent = await sendAudio(wa, est.id, contactPhone, speech.bytes, speech.mimeType);
+        logStage("WhatsApp audio send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
+      } catch (voiceError) {
+        logStage("voice fallback to text", { msgId: msg.id, estId: est.id, conversationId: conversation.id, errorCode: voiceError instanceof SpeechError ? voiceError.code : "media_send_failed" });
+        sent = await sendText(wa, est.id, contactPhone, replyToSend);
+      }
+    } else sent = await sendText(wa, est.id, contactPhone, replyToSend);
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar

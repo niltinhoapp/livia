@@ -50,6 +50,7 @@ export async function PUT(req: NextRequest) {
         tone: String(raw.bot.tone ?? base.tone).trim() || base.tone,
         bookingEnabled: Boolean(raw.bot.bookingEnabled),
         ordersEnabled: Boolean(raw.bot.ordersEnabled),
+        voiceRepliesEnabled: Boolean(raw.bot.voiceRepliesEnabled),
         medicalGuardrail: Boolean(raw.bot.medicalGuardrail),
         handoffKeywords: Array.isArray(raw.bot.handoffKeywords)
           ? raw.bot.handoffKeywords.map((k) => String(k).trim().toLowerCase()).filter(Boolean)
