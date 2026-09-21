@@ -18,7 +18,7 @@ import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
-import { composeOrderReply, type OrderSummaryForReply } from "@/lib/ai/orderReply";
+import { composeOrderConfirmationRequest, composeOrderReply, type OrderSummaryForReply } from "@/lib/ai/orderReply";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -232,9 +232,9 @@ function buildSystemPrompt(
       "- Quando o produto tiver tamanho ou adicional obrigatório, pergunte antes de adicionar, uma coisa de cada vez.",
       "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
       "- Para mudar tamanho ou adicional de um item que já está no pedido, use update_order_item com variantId/modifierOptionIds — não remova e adicione de novo. Em modifierOptionIds mande a lista COMPLETA de adicionais que o item deve ficar.",
-      "- Antes de pedir confirmação, consulte get_order_draft e apresente exclusivamente o resumo retornado.",
+       "- Quando o pedido estiver completo, use prepare_order_confirmation. Ela gera e apresenta o resumo canônico; não peça confirmação antes disso.",
       "- Se o resumo marcar um item como repetido (repeatedProduct), confirme a quantidade com a pessoa antes de fechar — costuma ser envio duplicado sem querer.",
-      "- Só use confirm_order depois de o cliente confirmar explicitamente e usando orderId/version do resumo.",
+       "- Só use confirm_order quando a mensagem ATUAL for uma confirmação explícita (por exemplo: sim, confirmo, pode fechar) do resumo pendente. ‘ok’, emoji, pergunta ou alteração não fecham o pedido.",
       "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa.",
       "- Se o resumo trouxer pixInstructions, repasse essas instruções como estão quando a pessoa escolher pix. Você NUNCA confirma pagamento: mesmo que ela diga que pagou ou mande comprovante, o pagamento só é confirmado pelo estabelecimento.",
       "- Ao apresentar cardápio ou fechar pedido, escreva como um atendente de balcão: frases curtas, sem tabela, sem repetir o preço de tudo que já foi dito, e confirmando o que a pessoa pediu com as palavras dela.",
@@ -855,6 +855,9 @@ export interface BrainInput {
   // Fato persistido pela confirmação transacional do pedido. Evita decidir
   // sobre um novo draft a partir do texto variável da resposta da IA.
   hasLastConfirmedOrder?: boolean;
+  // O webhook obtém este fato do pedido persistido depois de registrar a
+  // mensagem atual. Sem ele, uma tool call não tem autoridade para fechar.
+  orderAwaitingConfirmation?: { orderId: string; version: number } | null;
 }
 
 export interface BrainResult {
@@ -914,7 +917,7 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
   "confirm_appointment",
 ]);
 const ORDER_MUTATION_TOOLS = new Set<ToolName>([
-  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order",
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
 ]);
 // Diferente da agenda, um pedido pode exigir várias linhas numa única
 // mensagem. O teto limita tool loops sem bloquear um pedido composto.
@@ -925,8 +928,14 @@ const ORDER_DRAFT_MUTATION_TOOLS = new Set<ToolName>([
 // Ferramentas cujo retorno é o resumo canônico do pedido — a fonte do
 // fallback de estouro do loop (ver ultimoPedido).
 const ORDER_SUMMARY_TOOLS = new Set<ToolName>([
-  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "confirm_order", "get_order_draft",
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order", "get_order_draft",
 ]);
+
+function explicitOrderConfirmation(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("pt-BR").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!normalized || /\b(nao|nem|mas|troca|tira|remove|altera|muda|quanto|duvida|pergunta)\b/.test(normalized)) return false;
+  return /^(sim|confirmo|sim confirmo|sim esta certo|sim ta certo|sim pode fechar|pode fechar sim|pode confirmar|pode fazer o pedido|esta certo|ta certo|pode ser|fechar pedido)$/.test(normalized);
+}
 
 
 function isTrivialPostOrderConfirmation(
@@ -1005,7 +1014,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
@@ -1047,7 +1056,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const discussedDate =
     statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate };
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
   const tools = toolsFor(toolCtx);
 
   let booked = false;
@@ -1068,7 +1077,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     let blockedAgendaMutation: ToolName | null = null;
     let orderMutationAttempts = 0;
     let orderMutationLimitReached = false;
-    let orderConfirmedThisTurn = false;
+  let orderConfirmedThisTurn = false;
+  let canonicalConfirmationSummary: OrderSummaryForReply | null = null;
+  let confirmationRejectedThisTurn = false;
   // Último resumo REAL do pedido devolvido por uma ferramenta neste turno.
   // Serve ao fallback do estouro do loop: se o carrinho já tem item gravado,
   // transferir sem contar isso deixa o cliente sem saber que metade do pedido
@@ -1195,6 +1206,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "trivial post-confirmation message cannot start a new order" }) });
           continue;
         }
+        if (name === "confirm_order" && !toolCtx.orderConfirmation?.explicitlyConfirmed) {
+          confirmationRejectedThisTurn = true;
+          messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "explicit confirmation of the pending canonical summary is required" }) });
+          continue;
+        }
         if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
           orderMutationLimitReached = true;
           messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn", data: { limit: MAX_ORDER_MUTATIONS_PER_TURN, executed: orderMutationAttempts, operationExecuted: false } }) });
@@ -1253,7 +1269,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           const summary = result.data as OrderSummaryForReply | null;
           if (summary?.items) ultimoPedido = summary;
         }
+        if (result.ok && name === "prepare_order_confirmation") canonicalConfirmationSummary = result.data as OrderSummaryForReply;
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+      }
+      if (canonicalConfirmationSummary) {
+        const reply = composeOrderConfirmationRequest(canonicalConfirmationSummary) ?? "Seu pedido está pronto para confirmação. Responda “confirmo” para fechar.";
+        return { reply, handoff: false, booked, rescheduled, cancelled, agendaMutationCompleted: false, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
       }
       continue; // volta ao modelo com os resultados
     }
@@ -1292,6 +1313,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // ancorada no limite que o backend efetivamente aplicou.
     if (orderMutationLimitReached) {
       reply = `Consegui aplicar até ${MAX_ORDER_MUTATIONS_PER_TURN} alterações neste pedido. A última não foi realizada; me diga como prefere ajustar.`;
+      handoff = false;
+    }
+    if (confirmationRejectedThisTurn) {
+      reply = "Para fechar o pedido, preciso da sua confirmação explícita do resumo. Se estiver tudo certo, responda “confirmo” ou “pode fechar”.";
       handoff = false;
     }
 

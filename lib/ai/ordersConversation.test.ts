@@ -58,7 +58,8 @@ async function turn(text: string, history: Message[], task: ConversationTask | n
   const intent = detectIntent(text);
   const historyForAI = [...history, { id: `c${history.length}`, role: "customer" as const, text, at: NOW }];
   const conversation = await getConversation(EST, CONV);
-  const r = await think({ est: establishment, kb: kb(), history: historyForAI, contactPhone: PHONE, contactName: "Cliente Teste", customerProfile: null, task, intent, hasLastConfirmedOrder: Boolean(conversation?.lastConfirmedOrderId) });
+  const currentOrder = await activeOrder();
+  const r = await think({ est: establishment, kb: kb(), history: historyForAI, contactPhone: PHONE, contactName: "Cliente Teste", customerProfile: null, task, intent, hasLastConfirmedOrder: Boolean(conversation?.lastConfirmedOrderId), orderAwaitingConfirmation: currentOrder?.status === "awaiting_confirmation" ? { orderId: currentOrder.id, version: currentOrder.version } : null });
   const nextTask = deriveTaskState({ existingTask: task, intent, toolCalls: r.toolCalls, booked: r.booked, statedDate: r.statedDate, statedService: r.statedService });
   history.push({ id: `c${history.length}`, role: "customer", text, at: NOW });
   history.push({ id: `b${history.length}`, role: "bot", text: r.reply, at: NOW });
@@ -389,8 +390,10 @@ async function montarPedidoCompleto(): Promise<{ history: Message[]; task: Conve
   const t2 = await turn("vou retirar", t1.history, t1.task);
   modelScript = [toolCall("set_order_payment", { method: "cash" }, "full3"), say("Pagamento em dinheiro.")];
   const t3 = await turn("pago em dinheiro", t2.history, t2.task);
+  modelScript = [toolCall("prepare_order_confirmation", {}, "full4")];
+  const t4 = await turn("pode me mostrar o resumo para confirmar", t3.history, t3.task);
   const o = (await activeOrder())!;
-  return { history: t3.history, task: t3.task, order: o };
+  return { history: t4.history, task: t4.task, order: o };
 }
 
 describe("17) resumo final antes da confirmação", () => {
@@ -401,7 +404,7 @@ describe("17) resumo final antes da confirmação", () => {
 
     const o = await activeOrder();
     expect(o?.totalCents).toBe(2000); // o que o resumo DEVERIA refletir — comparação com a fonte real
-    expect(o?.status).toBe("draft"); // resumo nunca confirma sozinho
+    expect(o?.status).toBe("awaiting_confirmation"); // só a confirmação explícita fecha
   });
 });
 
@@ -423,6 +426,28 @@ describe("18) cliente corrige o pedido depois de receber o resumo", () => {
 });
 
 describe("19) confirmação explícita", () => {
+  it("PASS/FAIL: prepare_order_confirmation devolve resumo canônico obrigatório e não fecha sozinho", async () => {
+    const { history, task, order: draft } = await montarPedidoCompleto();
+    expect(draft.status).toBe("awaiting_confirmation");
+    expect(draft.confirmationRequestedAt).not.toBeNull();
+    expect(history.at(-1)?.text).toContain("Confira seu pedido:");
+    expect(history.at(-1)?.text).toContain("Subtotal:");
+    expect(history.at(-1)?.text).toContain("Taxa de entrega:");
+    expect(history.at(-1)?.text).toContain("Total:");
+    expect(history.at(-1)?.text).toContain("Retirada no local");
+    expect(history.at(-1)?.text).toContain("Pagamento: cash");
+    expect(task).toBeNull();
+    expect((await order(draft.id))?.status).toBe("awaiting_confirmation");
+  });
+
+  it.each(["ok", "👍", "talvez", "quanto fica mesmo?", "troca o lanche"])('PASS/FAIL: "%s" não confirma o resumo pendente mesmo se o modelo tentar', async (text) => {
+    const { history, task, order: draft } = await montarPedidoCompleto();
+    modelScript = [toolCall("confirm_order", {}, `amb-${text}`), say("Pedido confirmado!")];
+    const result = await turn(text, history, task);
+    expect((await order(draft.id))?.status).toBe("awaiting_confirmation");
+    expect(result.result.reply).not.toMatch(/pedido confirmado/i);
+  });
+
   it("PASS/FAIL: confirm_order com orderId/version reais confirma de verdade", async () => {
     const { history, task, order: draft } = await montarPedidoCompleto();
     modelScript = [toolCall("get_order_draft", {}, "cf1"), say("Confirma o pedido de 1x X-Burger, retirada, dinheiro, total R$20,00?")];
@@ -626,10 +651,12 @@ describe("técnico: agenda e pedidos habilitados simultaneamente não se confund
     const t2 = await turn("retirada", t1.history, t1.task, estAmbos);
     modelScript = [toolCall("set_order_payment", { method: "cash" }, "iso3"), say("Dinheiro.")];
     const t3 = await turn("dinheiro", t2.history, t2.task, estAmbos);
+    modelScript = [toolCall("prepare_order_confirmation", {}, "iso-summary")];
+    const t4 = await turn("mostre o resumo para confirmar", t3.history, t3.task, estAmbos);
     const draft = (await activeOrder())!;
 
     modelScript = [toolCall("confirm_order", { orderId: draft.id, version: draft.version }, "iso4"), say("Pedido confirmado!")];
-    await turn("confirmo", t3.history, t3.task, estAmbos);
+    await turn("confirmo", t4.history, t4.task, estAmbos);
 
     const appts = [...fakeDb.col(`establishments/${EST}/appointments`).values()];
     expect(appts).toHaveLength(1); // o agendamento pré-existente não foi tocado pela confirmação do pedido

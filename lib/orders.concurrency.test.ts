@@ -20,6 +20,7 @@ import { fakeDb } from "@/lib/__testing__/firestoreFake";
 import {
   addOrderItem,
   confirmOrder,
+  prepareOrderConfirmation,
   getActiveOrder,
   getOrder,
   removeOrderItem,
@@ -56,7 +57,8 @@ async function seedProduct(priceCents = 1000, overrides: Partial<MenuProduct> = 
 async function readyToConfirm(product: MenuProduct) {
   await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 1);
   await setOrderFulfillment(EST, CONV, PHONE, NAME, "pickup");
-  return setOrderPayment(EST, CONV, PHONE, NAME, "cash");
+  await setOrderPayment(EST, CONV, PHONE, NAME, "cash");
+  return prepareOrderConfirmation(EST, CONV, PHONE);
 }
 
 describe("Idempotência persistente — retry/reexecução da mesma operação lógica", () => {
@@ -137,6 +139,29 @@ describe("Idempotência persistente — retry/reexecução da mesma operação l
 });
 
 describe("Concorrência — confirmação", () => {
+  it("exige resumo persistido antes de confirmar e congela o snapshot canônico", async () => {
+    const product = await seedProduct(1750);
+    await addOrderItem(EST, CONV, PHONE, NAME, product.id, null, [], 2);
+    await setOrderFulfillment(EST, CONV, PHONE, NAME, "pickup");
+    const draft = await setOrderPayment(EST, CONV, PHONE, NAME, "cash");
+    await expect(confirmOrder(EST, draft.id, draft.version, PHONE)).rejects.toThrow(/mudou/i);
+    const summary = await prepareOrderConfirmation(EST, CONV, PHONE, "toolcall.summary-1");
+    expect(summary.status).toBe("awaiting_confirmation");
+    expect(summary.confirmationRequestedAt).not.toBeNull();
+    const confirmed = await confirmOrder(EST, summary.id, summary.version, PHONE, "toolcall.confirm-1");
+    expect(confirmed.snapshot).toMatchObject({ subtotalCents: 3500, discountCents: 0, deliveryFeeCents: 0, totalCents: 3500, fulfillment: "pickup", payment: { method: "cash" } });
+    expect(confirmed.snapshot?.items[0]).toMatchObject({ productName: "X-Burger", quantity: 2, unitPriceCents: 1750, lineTotalCents: 3500 });
+  });
+
+  it("alteração depois do resumo invalida a confirmação até haver novo resumo", async () => {
+    const product = await seedProduct();
+    const first = await readyToConfirm(product);
+    const changed = await setOrderPayment(EST, CONV, PHONE, NAME, "cash", null, "toolcall.change-after-summary");
+    expect(changed.status).toBe("draft");
+    await expect(confirmOrder(EST, first.id, first.version, PHONE)).rejects.toThrow(/mudou/i);
+    const refreshed = await prepareOrderConfirmation(EST, CONV, PHONE, "toolcall.summary-2");
+    await expect(confirmOrder(EST, refreshed.id, refreshed.version, PHONE)).resolves.toMatchObject({ status: "confirmed" });
+  });
   it("duas confirmações concorrentes do MESMO draft/version: só uma transição acontece, a outra converge pro mesmo resultado", async () => {
     const product = await seedProduct();
     const ready = await readyToConfirm(product);
