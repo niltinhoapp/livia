@@ -16,6 +16,8 @@ const GRAPH = "https://graph.facebook.com/v22.0";
 export const MAX_INBOUND_AUDIO_BYTES = 16 * 1024 * 1024;
 export const MAX_INBOUND_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
+export const AUDIO_SEND_TIMEOUT_MS = 10_000;
+export const MAX_OUTBOUND_AUDIO_BYTES = 8 * 1024 * 1024;
 export const MESSAGE_TEMPLATES_PAGE_LIMIT = 10;
 
 const ALLOWED_AUDIO_MIME_TYPES = new Set([
@@ -358,6 +360,17 @@ export async function sendText(
   };
   return { waMessageId: data.messages?.[0]?.id };
 }
+export class WhatsAppAudioSendError extends Error { constructor(public readonly code: "audio_upload_failed" | "audio_upload_ambiguous" | "audio_send_failed" | "audio_send_ambiguous", public readonly safeTextFallback: boolean, public readonly status?: number) { super(code); this.name = "WhatsAppAudioSendError"; } }
+
+async function fetchWithAudioSendTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUDIO_SEND_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // TTS sempre gera Ogg/Opus: formato compacto e reproduzível nativamente pelo
 // WhatsApp. O binário só existe em memória durante upload; nunca é logado.
@@ -368,15 +381,18 @@ export async function sendAudio(
   bytes: Uint8Array,
   mimeType = "audio/ogg",
 ): Promise<{ waMessageId?: string }> {
-  if (!ALLOWED_AUDIO_MIME_TYPES.has(mimeType) || !bytes.length || bytes.length > MAX_INBOUND_AUDIO_BYTES) throw new WhatsAppMediaError("unsupported_mime");
+  const isOgg = bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53;
+  if (mimeType !== "audio/ogg" || !isOgg || !bytes.length || bytes.length > MAX_OUTBOUND_AUDIO_BYTES) throw new WhatsAppMediaError("unsupported_mime");
   const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
   const form = new FormData(); const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer; form.set("messaging_product", "whatsapp"); form.set("file", new Blob([body], { type: mimeType }), "reply.ogg");
-  const upload = await fetch(`${GRAPH}/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form });
-  if (!upload.ok) throw new Error(`WhatsApp audio upload failed: ${upload.status}`);
+  let upload: Response;
+  try { upload = await fetchWithAudioSendTimeout(`${GRAPH}/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: form }); } catch { throw new WhatsAppAudioSendError("audio_upload_ambiguous", true); }
+  if (!upload.ok) throw new WhatsAppAudioSendError("audio_upload_failed", true, upload.status);
   const mediaId = (await upload.json().catch(() => ({})) as { id?: string }).id;
-  if (!mediaId) throw new Error("WhatsApp audio upload invalid response");
-  const response = await fetch(`${GRAPH}/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: normalizePhone(toPhone), type: "audio", audio: { id: mediaId } }) });
-  if (!response.ok) throw new Error(`WhatsApp audio send failed: ${response.status}`);
+  if (!mediaId) throw new WhatsAppAudioSendError("audio_upload_failed", true);
+  let response: Response;
+  try { response = await fetchWithAudioSendTimeout(`${GRAPH}/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: normalizePhone(toPhone), type: "audio", audio: { id: mediaId } }) }); } catch { throw new WhatsAppAudioSendError("audio_send_ambiguous", false); }
+  if (!response.ok) throw new WhatsAppAudioSendError("audio_send_failed", true, response.status);
   const data = (await response.json().catch(() => ({}))) as { messages?: { id: string }[] };
   return { waMessageId: data.messages?.[0]?.id };
 }

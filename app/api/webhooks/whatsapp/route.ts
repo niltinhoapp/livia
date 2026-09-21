@@ -46,6 +46,7 @@ import {
   downloadWhatsAppAudio,
   downloadWhatsAppMedia,
   WhatsAppMediaError,
+  WhatsAppAudioSendError,
 } from "@/lib/whatsapp/client";
 import {
   AttachmentStorageError,
@@ -563,7 +564,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       // já usado pelo fluxo textual, sem revelar o erro técnico de áudio.
       if (est.status !== "active") {
         if (!warnedServicePausedRecently(history, Date.now())) {
-          await replyAndLog(wa, est.id, conversation.id, contactPhone, SERVICE_PAUSED_REPLY);
+          await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, false, msg.id);
         }
         return;
       }
@@ -576,7 +577,8 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       }
       if (conversation.status === "closed" && conversation.closedReason === "automated_recipient") return;
 
-      await replyAndLog(wa, est.id, conversation.id, contactPhone, AUDIO_FAILURE_REPLY);
+      // A transcrição falhou: texto é deliberadamente a resposta mais segura.
+      await replyAndLog(wa, est, conversation.id, contactPhone, AUDIO_FAILURE_REPLY, false, msg.id);
       return;
     }
   }
@@ -616,7 +618,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
         type: "awaiting_human",
         waitingFor: "atendimento humano",
       });
-      await replyAndLog(wa, est.id, conversation.id, contactPhone, "Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.");
+      await replyAndLog(wa, est, conversation.id, contactPhone, "Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.", shouldReplyWithVoice(inbound.kind, est), msg.id);
       logStage("customer accepted human offer, handoff started", {
         msgId: msg.id,
         estId: est.id,
@@ -677,7 +679,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // subindo para o catch do POST, sem virar "conta inativa").
   if (est.status !== "active") {
     if (!warnedServicePausedRecently(history, Date.now())) {
-      await replyAndLog(wa, est.id, conversation.id, contactPhone, SERVICE_PAUSED_REPLY);
+      await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, shouldReplyWithVoice(inbound.kind, est), msg.id);
     }
     return;
   }
@@ -696,7 +698,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     }
 
     await resolvePendingTask(est.id, conversation.id);
-    await replyAndLog(wa, est.id, conversation.id, contactPhone, "Entendido! Vou encerrar por aqui. Até mais!");
+    await replyAndLog(wa, est, conversation.id, contactPhone, "Entendido! Vou encerrar por aqui. Até mais!", shouldReplyWithVoice(inbound.kind, est), msg.id);
     logStage("automated recipient detected, conversation closed", {
       msgId: msg.id,
       estId: est.id,
@@ -825,9 +827,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       // mesmo se uma etapa posterior (como o envio da resposta) falhar.
       await setConversationTask(est.id, conversation.id, null);
       if (intent === "confirm") {
-        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊");
+        await replyAndLog(wa, est, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊", shouldReplyWithVoice(inbound.kind, est), msg.id);
       } else {
-        await replyAndLog(wa, est.id, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!");
+        await replyAndLog(wa, est, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!", shouldReplyWithVoice(inbound.kind, est), msg.id);
       }
       // Confirmar/cancelar o lembrete resolve qualquer pendência que essa
       // conversa tivesse (Passo 9) — tipicamente "cliente confirmar o
@@ -950,20 +952,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
 
   let sent: { waMessageId?: string };
   try {
-    // TTS só acontece depois de think()/tools: o texto final é a fonte de
-    // verdade. Uma falha aqui jamais chama IA ou ferramentas novamente.
-    if (inbound.kind === "audio" && est.bot.voiceRepliesEnabled) {
-      try {
-        logStage("TTS started", { msgId: msg.id, estId: est.id, conversationId: conversation.id, textLength: replyToSend.length });
-        const speech = await synthesizeSpeech(replyToSend);
-        logStage("TTS completed", { msgId: msg.id, estId: est.id, conversationId: conversation.id, provider: speech.provider, model: speech.model, voice: speech.voice, sizeBytes: speech.bytes.length });
-        sent = await sendAudio(wa, est.id, contactPhone, speech.bytes, speech.mimeType);
-        logStage("WhatsApp audio send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
-      } catch (voiceError) {
-        logStage("voice fallback to text", { msgId: msg.id, estId: est.id, conversationId: conversation.id, errorCode: voiceError instanceof SpeechError ? voiceError.code : "media_send_failed" });
-        sent = await sendText(wa, est.id, contactPhone, replyToSend);
-      }
-    } else sent = await sendText(wa, est.id, contactPhone, replyToSend);
+    // A resposta textual já é definitiva; a entrega só escolhe o canal e
+    // nunca volta a chamar IA, ferramentas ou mutações.
+    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est), msg.id);
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar
@@ -1066,13 +1057,76 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
 
 async function replyAndLog(
   wa: EstablishmentWhatsapp,
-  establishmentId: string,
+  establishment: Establishment,
   conversationId: string,
   toPhone: string,
   text: string,
+  preferVoice: boolean,
+  msgId?: string,
 ): Promise<void> {
-  const sent = await sendText(wa, establishmentId, toPhone, text);
-  await appendMessage(establishmentId, conversationId, "bot", text, sent.waMessageId);
+  const sent = await deliverFinalReply(wa, establishment, conversationId, toPhone, text, preferVoice, msgId);
+  await appendMessage(establishment.id, conversationId, "bot", text, sent.waMessageId);
+}
+
+function shouldReplyWithVoice(kind: string, establishment: Establishment): boolean {
+  return kind === "audio" && Boolean(establishment.bot.voiceRepliesEnabled);
+}
+
+function voiceDeliveryErrorCode(error: unknown): string {
+  if (error instanceof WhatsAppAudioSendError) return error.code;
+  if (error instanceof SpeechError) return error.code === "invalid_audio" ? "tts_invalid_audio" : "tts_failed";
+  // Erros não tipados aqui acontecem antes de uma confirmação de POST /messages.
+  // sendAudio classifica toda falha de rede daquele POST como ambígua.
+  return "audio_send_failed";
+}
+
+// Único ponto de entrega das respostas finais ao cliente. Recebe um texto já
+// decidido: não chama think(), tools, transcrição nem muda estado de negócio.
+async function deliverFinalReply(
+  wa: EstablishmentWhatsapp,
+  establishment: Establishment,
+  conversationId: string,
+  toPhone: string,
+  text: string,
+  preferVoice: boolean,
+  msgId?: string,
+): Promise<{ waMessageId?: string }> {
+  if (!preferVoice) return sendText(wa, establishment.id, toPhone, text);
+
+  const context = { ...(msgId ? { msgId } : {}), estId: establishment.id, conversationId };
+  try {
+    logStage("TTS started", { ...context, textLength: text.length });
+    const speech = await synthesizeSpeech(text);
+    logStage("TTS completed", {
+      ...context,
+      provider: speech.provider,
+      model: speech.model,
+      voice: speech.voice,
+      sizeBytes: speech.bytes.length,
+    });
+    logStage("WhatsApp audio upload/send started", context);
+    const sent = await sendAudio(wa, establishment.id, toPhone, speech.bytes, speech.mimeType);
+    logStage("WhatsApp audio upload/send completed", context);
+    return sent;
+  } catch (error) {
+    const errorCode = voiceDeliveryErrorCode(error);
+    const safeTextFallback = !(error instanceof WhatsAppAudioSendError) || error.safeTextFallback;
+    const errorData = {
+      ...context,
+      errorCode,
+      ...(error instanceof WhatsAppAudioSendError && error.status !== undefined ? { httpStatus: error.status } : {}),
+    };
+
+    // A Meta pode ter aceitado POST /messages e a resposta se perdido. Não há
+    // idempotency key nesse endpoint; reenviar texto criaria áudio + texto.
+    if (!safeTextFallback) {
+      logStage("WhatsApp audio result ambiguous; text fallback withheld", errorData);
+      throw error;
+    }
+
+    logStage("voice fallback to text", errorData);
+    return sendText(wa, establishment.id, toPhone, text);
+  }
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----

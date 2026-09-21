@@ -16,7 +16,7 @@ export async function synthesizeSpeech(text: string): Promise<{ bytes: Uint8Arra
   try {
     const response = await new OpenAI({ apiKey }).audio.speech.create({ model, voice, input, response_format: "opus" }, { timeout: 30_000, maxRetries: 0 });
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length || bytes.length > MAX_TTS_AUDIO_BYTES) throw new SpeechError("invalid_audio");
+    if (!bytes.length || bytes.length > MAX_TTS_AUDIO_BYTES || bytes[0] !== 0x4f || bytes[1] !== 0x67 || bytes[2] !== 0x67 || bytes[3] !== 0x53) throw new SpeechError("invalid_audio");
     return { bytes, mimeType: "audio/ogg", provider: SPEECH_PROVIDER, model, voice };
   } catch (error) { if (error instanceof SpeechError) throw error; throw new SpeechError("provider_error"); }
 }

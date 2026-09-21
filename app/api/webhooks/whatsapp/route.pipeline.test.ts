@@ -21,6 +21,7 @@ const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationTask = vi.fn();
 const setConversationStatus = vi.fn();
+const setAwaitingHumanOfferConfirmation = vi.fn();
 const setConversationIntent = vi.fn();
 const upsertCustomerProfile = vi.fn();
 const upsertPendingTask = vi.fn();
@@ -58,6 +59,7 @@ vi.mock("@/lib/repo", () => ({
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
+  setAwaitingHumanOfferConfirmation: (...a: unknown[]) => setAwaitingHumanOfferConfirmation(...a),
   closeConversation: (...a: unknown[]) => closeConversation(...a),
   tryCloseAutomatedConversation: (...a: unknown[]) => tryCloseAutomatedConversation(...a),
   reopenConversation: (...a: unknown[]) => reopenConversation(...a),
@@ -111,6 +113,7 @@ vi.mock("@/lib/scheduling", () => ({
 }));
 
 const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+const { WhatsAppAudioSendError } = await import("@/lib/whatsapp/client");
 
 // ---- helpers ----
 const PHONE = "5514991234567";
@@ -627,11 +630,28 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
     expect(think).toHaveBeenCalledTimes(1); expect(sendAudio).not.toHaveBeenCalled(); expect(sendText).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, "Claro! Posso te ajudar com isso.");
   });
 
-  it("falha de upload/envio de áudio cai em texto sem repetir IA", async () => {
+  it("rejeição explícita de envio de áudio cai em texto sem repetir IA", async () => {
     findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
-    sendAudio.mockRejectedValueOnce(new Error("meta unavailable"));
+    sendAudio.mockRejectedValueOnce(new WhatsAppAudioSendError("audio_send_failed", true, 500));
     await enviarPayload(payloadAudio("wamid.voice.upload"));
     expect(think).toHaveBeenCalledTimes(1); expect(synthesizeSpeech).toHaveBeenCalledTimes(1); expect(sendText).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, "Claro! Posso te ajudar com isso.");
+  });
+
+  it("resultado ambíguo após POST de áudio não envia texto nem repete o processamento", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    sendAudio.mockRejectedValueOnce(new WhatsAppAudioSendError("audio_send_ambiguous", false));
+    await enviarPayload(payloadAudio("wamid.voice.ambiguous"));
+    expect(think).toHaveBeenCalledTimes(1); expect(synthesizeSpeech).toHaveBeenCalledTimes(1);
+    expect(sendAudio).toHaveBeenCalledTimes(1); expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("resposta determinística de handoff também usa voz para inbound áudio", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [], { awaitingHumanOfferConfirmation: true }));
+    transcribeAudio.mockResolvedValueOnce({ text: "sim", provider: "openai", model: "gpt-4o-mini-transcribe" });
+    await enviarPayload(payloadAudio("wamid.voice.handoff"));
+    expect(think).not.toHaveBeenCalled(); expect(synthesizeSpeech).toHaveBeenCalledWith("Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.");
+    expect(sendAudio).toHaveBeenCalledTimes(1); expect(sendText).not.toHaveBeenCalled();
   });
 
   it("transcript de agenda preserva o contrato de agenda e CRM", async () => {
