@@ -62,6 +62,12 @@ describe("fila operacional", () => {
     seed(EST_A, { ...order("preparing", "preparing"), createdAt: 100 });
     expect((await listOrders(EST_A)).map((item) => item.id)).toEqual(["new", "preparing", "closed"]);
   });
+
+  it("muitos carrinhos recentes não expulsam pedido operacional da janela", async () => {
+    seed(EST_A, { ...order("active", "accepted"), createdAt: 1 });
+    for (let index = 0; index < 200; index += 1) seed(EST_A, { ...order(`draft-${index}`, "draft"), createdAt: 10_000 + index });
+    expect((await listOrders(EST_A)).map((item) => item.id)).toEqual(["active"]);
+  });
 });
 
 describe("máquina de estados operacional", () => {

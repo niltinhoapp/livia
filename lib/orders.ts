@@ -339,10 +339,12 @@ export async function transitionOrder(establishmentId: string, orderId: string, 
 }
 
 export async function listOrders(establishmentId: string): Promise<FoodOrder[]> {
-  const snap = await sub(establishmentId, "orders").orderBy("createdAt", "desc").limit(200).get();
-  return snap.docs
-    .map((d) => d.data() as FoodOrder)
-    .filter(isOperationalOrder)
+  // Filtrar depois de um limit global permite que muitos drafts recentes
+  // escondam pedidos ativos mais antigos. Consulta cada estado operacional
+  // diretamente: carrinhos nunca disputam a janela da fila do restaurante.
+  const snapshots = await Promise.all([...OPERATIONAL].map((status) => sub(establishmentId, "orders").where("status", "==", status).limit(200).get()));
+  return snapshots
+    .flatMap((snap) => snap.docs.map((d) => d.data() as FoodOrder))
     .sort((a, b) => {
       const aPriority = ACTIVE_OPERATION_PRIORITY[a.status]; const bPriority = ACTIVE_OPERATION_PRIORITY[b.status];
       if (aPriority !== undefined && bPriority === undefined) return -1;
