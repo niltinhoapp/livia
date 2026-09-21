@@ -227,7 +227,7 @@ function buildSystemPrompt(
     rules.push(
       "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
       "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte list_menu/search_menu/get_menu_product e o resumo do pedido.",
-      "- Se a pessoa pedir o cardápio ou perguntar o que tem, sem citar item, use list_menu. Para um item específico, search_menu.",
+      "- Se a pessoa pedir o cardápio ou perguntar o que tem, sem citar item, use list_menu. Para uma categoria específica (pizzas, bebidas, lanches), use list_menu_category. Para um item específico, search_menu.",
       "- Se a busca trouxer mais de um item que sirva para o que a pessoa pediu, PERGUNTE qual antes de adicionar. Nunca escolha por ela.",
       "- Quando o produto tiver tamanho ou adicional obrigatório, pergunte antes de adicionar, uma coisa de cada vez.",
       "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",

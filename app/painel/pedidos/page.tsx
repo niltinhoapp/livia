@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Toggle } from "@/components/ui/Toggle";
 import { OrderOperations } from "./OrderOperations";
 import { OrderSettingsEditor } from "./OrderSettingsEditor";
+import { MenuImageImporter } from "./MenuImageImporter";
 
 const money = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -35,7 +36,7 @@ export default function PedidosPage() {
   return <div className="mx-auto max-w-5xl"><PageHeader title="Pedidos" description="Acompanhe novos pedidos e mantenha o cliente informado pela conversa." action={<Button variant="secondary" size="sm" onClick={load}>Atualizar</Button>} />
     {!ordersEnabled && <Card className="mb-4 p-4"><p className="font-semibold">A Livia não está aceitando pedidos novos</p><p className="mt-1 text-sm text-ink-500">Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.</p></Card>}
     <OrderOperations orders={orders} onOrderUpdated={updateOrder} />
-    <section className="mt-6 grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuEditor categories={categories} products={products} onChanged={load} /></div></section>
+    <section className="mt-6 grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuImageImporter onConfirmed={load} /><div className="mt-4"><MenuEditor categories={categories} products={products} onChanged={load} /></div></div></section>
     <section className="mt-6"><h2 className="mb-3 text-lg font-bold">Operação</h2><OrderSettingsEditor /></section></div>;
 }
 
