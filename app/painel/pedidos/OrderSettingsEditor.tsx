@@ -11,7 +11,7 @@
 // trava a própria operação). Quem valida o dado de verdade continua sendo
 // `normalizeOrderSettings` no backend.
 import { useCallback, useEffect, useState } from "react";
-import type { DeliveryFeeRule, OrderNotificationEvent, OrderPaymentMethod, OrderSettings } from "@/types";
+import type { DayHours, DeliveryFeeRule, OrderHoursConfig, OrderNotificationEvent, OrderPaymentMethod, OrderSettings, ScheduleConfig } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input, Label, Textarea } from "@/components/ui/Field";
@@ -59,6 +59,7 @@ interface Draft {
   methods: OrderPaymentMethod[];
   pixInstructions: string;
   notificationTemplates: Record<OrderNotificationEvent, { templateName: string; languageCode: string }>;
+  orderHours: OrderHoursConfig | null;
 }
 
 let neighborhoodSeq = 0;
@@ -80,6 +81,7 @@ export function toDraft(settings: OrderSettings): Draft {
       templateName: settings.notificationTemplates?.[event]?.templateName ?? "",
       languageCode: settings.notificationTemplates?.[event]?.languageCode ?? "pt_BR",
     }])) as Draft["notificationTemplates"],
+    orderHours: settings.orderHours ?? null,
   };
 }
 
@@ -128,7 +130,23 @@ export function toSettings(draft: Draft): OrderSettings {
       const configured = draft.notificationTemplates[event];
       return configured.templateName.trim() ? [[event, { templateName: configured.templateName.trim(), languageCode: configured.languageCode.trim() }]] : [];
     })),
+    orderHours: draft.orderHours,
   };
+}
+
+const WEEKDAYS: Array<{ key: string; label: string }> = [
+  { key: "0", label: "Domingo" }, { key: "1", label: "Segunda" }, { key: "2", label: "Terça" }, { key: "3", label: "Quarta" }, { key: "4", label: "Quinta" }, { key: "5", label: "Sexta" }, { key: "6", label: "Sábado" },
+];
+function copyBusinessHours(schedule: ScheduleConfig | null): OrderHoursConfig {
+  const days: Record<string, DayHours | null> = {};
+  for (const { key } of WEEKDAYS) {
+    const day = schedule?.days[key] ?? null;
+    // A janela específica representa somente recebimento de pedidos. Pausas
+    // continuam sendo herdadas exclusivamente quando o comerciante escolhe
+    // usar o expediente geral — não criamos pausas invisíveis nesta tela.
+    days[key] = day ? { open: day.open, close: day.close } : null;
+  }
+  return { days };
 }
 
 export function OrderSettingsEditor() {
@@ -137,13 +155,15 @@ export function OrderSettingsEditor() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [schedule, setSchedule] = useState<ScheduleConfig | null>(null);
 
   const load = useCallback(async () => {
     setState("loading");
     const response = await fetch("/api/orders/settings");
     if (!response.ok) { setState("error"); return; }
-    const body = await response.json() as { settings: OrderSettings };
+    const body = await response.json() as { settings: OrderSettings; schedule?: ScheduleConfig };
     setDraft(toDraft(body.settings));
+    setSchedule(body.schedule ?? null);
     setState("ready");
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -168,7 +188,7 @@ export function OrderSettingsEditor() {
     });
     setSaving(false);
     if (!response.ok) { setError("Não foi possível salvar. Tente de novo."); return; }
-    const body = await response.json() as { settings: OrderSettings };
+    const body = await response.json() as { settings: OrderSettings; schedule?: ScheduleConfig };
     setDraft(toDraft(body.settings));
     setSaved(true);
   };
@@ -183,6 +203,28 @@ export function OrderSettingsEditor() {
     <div className="mt-4">
       <Toggle checked={draft.pickupEnabled} onChange={(v) => patch({ pickupEnabled: v })} title="Retirada no balcão" desc="O cliente busca o pedido no local." />
       <Toggle checked={draft.deliveryEnabled} onChange={(v) => patch({ deliveryEnabled: v })} title="Entrega" desc="A Livia pede o endereço e o backend calcula a taxa." />
+    </div>
+
+    <div className="mt-4 border-t border-line/60 pt-4">
+      <p className="text-sm font-semibold text-ink-700">Horário para receber pedidos</p>
+      <p className="mt-1 text-xs text-ink-400">Por padrão, a Lívia usa o horário de funcionamento cadastrado em Configurações. Você pode limitar somente o recebimento de pedidos sem alterar a agenda.</p>
+      <Toggle
+        checked={draft.orderHours === null}
+        onChange={(same) => patch({ orderHours: same ? null : copyBusinessHours(schedule) })}
+        title="Usar horário de funcionamento"
+        desc={draft.orderHours === null ? "Pedidos seguem o expediente geral, incluindo pausas." : "Ative para voltar a herdar o expediente geral."}
+      />
+      {draft.orderHours && <div className="mt-3 divide-y divide-line rounded-control border border-line px-3">
+        <p className="py-3 text-xs text-ink-400">Janelas que atravessam a meia-noite são aceitas: por exemplo, 18:00 até 01:00. Nesta janela específica, pausas do expediente geral não são aplicadas.</p>
+        {WEEKDAYS.map(({ key, label }) => {
+          const day = draft.orderHours!.days[key];
+          const setDay = (next: DayHours | null) => patch({ orderHours: { days: { ...draft.orderHours!.days, [key]: next } } });
+          return <div key={key} className="py-2.5">
+            <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" checked={Boolean(day)} onChange={(event) => setDay(event.target.checked ? { open: "09:00", close: "18:00" } : null)} className="h-4 w-4 accent-primary" /><span className="text-sm font-medium">{label}</span></label>
+            {day ? <div className="mt-2 flex items-center gap-2 pl-6"><Input type="time" className="w-auto" value={day.open} onChange={(event) => setDay({ ...day, open: event.target.value })} /><span className="text-ink-400">às</span><Input type="time" className="w-auto" value={day.close} onChange={(event) => setDay({ ...day, close: event.target.value })} /></div> : <span className="mt-1 block pl-6 text-xs text-ink-400">Não recebe pedidos</span>}
+          </div>;
+        })}
+      </div>}
     </div>
 
     {draft.deliveryEnabled && <div className="mt-4 border-t border-line/60 pt-4">

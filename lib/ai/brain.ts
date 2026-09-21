@@ -1077,6 +1077,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     let blockedAgendaMutation: ToolName | null = null;
     let orderMutationAttempts = 0;
     let orderMutationLimitReached = false;
+    let orderIntakeBlocked: { reason: "orders_disabled" | "outside_order_hours"; nextOpening: { date: string; time: string } | null } | null = null;
   let orderConfirmedThisTurn = false;
   let canonicalConfirmationSummary: OrderSummaryForReply | null = null;
   let confirmationRejectedThisTurn = false;
@@ -1221,6 +1222,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         if (ORDER_MUTATION_TOOLS.has(name)) orderMutationAttempts++;
 
         const result = await runTool(name, args, toolCtx);
+        if (!result.ok && ORDER_DRAFT_MUTATION_TOOLS.has(name)) {
+          const data = result.data as { reason?: unknown; nextOpening?: unknown } | undefined;
+          if ((data?.reason === "orders_disabled" || data?.reason === "outside_order_hours") && (data.nextOpening === null || (typeof data.nextOpening === "object" && data.nextOpening !== null))) {
+            orderIntakeBlocked = { reason: data.reason, nextOpening: data.nextOpening as { date: string; time: string } | null };
+          }
+        }
           if (result.ok) {
             if (name === "confirm_order") orderConfirmedThisTurn = true;
           if (name === "create_appointment") {
@@ -1317,6 +1324,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     }
     if (confirmationRejectedThisTurn) {
       reply = "Para fechar o pedido, preciso da sua confirmação explícita do resumo. Se estiver tudo certo, responda “confirmo” ou “pode fechar”.";
+      handoff = false;
+    }
+    if (orderIntakeBlocked) {
+      if (orderIntakeBlocked.reason === "orders_disabled") {
+        reply = "No momento não estamos recebendo pedidos pelo WhatsApp.";
+      } else if (orderIntakeBlocked.nextOpening) {
+        const [, month, day] = orderIntakeBlocked.nextOpening.date.split("-");
+        reply = `Agora não estamos recebendo pedidos. Voltamos a receber em ${day}/${month} às ${orderIntakeBlocked.nextOpening.time}.`;
+      } else {
+        reply = "Agora não estamos recebendo pedidos. Consulte o estabelecimento para saber o próximo horário.";
+      }
       handoff = false;
     }
 

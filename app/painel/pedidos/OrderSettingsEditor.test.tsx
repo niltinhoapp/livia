@@ -61,6 +61,13 @@ describe("conversão entre OrderSettings e formulário", () => {
     expect(toSettings(toDraft(original)).notificationTemplates).toEqual({ accepted: { templateName: "pedido_aceito", languageCode: "pt_BR" } });
   });
 
+  it("preserva a janela específica de pedidos, sem duplicar o expediente geral", () => {
+    const original = settings({ orderHours: { days: { "0": null, "1": { open: "18:00", close: "01:00" }, "2": null, "3": null, "4": null, "5": null, "6": null } } });
+
+    expect(toSettings(toDraft(original)).orderHours).toEqual(original.orderHours);
+    expect(toSettings(toDraft(settings())).orderHours).toBeNull();
+  });
+
   it("bairro sem nome é descartado na hora de salvar", () => {
     const draft = { ...toDraft(settings({ deliveryEnabled: true })), neighborhoods: [{ key: "a", name: "  ", feeText: "5,00" }, { key: "b", name: "Centro", feeText: "5,00" }] };
 
@@ -125,6 +132,13 @@ describe("OrderSettingsEditor (tela)", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Entrega/ }));
 
     expect(await screen.findByText("Taxa de entrega")).toBeTruthy();
+  });
+
+  it("explicita que pausas só são herdadas ao usar o expediente geral", async () => {
+    render(<OrderSettingsEditor />);
+    await screen.findByText("Configurações de pedido");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Usar horário de funcionamento/ }));
+    expect(await screen.findByText(/Nesta janela específica, pausas do expediente geral não são aplicadas/i)).toBeTruthy();
   });
 
   it("salva no backend o que foi editado na tela", async () => {
