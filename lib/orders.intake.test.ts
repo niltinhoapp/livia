@@ -7,7 +7,7 @@ vi.mock("@/lib/firebase/admin", async () => {
 vi.mock("@/lib/whatsapp/client", () => ({ normalizePhone: (value: string) => value }));
 
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import { addOrderItem, getActiveOrder, getOrderIntakeStatus, saveMenuProduct, saveOrderSettings } from "@/lib/orders";
+import { addOrderItem, confirmOrder, getActiveOrder, getOrder, getOrderIntakeStatus, prepareOrderConfirmation, saveMenuProduct, saveOrderSettings, setOrderFulfillment, setOrderPayment } from "@/lib/orders";
 import { defaultScheduleConfig, saveScheduleConfig } from "@/lib/scheduling";
 import type { Establishment } from "@/types";
 
@@ -28,6 +28,12 @@ describe("janela canônica para novos pedidos", () => {
     expect(await getOrderIntakeStatus(A)).toMatchObject({ open: true });
   });
 
+  it("sem horário específico, reflete mudanças posteriores do ScheduleConfig sem copiar o expediente", async () => {
+    expect(await getOrderIntakeStatus(A)).toMatchObject({ open: true });
+    await saveScheduleConfig(A, { ...defaultScheduleConfig(A), days: { "0": null, "1": null, "2": null, "3": null, "4": null, "5": null, "6": null } });
+    expect(await getOrderIntakeStatus(A)).toMatchObject({ open: false, reason: "outside_order_hours", nextOpening: null });
+  });
+
   it("janela específica fechada bloqueia novo draft e devolve a próxima abertura estruturada", async () => {
     await saveOrderSettings(A, { orderHours: { days: { "0": null, "1": { open: "18:00", close: "01:00" }, "2": null, "3": null, "4": null, "5": null, "6": null } } });
     await expect(getOrderIntakeStatus(A)).resolves.toMatchObject({ open: false, reason: "outside_order_hours", nextOpening: { date: "2026-09-21", time: "18:00" } });
@@ -42,5 +48,19 @@ describe("janela canônica para novos pedidos", () => {
     await saveOrderSettings(A, { orderHours: { days: { "0": null, "1": { open: "18:00", close: "01:00" }, "2": null, "3": null, "4": null, "5": null, "6": null } } });
     const updated = await addOrderItem(A, PHONE, PHONE, null, product.id, null, [], 1);
     expect(updated.items).toHaveLength(2);
+  });
+
+  it("carrinho iniciado antes do fechamento pode ser resumido e confirmado, sem abrir outro draft", async () => {
+    const product = await saveMenuProduct(A, { categoryId: "c", name: "X", basePriceCents: 1000, active: true, variants: [], modifierGroups: [] });
+    const started = await addOrderItem(A, PHONE, PHONE, null, product.id, null, [], 1);
+    await saveOrderSettings(A, { orderHours: { days: { "0": null, "1": { open: "18:00", close: "01:00" }, "2": null, "3": null, "4": null, "5": null, "6": null } } });
+    await setOrderFulfillment(A, PHONE, PHONE, null, "pickup");
+    await setOrderPayment(A, PHONE, PHONE, null, "cash");
+    const prepared = await prepareOrderConfirmation(A, PHONE, PHONE);
+    const confirmed = await confirmOrder(A, prepared.id, prepared.version, PHONE);
+
+    expect(confirmed.status).toBe("confirmed");
+    expect(await getActiveOrder(A, PHONE)).toBeNull();
+    expect(await getOrder(A, started.id)).toMatchObject({ id: started.id, status: "confirmed" });
   });
 });

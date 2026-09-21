@@ -134,6 +134,13 @@ describe("OrderSettingsEditor (tela)", () => {
     expect(await screen.findByText("Taxa de entrega")).toBeTruthy();
   });
 
+  it("explicita que pausas só são herdadas ao usar o expediente geral", async () => {
+    render(<OrderSettingsEditor />);
+    await screen.findByText("Configurações de pedido");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Usar horário de funcionamento/ }));
+    expect(await screen.findByText(/Nesta janela específica, pausas do expediente geral não são aplicadas/i)).toBeTruthy();
+  });
+
   it("salva no backend o que foi editado na tela", async () => {
     render(<OrderSettingsEditor />);
     await screen.findByText("Configurações de pedido");

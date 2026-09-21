@@ -13,7 +13,10 @@ function addDays(date: string, days: number): string { const [year, month, day] 
 function ordinal(date: string): number { const [year, month, day] = date.split("-").map(Number); return Math.floor(Date.UTC(year!, month! - 1, day!) / 86_400_000); }
 
 function localAt(at: number, schedule: ScheduleConfig): LocalOpening & { minute: number } {
-  try {
+  // `timeZone: undefined` faz Intl usar o fuso do processo. Isso seria
+  // incorreto para a decisão de pedidos: sem IANA válido, use sempre o
+  // offset persistido pelo estabelecimento.
+  if (typeof schedule.timezone === "string" && schedule.timezone.trim()) try {
     const parts = new Intl.DateTimeFormat("en-CA", { timeZone: schedule.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(at));
     const value = (kind: string) => parts.find((part) => part.type === kind)?.value;
     const [year, month, day, hour, minute] = [value("year"), value("month"), value("day"), value("hour"), value("minute")];
@@ -28,7 +31,7 @@ function intervalFor(date: string, hours: DayHours | null | undefined): Interval
   if (!hours || !isHour(hours.open) || !isHour(hours.close)) return null;
   const open = toMinutes(hours.open), rawClose = toMinutes(hours.close); if (open === rawClose) return null;
   const close = rawClose <= open ? rawClose + 1440 : rawClose;
-  const pauses = (hours.breaks ?? []).flatMap((pause) => {
+  const pauses = (Array.isArray(hours.breaks) ? hours.breaks : []).flatMap((pause) => {
     if (!isHour(pause.start) || !isHour(pause.end)) return [];
     let start = toMinutes(pause.start), end = toMinutes(pause.end);
     if (start < open) start += 1440;
@@ -65,12 +68,13 @@ export function orderHoursAvailability(settings: OrderSettings, schedule: Schedu
 
 export function normalizeOrderHours(input: unknown): OrderHoursConfig | null {
   if (input === null || input === undefined) return null;
-  if (!input || typeof input !== "object" || !(input as { days?: unknown }).days || typeof (input as { days: unknown }).days !== "object") throw new Error("Horário de pedidos inválido.");
+  if (!input || typeof input !== "object" || Array.isArray(input) || !(input as { days?: unknown }).days || typeof (input as { days: unknown }).days !== "object" || Array.isArray((input as { days: unknown }).days)) throw new Error("Horário de pedidos inválido.");
   const raw = (input as { days: Record<string, unknown> }).days, days: Record<string, DayHours | null> = {};
+  if (Object.keys(raw).some((key) => !DAY_KEYS.includes(key as typeof DAY_KEYS[number]))) throw new Error("Dia inválido no horário de pedidos.");
   for (const key of DAY_KEYS) {
     const value = raw[key]; if (value === null) { days[key] = null; continue; }
     if (!value || typeof value !== "object") throw new Error(`Horário de pedidos inválido para o dia ${key}.`);
-    const current = value as Partial<DayHours>; if (!isHour(current.open) || !isHour(current.close) || current.open === current.close) throw new Error(`Abertura e fechamento inválidos para o dia ${key}.`);
+    const current = value as Partial<DayHours>; if (!isHour(current.open) || !isHour(current.close) || current.open === current.close || (current.breaks !== undefined && !Array.isArray(current.breaks))) throw new Error(`Abertura e fechamento inválidos para o dia ${key}.`);
     const interval = intervalFor("2026-01-05", { open: current.open, close: current.close, breaks: current.breaks });
     if ((current.breaks?.length ?? 0) !== (interval?.breaks.length ?? 0)) throw new Error(`Pausa inválida para o dia ${key}.`);
     const pauses = [...(interval?.breaks ?? [])].sort((a, b) => a.start - b.start);

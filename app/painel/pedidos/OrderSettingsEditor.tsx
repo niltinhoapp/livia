@@ -215,7 +215,7 @@ export function OrderSettingsEditor() {
         desc={draft.orderHours === null ? "Pedidos seguem o expediente geral, incluindo pausas." : "Ative para voltar a herdar o expediente geral."}
       />
       {draft.orderHours && <div className="mt-3 divide-y divide-line rounded-control border border-line px-3">
-        <p className="py-3 text-xs text-ink-400">Janelas que atravessam a meia-noite são aceitas: por exemplo, 18:00 até 01:00.</p>
+        <p className="py-3 text-xs text-ink-400">Janelas que atravessam a meia-noite são aceitas: por exemplo, 18:00 até 01:00. Nesta janela específica, pausas do expediente geral não são aplicadas.</p>
         {WEEKDAYS.map(({ key, label }) => {
           const day = draft.orderHours!.days[key];
           const setDay = (next: DayHours | null) => patch({ orderHours: { days: { ...draft.orderHours!.days, [key]: next } } });
