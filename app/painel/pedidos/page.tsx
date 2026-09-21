@@ -1,18 +1,16 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import type { FoodOrder, MenuCategory, MenuModifierGroup, MenuModifierOption, MenuProduct, MenuVariant, OrderStatus } from "@/types";
+import type { FoodOrder, MenuCategory, MenuModifierGroup, MenuModifierOption, MenuProduct, MenuVariant } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input, Label, Select } from "@/components/ui/Field";
-import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
+import { ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { Toggle } from "@/components/ui/Toggle";
+import { OrderOperations } from "./OrderOperations";
 import { OrderSettingsEditor } from "./OrderSettingsEditor";
 
 const money = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-const labels: Record<OrderStatus, { label: string; tone: StatusTone }> = { draft: { label: "Rascunho", tone: "neutral" }, awaiting_confirmation: { label: "Aguardando confirmação", tone: "warning" }, confirmed: { label: "Novo", tone: "warning" }, accepted: { label: "Aceito", tone: "info" }, preparing: { label: "Preparando", tone: "info" }, ready_for_pickup: { label: "Pronto para retirada", tone: "success" }, out_for_delivery: { label: "Saiu para entrega", tone: "info" }, completed: { label: "Concluído", tone: "success" }, cancelled: { label: "Cancelado", tone: "danger" }, rejected: { label: "Recusado", tone: "danger" } };
-const next: Partial<Record<OrderStatus, { status: OrderStatus; label: string }[]>> = { confirmed: [{ status: "accepted", label: "Aceitar" }, { status: "rejected", label: "Recusar" }], accepted: [{ status: "preparing", label: "Preparar" }], preparing: [{ status: "ready_for_pickup", label: "Pronto para retirada" }, { status: "out_for_delivery", label: "Saiu para entrega" }], ready_for_pickup: [{ status: "completed", label: "Concluir" }], out_for_delivery: [{ status: "completed", label: "Concluir" }] };
 
 // Preço em centavos <-> texto "19,90" pro input. Centralizado aqui porque
 // aparece em produto, variante e opção de adicional.
@@ -31,13 +29,13 @@ export default function PedidosPage() {
   // muda é só o aviso no topo.
   const load = useCallback(async () => { setState("loading"); const [o, c, p] = await Promise.all([fetch("/api/orders"), fetch("/api/menu/categories"), fetch("/api/menu/products")]); if (!o.ok || !c.ok || !p.ok) { setState("error"); return; } const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]); setOrders(oj.orders ?? []); setOrdersEnabled(oj.ordersEnabled !== false); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready"); }, []);
   useEffect(() => { load(); }, [load]);
-  const transition = async (id: string, status: OrderStatus) => { const r = await fetch(`/api/orders/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); if (r.ok) load(); };
+  const updateOrder = (updated: FoodOrder) => setOrders((current) => current.map((order) => order.id === updated.id ? updated : order));
   if (state === "loading") return <LoadingState />;
   if (state === "error") return <ErrorState onRetry={load} />;
   return <div className="mx-auto max-w-5xl"><PageHeader title="Pedidos" description="Acompanhe novos pedidos e mantenha o cliente informado pela conversa." action={<Button variant="secondary" size="sm" onClick={load}>Atualizar</Button>} />
     {!ordersEnabled && <Card className="mb-4 p-4"><p className="font-semibold">A Livia não está aceitando pedidos novos</p><p className="mt-1 text-sm text-ink-500">Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.</p></Card>}
-    <section className="grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Fila de pedidos</h2>{orders.filter((o) => o.status !== "draft" && o.status !== "awaiting_confirmation").length === 0 ? <EmptyState title="Nenhum pedido confirmado" description="Pedidos confirmados pelo WhatsApp aparecem aqui." /> : <div className="space-y-3">{orders.filter((o) => o.status !== "draft" && o.status !== "awaiting_confirmation").map((o) => <Card key={o.id} className="p-4"><div className="flex justify-between gap-3"><div><p className="font-semibold">{o.contactName ?? o.contactPhone}</p><p className="text-xs text-ink-500">{o.fulfillment === "delivery" ? `Entrega: ${o.deliveryAddress?.raw ?? "endereço pendente"}` : "Retirada"} · {o.payment.method ?? "pagamento pendente"}</p></div><StatusBadge tone={labels[o.status].tone}>{labels[o.status].label}</StatusBadge></div><ul className="mt-3 text-sm text-ink-700">{o.items.map((i) => <li key={i.id}>{i.quantity}× {i.productName}{i.variantName ? ` · ${i.variantName}` : ""}{i.notes ? ` (${i.notes})` : ""}</li>)}</ul><p className="mt-3 font-bold">Total: {money(o.totalCents)}</p><div className="mt-3 flex flex-wrap gap-2">{next[o.status]?.map((n) => <Button key={n.status} size="sm" onClick={() => transition(o.id, n.status)}>{n.label}</Button>)}{["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery"].includes(o.status) && <Button size="sm" variant="danger" onClick={() => transition(o.id, "cancelled")}>Cancelar</Button>}</div></Card>)}</div>}</div>
-    <div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuEditor categories={categories} products={products} onChanged={load} /></div></section>
+    <OrderOperations orders={orders} onOrderUpdated={updateOrder} />
+    <section className="mt-6 grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuEditor categories={categories} products={products} onChanged={load} /></div></section>
     <section className="mt-6"><h2 className="mb-3 text-lg font-bold">Operação</h2><OrderSettingsEditor /></section></div>;
 }
 
