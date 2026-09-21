@@ -83,6 +83,15 @@ describe("operação de pedidos no painel", () => {
     expect(screen.getByText("Novo")).toBeTruthy();
   });
 
+  it("recupera o estado autoritativo depois de conflito de versão", async () => {
+    const refresh = vi.fn(async () => undefined);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: "O pedido foi atualizado por outro operador." }) }));
+    render(<OrderOperations orders={[order()]} onOrderUpdated={vi.fn()} onRefresh={refresh} />);
+    fireEvent.click(screen.getByRole("button", { name: "Aceitar pedido" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("alert").textContent).toContain("atualizado por outro operador");
+  });
+
   it("distingue status salvo de falha posterior da notificação", async () => {
     const current = order(); const updated = { ...current, status: "accepted" as const, version: 5 };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ order: updated, notification: { status: "failed" } }) }));
@@ -106,5 +115,15 @@ describe("operação de pedidos no painel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Encerrados (1)" }));
     expect(screen.getByText(/DONE99/)).toBeTruthy();
     expect(screen.queryByText(/ABC123/)).toBeNull();
+  });
+
+  it("sinaliza pedido novo recebido depois da carga inicial sem duplicar a fila", async () => {
+    const { rerender } = render(<OrderOperations orders={[order("accepted")]} onOrderUpdated={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText(/Novo pedido aguardando aceite/)).toBeNull());
+    rerender(<OrderOperations orders={[order("accepted"), { ...order(), id: "order-NEW001", version: 1 }]} onOrderUpdated={vi.fn()} />);
+    expect(await screen.findByText("Novo pedido aguardando aceite")).toBeTruthy();
+    expect(screen.getAllByText(/#NEW001/)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Marcar como vistos" }));
+    expect(screen.queryByText(/Novo pedido aguardando aceite/)).toBeNull();
   });
 });

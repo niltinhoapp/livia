@@ -10,6 +10,7 @@ import { Toggle } from "@/components/ui/Toggle";
 import { OrderOperations } from "./OrderOperations";
 import { OrderSettingsEditor } from "./OrderSettingsEditor";
 import { MenuImageImporter } from "./MenuImageImporter";
+import { useOrderAutoRefresh } from "./useOrderAutoRefresh";
 
 const money = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -28,14 +29,29 @@ export default function PedidosPage() {
   // Com a IA de pedidos desligada, a tela continua inteira: o comerciante
   // ainda precisa tocar os pedidos em andamento e mexer no cardápio. O que
   // muda é só o aviso no topo.
-  const load = useCallback(async () => { setState("loading"); const [o, c, p] = await Promise.all([fetch("/api/orders"), fetch("/api/menu/categories"), fetch("/api/menu/products")]); if (!o.ok || !c.ok || !p.ok) { setState("error"); return; } const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]); setOrders(oj.orders ?? []); setOrdersEnabled(oj.ordersEnabled !== false); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready"); }, []);
+  const refreshOrders = useCallback(async () => {
+    const response = await fetch("/api/orders", { cache: "no-store" });
+    if (!response.ok) throw new Error("orders_refresh_failed");
+    const body = await response.json() as { orders?: FoodOrder[]; ordersEnabled?: boolean };
+    setOrders(body.orders ?? []); setOrdersEnabled(body.ordersEnabled !== false);
+  }, []);
+  const load = useCallback(async () => {
+    setState("loading");
+    try {
+      const [o, c, p] = await Promise.all([fetch("/api/orders", { cache: "no-store" }), fetch("/api/menu/categories"), fetch("/api/menu/products")]);
+      if (!o.ok || !c.ok || !p.ok) throw new Error("panel_load_failed");
+      const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]);
+      setOrders(oj.orders ?? []); setOrdersEnabled(oj.ordersEnabled !== false); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready");
+    } catch { setState("error"); }
+  }, []);
   useEffect(() => { load(); }, [load]);
+  useOrderAutoRefresh(refreshOrders);
   const updateOrder = (updated: FoodOrder) => setOrders((current) => current.map((order) => order.id === updated.id ? updated : order));
   if (state === "loading") return <LoadingState />;
   if (state === "error") return <ErrorState onRetry={load} />;
-  return <div className="mx-auto max-w-5xl"><PageHeader title="Pedidos" description="Acompanhe novos pedidos e mantenha o cliente informado pela conversa." action={<Button variant="secondary" size="sm" onClick={load}>Atualizar</Button>} />
+  return <div className="mx-auto max-w-7xl"><PageHeader title="Pedidos" description="Central operacional para acompanhar e movimentar pedidos durante o expediente." action={<Button variant="secondary" size="sm" onClick={() => void refreshOrders()}>Atualizar</Button>} />
     {!ordersEnabled && <Card className="mb-4 p-4"><p className="font-semibold">A Livia não está aceitando pedidos novos</p><p className="mt-1 text-sm text-ink-500">Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.</p></Card>}
-    <OrderOperations orders={orders} onOrderUpdated={updateOrder} />
+    <OrderOperations orders={orders} onOrderUpdated={updateOrder} onRefresh={refreshOrders} />
     <section className="mt-6 grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuImageImporter onConfirmed={load} /><div className="mt-4"><MenuEditor categories={categories} products={products} onChanged={load} /></div></div></section>
     <section className="mt-6"><h2 className="mb-3 text-lg font-bold">Operação</h2><OrderSettingsEditor /></section></div>;
 }

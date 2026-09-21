@@ -5,10 +5,11 @@ import { orderNotificationEvent, orderNotificationId, orderNotificationText } fr
 import { getScheduleConfig } from "@/lib/scheduling";
 import { getEstablishment } from "@/lib/repo";
 import { normalizeOrderHours, orderHoursAvailability, type LocalOpening } from "@/lib/orderHours";
+import { ACTIVE_ORDER_STATUSES, CLOSED_ORDER_STATUSES, allowedOrderTransitions, isOperationalOrder } from "@/lib/orderLifecycle";
+export { allowedOrderTransitions, isOperationalOrder } from "@/lib/orderLifecycle";
 
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
-const TERMINAL = new Set<OrderStatus>(["completed", "cancelled", "rejected"]);
-const OPERATIONAL = new Set<OrderStatus>(["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled", "rejected"]);
+const OPERATIONAL = new Set<OrderStatus>([...ACTIVE_ORDER_STATUSES, ...CLOSED_ORDER_STATUSES]);
 const ACTIVE_OPERATION_PRIORITY: Partial<Record<OrderStatus, number>> = { confirmed: 0, accepted: 1, preparing: 2, ready_for_pickup: 3, out_for_delivery: 4 };
 export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null, notificationTemplates: {}, orderHours: null });
 
@@ -347,18 +348,6 @@ export type OrderOperationErrorCode = "not_found" | "stale_version" | "invalid_t
 export class OrderOperationError extends Error {
   constructor(public readonly code: OrderOperationErrorCode, message: string) { super(message); this.name = "OrderOperationError"; }
 }
-
-export function allowedOrderTransitions(order: Pick<FoodOrder, "status" | "fulfillment">): OrderStatus[] {
-  if (TERMINAL.has(order.status) || ACTIVE_DRAFT.has(order.status)) return [];
-  if (order.status === "confirmed") return ["accepted", "cancelled"];
-  if (order.status === "accepted") return ["preparing", "cancelled"];
-  if (order.status === "preparing") return ["ready_for_pickup", "cancelled"];
-  if (order.status === "ready_for_pickup") return order.fulfillment === "delivery" ? ["out_for_delivery", "cancelled"] : order.fulfillment === "pickup" ? ["completed", "cancelled"] : [];
-  if (order.status === "out_for_delivery") return order.fulfillment === "delivery" ? ["completed", "cancelled"] : [];
-  return [];
-}
-
-export function isOperationalOrder(order: Pick<FoodOrder, "status">): boolean { return OPERATIONAL.has(order.status); }
 
 export async function transitionOrder(establishmentId: string, orderId: string, status: OrderStatus, expectedVersion: number): Promise<FoodOrder> {
   const ref = orderRef(establishmentId, orderId);
