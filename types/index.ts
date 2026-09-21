@@ -204,9 +204,12 @@ export interface MenuModifierGroup { id: string; name: string; required: boolean
 export interface MenuVariant { id: string; name: string; priceDeltaCents: number; active: boolean; }
 export interface MenuProduct { id: string; categoryId: string; name: string; description: string | null; basePriceCents: number; active: boolean; variants: MenuVariant[]; modifierGroups: MenuModifierGroup[]; createdAt: number; updatedAt: number; }
 export type DeliveryFeeRule = { kind: "fixed"; feeCents: number } | { kind: "neighborhood"; neighborhood: string; feeCents: number };
+// Janela opcional de recebimento de pedidos. Ausente significa herdar o
+// expediente canônico de ScheduleConfig; não há cópia obrigatória dele.
+export interface OrderHoursConfig { days: Record<string, DayHours | null>; }
 export type OrderNotificationEvent = "accepted" | "ready_for_pickup" | "out_for_delivery" | "cancelled";
 export interface OrderNotificationTemplateConfig { templateName: string; languageCode: string; }
-export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolean; deliveryRules: DeliveryFeeRule[]; acceptedPaymentMethods: Array<"pix" | "cash" | "credit_card" | "debit_card">; pixInstructions: string | null; notificationTemplates?: Partial<Record<OrderNotificationEvent, OrderNotificationTemplateConfig>>; }
+export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolean; deliveryRules: DeliveryFeeRule[]; acceptedPaymentMethods: Array<"pix" | "cash" | "credit_card" | "debit_card">; pixInstructions: string | null; notificationTemplates?: Partial<Record<OrderNotificationEvent, OrderNotificationTemplateConfig>>; orderHours?: OrderHoursConfig | null; }
 export type OrderStatus = "draft" | "awaiting_confirmation" | "confirmed" | "accepted" | "preparing" | "ready_for_pickup" | "out_for_delivery" | "completed" | "cancelled" | "rejected";
 export type OrderPaymentMethod = "pix" | "cash" | "credit_card" | "debit_card";
 export interface OrderItem { id: string; productId: string; productName: string; variantId: string | null; variantName: string | null; quantity: number; unitPriceCents: number; modifiers: Array<{ optionId: string; name: string; priceDeltaCents: number }>; notes: string | null; lineTotalCents: number; }

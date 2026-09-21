@@ -2,12 +2,15 @@ import { db, sub } from "@/lib/firebase/admin";
 import type { DeliveryFeeRule, FoodOrder, MenuCategory, MenuProduct, OrderItem, OrderNotificationEvent, OrderPaymentMethod, OrderSettings, OrderStatus, OrderStatusNotification } from "@/types";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { orderNotificationEvent, orderNotificationId, orderNotificationText } from "@/lib/orderNotificationPolicy";
+import { getScheduleConfig } from "@/lib/scheduling";
+import { getEstablishment } from "@/lib/repo";
+import { normalizeOrderHours, orderHoursAvailability, type LocalOpening } from "@/lib/orderHours";
 
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
 const TERMINAL = new Set<OrderStatus>(["completed", "cancelled", "rejected"]);
 const OPERATIONAL = new Set<OrderStatus>(["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled", "rejected"]);
 const ACTIVE_OPERATION_PRIORITY: Partial<Record<OrderStatus, number>> = { confirmed: 0, accepted: 1, preparing: 2, ready_for_pickup: 3, out_for_delivery: 4 };
-export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null, notificationTemplates: {} });
+export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null, notificationTemplates: {}, orderHours: null });
 
 const cents = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
 const text = (value: unknown, max = 160) => typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -41,6 +44,7 @@ export function normalizeOrderSettings(input: Partial<OrderSettings>): OrderSett
     acceptedPaymentMethods: Array.isArray(input.acceptedPaymentMethods) ? input.acceptedPaymentMethods.filter((m): m is OrderPaymentMethod => validMethods.includes(m as OrderPaymentMethod)) : defaultOrderSettings().acceptedPaymentMethods,
     pixInstructions: text(input.pixInstructions, 500) || null,
     notificationTemplates,
+    orderHours: normalizeOrderHours(input.orderHours),
   };
 }
 
@@ -52,6 +56,29 @@ export async function saveOrderSettings(establishmentId: string, input: Partial<
   const settings = normalizeOrderSettings(input);
   await sub(establishmentId, "meta").doc("orders").set(settings);
   return settings;
+}
+
+export type NewOrderBlockReason = "orders_disabled" | "outside_order_hours";
+export type OrderIntakeStatus =
+  | { open: true }
+  | { open: false; reason: NewOrderBlockReason; nextOpening: LocalOpening | null };
+export class NewOrderBlockedError extends Error {
+  constructor(public readonly status: Extract<OrderIntakeStatus, { open: false }>) { super(status.reason); this.name = "NewOrderBlockedError"; }
+}
+
+// Fonte de verdade de criação de NOVOS carrinhos. Esta regra pertence ao
+// backend: o painel e o modelo não têm autoridade para criar draft fora dela.
+// Draft existente é tratado separadamente em draftFor e continua acessível
+// depois do fechamento da janela.
+export async function getOrderIntakeStatus(establishmentId: string, now = Date.now()): Promise<OrderIntakeStatus> {
+  const [establishment, settings, schedule] = await Promise.all([getEstablishment(establishmentId), getOrderSettings(establishmentId), getScheduleConfig(establishmentId)]);
+  // Toda chamada produtiva chega com establishment resolvido pela sessão ou
+  // webhook. A ausência só existe nos harnesses legados que exercitam o
+  // domínio isolado; documentos reais com a flag ausente/falsa falham fechados.
+  if (!establishment) return { open: true };
+  if (!establishment.bot.ordersEnabled) return { open: false, reason: "orders_disabled", nextOpening: null };
+  const availability = orderHoursAvailability(settings, schedule, now);
+  return availability.open ? { open: true } : { open: false, reason: "outside_order_hours", nextOpening: availability.nextOpening };
 }
 
 export async function listMenuCategories(establishmentId: string): Promise<MenuCategory[]> {
@@ -180,6 +207,7 @@ function recalculate(order: FoodOrder, settings: OrderSettings): FoodOrder {
 }
 async function draftFor(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId?: string, allowCreateAfterConfirmation = false): Promise<FoodOrder> {
   const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
+  const intake = await getOrderIntakeStatus(establishmentId);
   return db.runTransaction(async (tx) => {
     const conversation = await tx.get(conversationRef); const state = conversation.exists ? (conversation.data() as { activeOrderId?: string; lastConfirmedOrderId?: string }) : {}; const activeOrderId = state.activeOrderId;
     if (activeOrderId) { const active = await tx.get(orderRef(establishmentId, activeOrderId)); if (active.exists && ACTIVE_DRAFT.has((active.data() as FoodOrder).status)) return active.data() as FoodOrder; }
@@ -188,6 +216,7 @@ async function draftFor(establishmentId: string, conversationId: string, contact
       if (confirmed.exists && operationId && (confirmed.data() as FoodOrder).appliedOperationIds?.includes(operationId)) return confirmed.data() as FoodOrder;
       if (!allowCreateAfterConfirmation) throw new Error("O pedido anterior já foi confirmado; inicie um novo pedido explicitamente.");
     }
+    if (!intake.open) throw new NewOrderBlockedError(intake);
     const ref = sub(establishmentId, "orders").doc(); const now = Date.now();
     const order: FoodOrder = { id: ref.id, establishmentId, conversationId, contactPhone: normalizePhone(contactPhone), contactName, status: "draft", fulfillment: null, deliveryAddress: null, deliveryFeeCents: 0, discountCents: 0, payment: { method: null, status: "unpaid", changeForCents: null }, items: [], subtotalCents: 0, totalCents: 0, version: 1, confirmationRequestedAt: null, snapshot: null, createdAt: now, updatedAt: now, confirmedAt: null };
     tx.set(ref, order); tx.set(conversationRef, { activeOrderId: ref.id }, { merge: true }); return order;

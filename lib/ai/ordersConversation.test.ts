@@ -147,6 +147,28 @@ describe("2) cliente pergunta o cardápio antes de escolher", () => {
   });
 });
 
+describe("F8) janela operacional de novos pedidos", () => {
+  it("PASS: a camada de domínio bloqueia criação fora da janela e a resposta é canônica, não a alegação do modelo", async () => {
+    fakeDb.col("establishments").set(EST, est() as unknown as Record<string, unknown>);
+    await saveOrderSettings(EST, {
+      pickupEnabled: true, deliveryEnabled: true,
+      deliveryRules: [{ kind: "fixed", feeCents: 1000 }],
+      acceptedPaymentMethods: ["pix", "cash"], pixInstructions: null,
+      orderHours: { days: { "0": null, "1": null, "2": null, "3": null, "4": null, "5": null, "6": { open: "18:00", close: "01:00" } } },
+    });
+    modelScript = [
+      toolCall("add_order_item", { productId: burger.id, quantity: 1 }, "closed-add"),
+      say("Adicionei o item."),
+    ];
+
+    const { result } = await turn("quero um x-burger", [], null);
+
+    expect(toolNames(result)).toEqual(["add_order_item"]);
+    expect(result.reply).toBe("Agora não estamos recebendo pedidos. Voltamos a receber em 19/09 às 18:00.");
+    expect(await activeOrder()).toBeNull();
+  });
+});
+
 describe("3) produto com variantes (P/M/G)", () => {
   it("PASS/FAIL: variantId real aplica o delta de preço correto", async () => {
     modelScript = [toolCall("add_order_item", { productId: pizza.id, variantId: "m", quantity: 1 }, "v1"), say("Pizza média adicionada.")];
