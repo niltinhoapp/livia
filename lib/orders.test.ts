@@ -6,6 +6,11 @@ import { calculateItem, deliveryFee, normalizeOrderSettings, normalizeProduct } 
 const product = () => normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [{ id: "double", name: "Duplo", priceDeltaCents: 800, active: true }], modifierGroups: [{ id: "extra", name: "Adicionais", required: false, minSelections: 0, maxSelections: 2, options: [{ id: "bacon", name: "Bacon", priceDeltaCents: 400, active: true }] }] }, "x", 1);
 
 describe("domínio de pedidos", () => {
+  it("normaliza somente configuração explícita e válida de template operacional", () => {
+    const settings = normalizeOrderSettings({ notificationTemplates: { accepted: { templateName: "pedido_aceito", languageCode: "pt_BR" } } });
+    expect(settings.notificationTemplates).toEqual({ accepted: { templateName: "pedido_aceito", languageCode: "pt_BR" } });
+    expect(() => normalizeOrderSettings({ notificationTemplates: { accepted: { templateName: "Pedido Aceito", languageCode: "pt_BR" } } })).toThrow(/template.*inválido/i);
+  });
   it("rejeita grupo obrigatório com minSelections zero no backend", () => {
     expect(() => normalizeProduct({ categoryId: "burgers", name: "X-Burguer", basePriceCents: 2000, variants: [], modifierGroups: [{ id: "ponto", name: "Ponto", required: true, minSelections: 0, maxSelections: 1, options: [{ id: "ao-ponto", name: "Ao ponto", priceDeltaCents: 0, active: true }] }] }, "x", 1)).toThrow(/obrigatório.*mínimo/i);
   });

@@ -83,6 +83,15 @@ describe("operação de pedidos no painel", () => {
     expect(screen.getByText("Novo")).toBeTruthy();
   });
 
+  it("distingue status salvo de falha posterior da notificação", async () => {
+    const current = order(); const updated = { ...current, status: "accepted" as const, version: 5 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ order: updated, notification: { status: "failed" } }) }));
+    render(<OrderOperations orders={[current]} onOrderUpdated={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Aceitar pedido" }));
+    expect((await screen.findByRole("status")).textContent).toContain("Pedido atualizado");
+    expect(screen.getByRole("status").textContent).toContain("Não foi possível enviar");
+  });
+
   it("separa encerrados da fila ativa", () => {
     render(<OrderOperations orders={[order(), { ...order("completed"), id: "order-DONE99" }]} onOrderUpdated={vi.fn()} />);
     expect(screen.queryByText(/DONE99/)).toBeNull();

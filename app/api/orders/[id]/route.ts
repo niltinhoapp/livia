@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getOrder, isOperationalOrder, OrderOperationError, transitionOrder } from "@/lib/orders";
+import { dispatchOrderStatusNotification } from "@/lib/orderNotifications";
+import { orderNotificationEvent, orderNotificationId } from "@/lib/orderNotificationPolicy";
 import type { OrderStatus } from "@/types";
 // Sem portão de `bot.ordersEnabled`: ver comentário em app/api/orders/route.ts.
 // Ver e avançar o status de um pedido que já existe é gestão do comerciante,
@@ -14,7 +16,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const body = await req.json() as { status?: OrderStatus; expectedVersion?: number };
     if (!body.status) return NextResponse.json({ error: "status obrigatório" }, { status: 400 });
     if (!Number.isInteger(body.expectedVersion)) return NextResponse.json({ error: "versão esperada obrigatória" }, { status: 400 });
-    return NextResponse.json({ order: await transitionOrder(est, id, body.status, body.expectedVersion!) });
+    const order = await transitionOrder(est, id, body.status, body.expectedVersion!);
+    const event = orderNotificationEvent(order.fulfillment, order.status);
+    let notification = null;
+    let notificationError = false;
+    if (event) {
+      try {
+        notification = await dispatchOrderStatusNotification(est, orderNotificationId(order.id, order.status, order.version));
+      } catch {
+        // O status já foi confirmado pela transaction. Falha no efeito
+        // posterior nunca converte sucesso operacional em erro/reversão.
+        notificationError = true;
+      }
+    }
+    return NextResponse.json({ order, notification, notificationError });
   } catch (error) {
     if (error instanceof OrderOperationError) {
       const status = error.code === "not_found" ? 404 : 409;

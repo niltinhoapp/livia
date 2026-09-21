@@ -1,12 +1,13 @@
 import { db, sub } from "@/lib/firebase/admin";
-import type { DeliveryFeeRule, FoodOrder, MenuCategory, MenuProduct, OrderItem, OrderPaymentMethod, OrderSettings, OrderStatus } from "@/types";
+import type { DeliveryFeeRule, FoodOrder, MenuCategory, MenuProduct, OrderItem, OrderNotificationEvent, OrderPaymentMethod, OrderSettings, OrderStatus, OrderStatusNotification } from "@/types";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { orderNotificationEvent, orderNotificationId, orderNotificationText } from "@/lib/orderNotificationPolicy";
 
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
 const TERMINAL = new Set<OrderStatus>(["completed", "cancelled", "rejected"]);
 const OPERATIONAL = new Set<OrderStatus>(["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled", "rejected"]);
 const ACTIVE_OPERATION_PRIORITY: Partial<Record<OrderStatus, number>> = { confirmed: 0, accepted: 1, preparing: 2, ready_for_pickup: 3, out_for_delivery: 4 };
-export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null });
+export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null, notificationTemplates: {} });
 
 const cents = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
 const text = (value: unknown, max = 160) => typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -21,12 +22,25 @@ export function normalizeOrderSettings(input: Partial<OrderSettings>): OrderSett
     if (rule.kind === "fixed") all.push({ kind: "fixed", feeCents });
     return all;
   }, []) : defaultOrderSettings().deliveryRules;
+  const notificationTemplates: NonNullable<OrderSettings["notificationTemplates"]> = {};
+  const events: OrderNotificationEvent[] = ["accepted", "ready_for_pickup", "out_for_delivery", "cancelled"];
+  for (const event of events) {
+    const configured = input.notificationTemplates?.[event];
+    const templateName = text(configured?.templateName, 512);
+    const languageCode = text(configured?.languageCode, 32);
+    if (!templateName && !languageCode) continue;
+    if (!/^[a-z0-9_]+$/.test(templateName) || !/^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/.test(languageCode)) {
+      throw new Error(`Template de notificação inválido para ${event}.`);
+    }
+    notificationTemplates[event] = { templateName, languageCode };
+  }
   return {
     pickupEnabled: input.pickupEnabled !== false,
     deliveryEnabled: Boolean(input.deliveryEnabled),
     deliveryRules: rules.length ? rules : [{ kind: "fixed", feeCents: 0 }],
     acceptedPaymentMethods: Array.isArray(input.acceptedPaymentMethods) ? input.acceptedPaymentMethods.filter((m): m is OrderPaymentMethod => validMethods.includes(m as OrderPaymentMethod)) : defaultOrderSettings().acceptedPaymentMethods,
     pixInstructions: text(input.pixInstructions, 500) || null,
+    notificationTemplates,
   };
 }
 
@@ -334,6 +348,26 @@ export async function transitionOrder(establishmentId: string, orderId: string, 
     const now = Date.now();
     const next: FoodOrder = { ...order, status, operationalHistory: [...(order.operationalHistory ?? []), { from: order.status, to: status, at: now, source: "panel" }], updatedAt: now, version: order.version + 1 };
     tx.set(ref, next);
+    const event = orderNotificationEvent(order.fulfillment, status);
+    if (event && order.fulfillment) {
+      const id = orderNotificationId(order.id, status, next.version);
+      const notification: OrderStatusNotification = {
+        id,
+        establishmentId,
+        orderId: order.id,
+        orderVersion: next.version,
+        event,
+        orderStatus: status,
+        fulfillment: order.fulfillment,
+        status: "pending",
+        sendType: null,
+        attemptCount: 0,
+        content: orderNotificationText(event, order.id, ""),
+        createdAt: now,
+        updatedAt: now,
+      };
+      tx.create(sub(establishmentId, "orderNotifications").doc(id), notification);
+    }
     return next;
   });
 }

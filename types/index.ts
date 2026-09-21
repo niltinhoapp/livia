@@ -204,7 +204,9 @@ export interface MenuModifierGroup { id: string; name: string; required: boolean
 export interface MenuVariant { id: string; name: string; priceDeltaCents: number; active: boolean; }
 export interface MenuProduct { id: string; categoryId: string; name: string; description: string | null; basePriceCents: number; active: boolean; variants: MenuVariant[]; modifierGroups: MenuModifierGroup[]; createdAt: number; updatedAt: number; }
 export type DeliveryFeeRule = { kind: "fixed"; feeCents: number } | { kind: "neighborhood"; neighborhood: string; feeCents: number };
-export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolean; deliveryRules: DeliveryFeeRule[]; acceptedPaymentMethods: Array<"pix" | "cash" | "credit_card" | "debit_card">; pixInstructions: string | null; }
+export type OrderNotificationEvent = "accepted" | "ready_for_pickup" | "out_for_delivery" | "cancelled";
+export interface OrderNotificationTemplateConfig { templateName: string; languageCode: string; }
+export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolean; deliveryRules: DeliveryFeeRule[]; acceptedPaymentMethods: Array<"pix" | "cash" | "credit_card" | "debit_card">; pixInstructions: string | null; notificationTemplates?: Partial<Record<OrderNotificationEvent, OrderNotificationTemplateConfig>>; }
 export type OrderStatus = "draft" | "awaiting_confirmation" | "confirmed" | "accepted" | "preparing" | "ready_for_pickup" | "out_for_delivery" | "completed" | "cancelled" | "rejected";
 export type OrderPaymentMethod = "pix" | "cash" | "credit_card" | "debit_card";
 export interface OrderItem { id: string; productId: string; productName: string; variantId: string | null; variantName: string | null; quantity: number; unitPriceCents: number; modifiers: Array<{ optionId: string; name: string; priceDeltaCents: number }>; notes: string | null; lineTotalCents: number; }
@@ -218,6 +220,30 @@ export interface OrderStatusHistoryEntry {
 // consulta o cardápio atual para reconstruir um pedido já confirmado.
 export interface FoodOrderSnapshot { items: OrderItem[]; subtotalCents: number; discountCents: number; deliveryFeeCents: number; totalCents: number; fulfillment: "pickup" | "delivery"; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; payment: { method: OrderPaymentMethod; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; createdAt: number; }
 export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; operationalHistory?: OrderStatusHistoryEntry[]; createdAt: number; updatedAt: number; confirmedAt: number | null; }
+
+export type OrderNotificationStatus = "pending" | "processing" | "sent" | "delivered" | "read" | "failed" | "skipped";
+export interface OrderStatusNotification {
+  id: string;
+  establishmentId: string;
+  orderId: string;
+  orderVersion: number;
+  event: OrderNotificationEvent;
+  orderStatus: OrderStatus;
+  fulfillment: "pickup" | "delivery";
+  status: OrderNotificationStatus;
+  sendType: "session" | "template" | null;
+  attemptCount: number;
+  content: string;
+  metaMessageId?: string;
+  errorCode?: string;
+  createdAt: number;
+  updatedAt: number;
+  sentAt?: number;
+  deliveredAt?: number;
+  readAt?: number;
+  failedAt?: number;
+  skippedAt?: number;
+}
 
 // ---- Base de conhecimento do estabelecimento ----
 // É o que a IA consulta pra responder. Sem isso, ela não inventa.
@@ -286,6 +312,10 @@ export interface Conversation {
   // deterministicamente no webhook.
   closedReason?: "social_farewell" | "automated_recipient";
   lastMessageAt: number;
+  // Atualizado somente quando uma mensagem inbound do cliente é persistida.
+  // `lastMessageAt` também avança nas respostas da Livia e, portanto, não é
+  // evidência suficiente para autorizar texto livre na janela de 24 horas.
+  lastCustomerMessageAt?: number;
   createdAt: number;
   // Última intenção detectada na mensagem mais recente do cliente. É
   // SOBRESCRITA a cada mensagem nova — não serve como evidência de que a

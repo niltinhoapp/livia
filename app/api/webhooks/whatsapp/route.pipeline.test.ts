@@ -87,6 +87,7 @@ vi.mock("@/lib/attachments/storage", () => ({
   storeConversationAttachment: (...a: unknown[]) => storeConversationAttachment(...a),
   deleteConversationAttachment: (...a: unknown[]) => deleteConversationAttachment(...a),
 }));
+vi.mock("@/lib/orderNotifications", () => ({ applyOrderNotificationDeliveryStatus: vi.fn(async () => "no_match") }));
 
 vi.mock("@/lib/ai/brain", () => ({ think: (...a: unknown[]) => think(...a) }));
 vi.mock("@/lib/ai/intent", () => ({ detectIntent: (text: string) => detectIntent(text) }));
