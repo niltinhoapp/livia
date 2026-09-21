@@ -29,23 +29,29 @@ export default function PedidosPage() {
   // Com a IA de pedidos desligada, a tela continua inteira: o comerciante
   // ainda precisa tocar os pedidos em andamento e mexer no cardápio. O que
   // muda é só o aviso no topo.
-  const refreshOrders = useCallback(async () => {
-    const response = await fetch("/api/orders", { cache: "no-store" });
+  const refreshOrders = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch("/api/orders", { cache: "no-store", signal });
     if (!response.ok) throw new Error("orders_refresh_failed");
     const body = await response.json() as { orders?: FoodOrder[]; ordersEnabled?: boolean };
+    if (signal?.aborted) return;
     setOrders(body.orders ?? []); setOrdersEnabled(body.ordersEnabled !== false);
   }, []);
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     setState("loading");
     try {
-      const [o, c, p] = await Promise.all([fetch("/api/orders", { cache: "no-store" }), fetch("/api/menu/categories"), fetch("/api/menu/products")]);
+      const [o, c, p] = await Promise.all([fetch("/api/orders", { cache: "no-store", signal }), fetch("/api/menu/categories", { signal }), fetch("/api/menu/products", { signal })]);
       if (!o.ok || !c.ok || !p.ok) throw new Error("panel_load_failed");
       const [oj, cj, pj] = await Promise.all([o.json(), c.json(), p.json()]);
+      if (signal?.aborted) return;
       setOrders(oj.orders ?? []); setOrdersEnabled(oj.ordersEnabled !== false); setCategories(cj.categories ?? []); setProducts(pj.products ?? []); setState("ready");
-    } catch { setState("error"); }
+    } catch { if (!signal?.aborted) setState("error"); }
   }, []);
-  useEffect(() => { load(); }, [load]);
-  useOrderAutoRefresh(refreshOrders);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+  useOrderAutoRefresh((signal) => refreshOrders(signal));
   const updateOrder = (updated: FoodOrder) => setOrders((current) => current.map((order) => order.id === updated.id ? updated : order));
   if (state === "loading") return <LoadingState />;
   if (state === "error") return <ErrorState onRetry={load} />;

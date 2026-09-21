@@ -6,6 +6,7 @@ describe("máquina operacional compartilhada entre F6 e F11", () => {
     expect(allowedOrderTransitions({ status: "ready_for_pickup", fulfillment: "delivery" })).toEqual(["out_for_delivery", "cancelled"]);
     expect(allowedOrderTransitions({ status: "ready_for_pickup", fulfillment: "pickup" })).toEqual(["completed", "cancelled"]);
     expect(allowedOrderTransitions({ status: "completed", fulfillment: "pickup" })).toEqual([]);
+    expect(allowedOrderTransitions({ status: "rejected", fulfillment: "delivery" })).toEqual([]);
     expect(primaryOrderTransition({ status: "out_for_delivery", fulfillment: "delivery" })).toEqual({ status: "completed", label: "Concluir pedido" });
   });
 

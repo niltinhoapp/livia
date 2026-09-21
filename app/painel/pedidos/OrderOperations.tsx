@@ -46,6 +46,7 @@ export function OrderOperations({ orders, onOrderUpdated, onRefresh }: { orders:
   const [now, setNow] = useState(() => Date.now());
   const [newOrderIds, setNewOrderIds] = useState<string[]>([]);
   const knownOrderIds = useRef<Set<string> | null>(null);
+  const inFlightOrderIds = useRef(new Set<string>());
   const { operational, active, closed } = useMemo(() => {
     const operational = orders.filter((order) => ACTIVE.has(order.status) || CLOSED.has(order.status));
     return { operational, active: operational.filter((order) => ACTIVE.has(order.status)), closed: operational.filter((order) => CLOSED.has(order.status)) };
@@ -75,6 +76,11 @@ export function OrderOperations({ orders, onOrderUpdated, onRefresh }: { orders:
   }, []);
 
   async function transition(order: FoodOrder, status: OrderStatus) {
+    // Estado React ainda não necessariamente re-renderizou entre dois cliques
+    // rápidos. A trava síncrona complementa o disabled visual; F6 continua
+    // sendo a proteção definitiva entre abas/dispositivos.
+    if (inFlightOrderIds.current.has(order.id)) return;
+    inFlightOrderIds.current.add(order.id);
     setBusyId(order.id); setError(null); setNotice(null);
     try {
       const response = await fetch(`/api/orders/${order.id}`, {
@@ -105,6 +111,7 @@ export function OrderOperations({ orders, onOrderUpdated, onRefresh }: { orders:
     } catch {
       setError("Não foi possível atualizar o pedido. Verifique a conexão e tente novamente.");
     } finally {
+      inFlightOrderIds.current.delete(order.id);
       setBusyId(null);
     }
   }

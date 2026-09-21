@@ -11,6 +11,11 @@ export { allowedOrderTransitions, isOperationalOrder } from "@/lib/orderLifecycl
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
 const OPERATIONAL = new Set<OrderStatus>([...ACTIVE_ORDER_STATUSES, ...CLOSED_ORDER_STATUSES]);
 const ACTIVE_OPERATION_PRIORITY: Partial<Record<OrderStatus, number>> = { confirmed: 0, accepted: 1, preparing: 2, ready_for_pickup: 3, out_for_delivery: 4 };
+// A Central consulta esta função periodicamente. Limites independentes evitam
+// que anos de pedidos encerrados aumentem o custo de cada refresh, sem deixar
+// uma fila ativa ocupada por um status esconder outra.
+export const MAX_ACTIVE_ORDERS_PER_STATUS = 100;
+export const MAX_CLOSED_ORDERS_PER_STATUS = 50;
 export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null, notificationTemplates: {}, orderHours: null });
 
 const cents = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
@@ -394,7 +399,12 @@ export async function listOrders(establishmentId: string): Promise<FoodOrder[]> 
   // Filtrar depois de um limit global permite que muitos drafts recentes
   // escondam pedidos ativos mais antigos. Consulta cada estado operacional
   // diretamente: carrinhos nunca disputam a janela da fila do restaurante.
-  const snapshots = await Promise.all([...OPERATIONAL].map((status) => sub(establishmentId, "orders").where("status", "==", status).limit(200).get()));
+  const snapshots = await Promise.all([...OPERATIONAL].map((status) => {
+    const limit = ACTIVE_ORDER_STATUSES.includes(status as typeof ACTIVE_ORDER_STATUSES[number])
+      ? MAX_ACTIVE_ORDERS_PER_STATUS
+      : MAX_CLOSED_ORDERS_PER_STATUS;
+    return sub(establishmentId, "orders").where("status", "==", status).limit(limit).get();
+  }));
   return snapshots
     .flatMap((snap) => snap.docs.map((d) => d.data() as FoodOrder))
     .sort((a, b) => {
