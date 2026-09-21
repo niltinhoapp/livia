@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import OpenAI from "openai";
 import { db, sub } from "@/lib/firebase/admin";
 import { listMenuCategories, saveMenuCategory, saveMenuProduct } from "@/lib/orders";
+import { logError } from "@/lib/observability";
 import type { MenuImageImport, MenuImportDraftProduct, MenuImportPreview, MenuModifierGroup, MenuVariant } from "@/types";
 
 const MAX_BYTES = 12 * 1024 * 1024;
@@ -14,9 +15,63 @@ export class MenuImportError extends Error { constructor(public readonly code: s
 
 export interface ValidatedMenuImage { bytes: Uint8Array; mimeType: string; width: number; height: number; hash: string; }
 
-function pngSize(bytes: Uint8Array) { return bytes.length >= 45 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && String.fromCharCode(...bytes.slice(12, 16)) === "IHDR" && String.fromCharCode(...bytes.slice(-4)) === "IEND" ? { width: new DataView(bytes.buffer, bytes.byteOffset + 16, 8).getUint32(0), height: new DataView(bytes.buffer, bytes.byteOffset + 16, 8).getUint32(4) } : null; }
-function jpegSize(bytes: Uint8Array) { if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) return null; for (let i = 2; i + 9 < bytes.length;) { if (bytes[i] !== 0xff) return null; const marker = bytes[i + 1]!; const length = (bytes[i + 2]! << 8) + bytes[i + 3]!; if (length < 2 || i + length + 2 > bytes.length) return null; if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) return { height: (bytes[i + 5]! << 8) + bytes[i + 6]!, width: (bytes[i + 7]! << 8) + bytes[i + 8]! }; i += length + 2; } return null; }
-function webpSize(bytes: Uint8Array) { if (bytes.length < 30 || String.fromCharCode(...bytes.slice(0, 4)) !== "RIFF" || new DataView(bytes.buffer, bytes.byteOffset + 4, 4).getUint32(0, true) + 8 > bytes.length || String.fromCharCode(...bytes.slice(8, 12)) !== "WEBP") return null; const kind = String.fromCharCode(...bytes.slice(12, 16)); if (kind === "VP8X") return { width: 1 + bytes[24]! + (bytes[25]! << 8) + (bytes[26]! << 16), height: 1 + bytes[27]! + (bytes[28]! << 8) + (bytes[29]! << 16) }; return null; }
+const typeAt = (bytes: Uint8Array, offset: number) => String.fromCharCode(...bytes.slice(offset, offset + 4));
+const be32 = (bytes: Uint8Array, offset: number) => new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+const le32 = (bytes: Uint8Array, offset: number) => new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true);
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => { let crc = value; for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); return crc >>> 0; });
+
+function crc32(bytes: Uint8Array, start: number, end: number) { let crc = 0xffffffff; for (let i = start; i < end; i += 1) crc = CRC32_TABLE[(crc ^ bytes[i]!) & 0xff]! ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
+function pngSize(bytes: Uint8Array) {
+  if (bytes.length < 45 || ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => bytes[i] === byte)) return null;
+  let offset = 8, width = 0, height = 0, sawHeader = false, sawData = false;
+  while (offset + 12 <= bytes.length) {
+    const length = be32(bytes, offset), dataStart = offset + 8, dataEnd = dataStart + length, end = dataEnd + 4;
+    if (end > bytes.length || dataEnd < dataStart) return null;
+    const type = typeAt(bytes, offset + 4);
+    if (crc32(bytes, offset + 4, dataEnd) !== be32(bytes, dataEnd)) return null;
+    if (!sawHeader) { if (type !== "IHDR" || length !== 13) return null; width = be32(bytes, dataStart); height = be32(bytes, dataStart + 4); if (!width || !height) return null; sawHeader = true; }
+    else if (type === "IDAT") sawData = true;
+    else if (type === "IEND") return length === 0 && sawData && end === bytes.length ? { width, height } : null;
+    offset = end;
+  }
+  return null;
+}
+function jpegSize(bytes: Uint8Array) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) return null;
+  for (let offset = 2; offset + 4 <= bytes.length;) {
+    if (bytes[offset] !== 0xff) return null;
+    while (bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset++]; if (marker === undefined || marker === 0xd9) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) return null;
+    const length = (bytes[offset]! << 8) + bytes[offset + 1]!;
+    if (length < 2 || offset + length > bytes.length) return null;
+    const data = offset + 2;
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+      const components = bytes[data + 5];
+      if (length < 8 || bytes[data] === 0 || !components || length < 8 + 3 * components) return null;
+      const height = (bytes[data + 1]! << 8) + bytes[data + 2]!, width = (bytes[data + 3]! << 8) + bytes[data + 4]!;
+      return width && height ? { width, height } : null;
+    }
+    // Depois de SOS os bytes são entropy-coded, não uma sequência de markers.
+    if (marker === 0xda) return null;
+    offset += length;
+  }
+  return null;
+}
+function webpSize(bytes: Uint8Array) {
+  if (bytes.length < 20 || typeAt(bytes, 0) !== "RIFF" || typeAt(bytes, 8) !== "WEBP" || le32(bytes, 4) !== bytes.length - 8) return null;
+  let offset = 12, size: { width: number; height: number } | null = null;
+  while (offset + 8 <= bytes.length) {
+    const type = typeAt(bytes, offset), length = le32(bytes, offset + 4), data = offset + 8, end = data + length;
+    if (end > bytes.length || end < data) return null;
+    if (!size && type === "VP8X" && length >= 10) size = { width: 1 + bytes[data + 4]! + (bytes[data + 5]! << 8) + (bytes[data + 6]! << 16), height: 1 + bytes[data + 7]! + (bytes[data + 8]! << 8) + (bytes[data + 9]! << 16) };
+    if (!size && type === "VP8 " && length >= 10 && bytes[data] !== undefined && (bytes[data]! & 1) === 0 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) size = { width: ((bytes[data + 6]! | (bytes[data + 7]! << 8)) & 0x3fff), height: ((bytes[data + 8]! | (bytes[data + 9]! << 8)) & 0x3fff) };
+    if (!size && type === "VP8L" && length >= 5 && bytes[data] === 0x2f) size = { width: 1 + bytes[data + 1]! + ((bytes[data + 2]! & 0x3f) << 8), height: 1 + (bytes[data + 2]! >> 6) + (bytes[data + 3]! << 2) + ((bytes[data + 4]! & 0x0f) << 10) };
+    offset = end + (length % 2);
+  }
+  return offset === bytes.length && size && size.width > 0 && size.height > 0 ? size : null;
+}
 function dimensions(bytes: Uint8Array, mime: string) { return mime === "image/png" ? pngSize(bytes) : mime === "image/jpeg" ? jpegSize(bytes) : webpSize(bytes); }
 export function validateMenuImage(bytes: Uint8Array, mimeType: string): ValidatedMenuImage {
   if (!MIME.has(mimeType)) throw new MenuImportError("unsupported_type");
@@ -37,7 +92,7 @@ export function normalizeMenuImportPreview(value: unknown): MenuImportPreview {
   return { categories, products };
 }
 export interface MenuVision { recognize(image: ValidatedMenuImage): Promise<unknown>; }
-export const liveMenuVision: MenuVision = { async recognize(image) { const apiKey = process.env.OPENAI_API_KEY?.trim(); if (!apiKey) throw new MenuImportError("missing_api_key"); const model = process.env.LIVIA_MENU_IMPORT_MODEL?.trim() || VISION_MODEL; const data = Buffer.from(image.bytes).toString("base64"); try { const client = new OpenAI({ apiKey }); const result = await client.chat.completions.create({ model, response_format: { type: "json_object" }, messages: [{ role: "system", content: "Extraia SOMENTE o cardápio de restaurante em JSON. Ignore screenshots de WhatsApp, barras do celular, margens, banners, contatos e qualquer texto fora da região do cardápio. Retorne {categories:string[],products:[{categoryName,name,description,basePriceCents,variants:[{name,priceDeltaCents}],modifierGroups:[{name,required,minSelections,maxSelections,options:[{name,priceDeltaCents}]}],reviewReasons:string[]}]}. Preços são INTEIROS EM CENTAVOS apenas quando legíveis; dados ausentes ou duvidosos devem ficar nulos/vazios com reviewReasons. Nunca invente valores." }, { role: "user", content: [{ type: "text", text: "Leia esta imagem de cardápio." }, { type: "image_url", image_url: { url: `data:${image.mimeType};base64,${data}` } }] }] }, { timeout: 30_000, maxRetries: 0 }); const content = result.choices[0]?.message.content; if (!content) throw new MenuImportError("invalid_ai_response"); try { return JSON.parse(content); } catch { throw new MenuImportError("invalid_ai_response"); } } catch (error) { if (error instanceof MenuImportError) throw error; throw new MenuImportError("ai_failed"); } } };
+export const liveMenuVision: MenuVision = { async recognize(image) { const apiKey = process.env.OPENAI_API_KEY?.trim(); if (!apiKey) throw new MenuImportError("missing_api_key"); const model = process.env.LIVIA_MENU_IMPORT_MODEL?.trim() || VISION_MODEL; const data = Buffer.from(image.bytes).toString("base64"); try { const client = new OpenAI({ apiKey }); const result = await client.chat.completions.create({ model, response_format: { type: "json_object" }, messages: [{ role: "system", content: "Extraia SOMENTE o cardápio de restaurante em JSON. Ignore screenshots de WhatsApp, barras do celular, margens, banners, contatos e qualquer texto fora da região do cardápio. Retorne {categories:string[],products:[{categoryName,name,description,basePriceCents,variants:[{name,priceDeltaCents}],modifierGroups:[{name,required,minSelections,maxSelections,options:[{name,priceDeltaCents}]}],reviewReasons:string[]}]}. Preços são INTEIROS EM CENTAVOS apenas quando legíveis; dados ausentes ou duvidosos devem ficar nulos/vazios com reviewReasons. Nunca invente valores." }, { role: "user", content: [{ type: "text", text: "Leia esta imagem de cardápio." }, { type: "image_url", image_url: { url: `data:${image.mimeType};base64,${data}` } }] }] }, { timeout: 30_000, maxRetries: 0 }); const content = result.choices[0]?.message.content; if (!content) throw new MenuImportError("invalid_ai_response"); try { return JSON.parse(content); } catch { throw new MenuImportError("invalid_ai_response"); } } catch (error) { if (error instanceof MenuImportError) { if (error.code === "invalid_ai_response") logError({ category: "ai_openai", operation: "menu_import.invalid_ai_response", error }); throw error; } logError({ category: "ai_openai", operation: "menu_import.provider_error", error: new Error(error instanceof Error ? error.name : "unknown") }); throw new MenuImportError("ai_failed"); } } };
 
 const ref = (est: string, id: string) => sub(est, "menuImports").doc(id);
 export async function listMenuImports(establishmentId: string): Promise<MenuImageImport[]> { const snap = await sub(establishmentId, "menuImports").orderBy("updatedAt", "desc").limit(100).get(); return snap.docs.map((d) => d.data() as MenuImageImport); }
