@@ -65,8 +65,12 @@ export function OrderOperations({ orders, onOrderUpdated }: { orders: FoodOrder[
       onOrderUpdated(body.order);
       if (body.notification && ["sent", "delivered", "read"].includes(body.notification.status)) {
         setNotice("Pedido atualizado e notificação enviada ao cliente.");
+      } else if (body.notification?.status === "skipped") {
+        setNotice("Pedido atualizado. Notificação não enviada: janela encerrada ou template indisponível.");
+      } else if (body.notification?.status === "failed" || body.notificationError) {
+        setNotice("Pedido atualizado. Falha ao enviar a notificação ao cliente.");
       } else if (body.notification || body.notificationError) {
-        setNotice("Pedido atualizado. Não foi possível enviar a notificação ao cliente.");
+        setNotice("Pedido atualizado. Notificação ainda pendente.");
       } else {
         setNotice("Pedido atualizado.");
       }

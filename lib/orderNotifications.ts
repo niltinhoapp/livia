@@ -3,11 +3,10 @@ import { templateParameterIndexes } from "@/lib/campaignTemplates";
 import { getOrder, getOrderSettings } from "@/lib/orders";
 import { appendMessage, getEstablishment } from "@/lib/repo";
 import { orderNumber } from "@/lib/orderNotificationPolicy";
-import { listMessageTemplates, sendTemplate, sendText } from "@/lib/whatsapp/client";
+import { listMessageTemplates, normalizePhone, sendTemplate, sendText } from "@/lib/whatsapp/client";
 import type { Message, OrderNotificationStatus, OrderStatusNotification } from "@/types";
 
 export const CUSTOMER_SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 type DeliveryStatus = "sent" | "delivered" | "read" | "failed";
 
@@ -25,10 +24,13 @@ export async function listOrderStatusNotifications(establishmentId: string, orde
   return snap.docs.map((doc) => doc.data() as OrderStatusNotification).sort((a, b) => a.createdAt - b.createdAt);
 }
 
-async function latestCustomerMessageAt(establishmentId: string, conversationId: string): Promise<number | null> {
+async function latestCustomerMessageAt(establishmentId: string, conversationId: string, expectedContactPhone: string): Promise<number | null> {
   const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
   const conversation = await conversationRef.get();
-  const persisted = conversation.exists ? Number((conversation.data() as { lastCustomerMessageAt?: unknown }).lastCustomerMessageAt) : NaN;
+  if (!conversation.exists) return null;
+  const conversationData = conversation.data() as { contactPhone?: unknown; lastCustomerMessageAt?: unknown };
+  if (typeof conversationData.contactPhone !== "string" || normalizePhone(conversationData.contactPhone) !== normalizePhone(expectedContactPhone)) return null;
+  const persisted = Number(conversationData.lastCustomerMessageAt);
   if (Number.isFinite(persisted) && persisted > 0) return persisted;
 
   // Compatibilidade conservadora com conversas anteriores à F7. Lemos as
@@ -40,7 +42,9 @@ async function latestCustomerMessageAt(establishmentId: string, conversationId: 
 }
 
 export function isCustomerServiceWindowOpen(lastCustomerMessageAt: number | null, now = Date.now()): boolean {
-  return lastCustomerMessageAt !== null && lastCustomerMessageAt >= now - CUSTOMER_SERVICE_WINDOW_MS && lastCustomerMessageAt <= now + CLOCK_SKEW_MS;
+  // Exatamente 24h já é tratado como fechado. Timestamp futuro também não é
+  // evidência válida: em qualquer dúvida temporal, não autorizamos texto livre.
+  return lastCustomerMessageAt !== null && lastCustomerMessageAt > now - CUSTOMER_SERVICE_WINDOW_MS && lastCustomerMessageAt <= now;
 }
 
 async function claimNotification(establishmentId: string, notificationId: string): Promise<{ claimed: boolean; notification: OrderStatusNotification | null }> {
@@ -101,7 +105,7 @@ export async function dispatchOrderStatusNotification(establishmentId: string, n
   }
 
   try {
-    const inboundAt = await latestCustomerMessageAt(establishmentId, order.conversationId);
+    const inboundAt = await latestCustomerMessageAt(establishmentId, order.conversationId, order.contactPhone);
     let result: { waMessageId?: string };
     let sendType: "session" | "template";
 
@@ -133,11 +137,15 @@ export async function dispatchOrderStatusNotification(establishmentId: string, n
       );
     }
 
+    if (!result.waMessageId) {
+      const now = Date.now();
+      return finishNotification(establishmentId, notificationId, { status: "failed", errorCode: "meta_message_id_missing", failedAt: now });
+    }
     const now = Date.now();
     const sent = await finishNotification(establishmentId, notificationId, {
       status: "sent",
       sendType,
-      ...(result.waMessageId ? { metaMessageId: result.waMessageId } : {}),
+      metaMessageId: result.waMessageId,
       sentAt: now,
     });
     if (sent) {

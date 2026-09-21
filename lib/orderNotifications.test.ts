@@ -62,7 +62,7 @@ function order(id: string, status: OrderStatus, fulfillment: "pickup" | "deliver
 function seedOrder(value: FoodOrder) {
   fakeDb.col(`establishments/${value.establishmentId}/orders`).set(value.id, value as unknown as Record<string, unknown>);
   fakeDb.col(`establishments/${value.establishmentId}/conversations`).set(value.conversationId, {
-    id: value.conversationId, establishmentId: value.establishmentId, lastCustomerMessageAt: NOW - 60_000,
+    id: value.conversationId, establishmentId: value.establishmentId, contactPhone: value.contactPhone, lastCustomerMessageAt: NOW - 60_000,
   });
 }
 
@@ -134,7 +134,7 @@ describe("envio, janela e templates", () => {
 
   it("lastMessageAt outbound não abre janela; sem inbound/template faz skip seguro", async () => {
     const current = order("outside", "confirmed", "pickup"); seedOrder(current);
-    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, lastMessageAt: NOW });
+    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, contactPhone: current.contactPhone, lastMessageAt: NOW });
     const changed = await transitionOrder(A, current.id, "accepted", current.version);
     const result = await dispatchOrderStatusNotification(A, orderNotificationId(current.id, "accepted", changed.version));
     expect(result).toMatchObject({ status: "skipped", errorCode: "template_not_configured" });
@@ -144,7 +144,7 @@ describe("envio, janela e templates", () => {
 
   it("fora da janela usa somente template configurado, aprovado e compatível", async () => {
     const current = order("template", "confirmed", "delivery"); seedOrder(current); seedTemplates();
-    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, lastCustomerMessageAt: NOW - 25 * 60 * 60 * 1000 });
+    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, contactPhone: current.contactPhone, lastCustomerMessageAt: NOW - 25 * 60 * 60 * 1000 });
     const changed = await transitionOrder(A, current.id, "accepted", current.version);
     const result = await dispatchOrderStatusNotification(A, orderNotificationId(current.id, "accepted", changed.version));
     expect(sendText).not.toHaveBeenCalled();
@@ -154,7 +154,7 @@ describe("envio, janela e templates", () => {
 
   it("template ausente/não aprovado ou parâmetros incompatíveis nunca cai para texto livre", async () => {
     const current = order("bad-template", "confirmed", "pickup"); seedOrder(current); seedTemplates();
-    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, lastCustomerMessageAt: NOW - 25 * 60 * 60 * 1000 });
+    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, { id: current.conversationId, contactPhone: current.contactPhone, lastCustomerMessageAt: NOW - 25 * 60 * 60 * 1000 });
     listMessageTemplates.mockResolvedValueOnce([{ id: "tpl", name: "pedido_aceito", language: "pt_BR", approved: false, senderCompatible: true, components: [] }]);
     const changed = await transitionOrder(A, current.id, "accepted", current.version);
     const result = await dispatchOrderStatusNotification(A, orderNotificationId(current.id, "accepted", changed.version));
@@ -163,9 +163,21 @@ describe("envio, janela e templates", () => {
   });
 
   it("determina a janela somente por inbound confiável", () => {
-    expect(isCustomerServiceWindowOpen(NOW - 24 * 60 * 60 * 1000, NOW)).toBe(true);
-    expect(isCustomerServiceWindowOpen(NOW - 24 * 60 * 60 * 1000 - 1, NOW)).toBe(false);
+    expect(isCustomerServiceWindowOpen(NOW - 24 * 60 * 60 * 1000 + 1, NOW)).toBe(true);
+    expect(isCustomerServiceWindowOpen(NOW - 24 * 60 * 60 * 1000, NOW)).toBe(false);
+    expect(isCustomerServiceWindowOpen(NOW + 1, NOW)).toBe(false);
     expect(isCustomerServiceWindowOpen(null, NOW)).toBe(false);
+  });
+
+  it("inbound recente de outra identidade não abre a janela do telefone do pedido", async () => {
+    const current = order("identity", "confirmed", "pickup"); seedOrder(current);
+    fakeDb.col(`establishments/${A}/conversations`).set(current.conversationId, {
+      id: current.conversationId, contactPhone: "5511888880000", lastCustomerMessageAt: NOW - 1000,
+    });
+    const changed = await transitionOrder(A, current.id, "accepted", current.version);
+    const result = await dispatchOrderStatusNotification(A, orderNotificationId(current.id, "accepted", changed.version));
+    expect(result).toMatchObject({ status: "skipped", errorCode: "template_not_configured" });
+    expect(sendText).not.toHaveBeenCalled();
   });
 });
 
@@ -191,6 +203,18 @@ describe("idempotência, concorrência e falhas", () => {
     expect(await dispatchOrderStatusNotification(A, id)).toMatchObject({ status: "failed", errorCode: "whatsapp_send_failed" });
     await dispatchOrderStatusNotification(A, id);
     expect(sendText).toHaveBeenCalledTimes(1);
+    expect((await getOrder(A, current.id))?.status).toBe("accepted");
+  });
+
+  it("resposta inesperada sem wamid é terminal e nunca é declarada como enviada", async () => {
+    const current = order("missing-wamid", "confirmed", "pickup"); seedOrder(current);
+    sendText.mockResolvedValueOnce({});
+    const changed = await transitionOrder(A, current.id, "accepted", current.version);
+    const id = orderNotificationId(current.id, "accepted", changed.version);
+    expect(await dispatchOrderStatusNotification(A, id)).toMatchObject({ status: "failed", errorCode: "meta_message_id_missing" });
+    await dispatchOrderStatusNotification(A, id);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(appendMessage).not.toHaveBeenCalled();
     expect((await getOrder(A, current.id))?.status).toBe("accepted");
   });
 

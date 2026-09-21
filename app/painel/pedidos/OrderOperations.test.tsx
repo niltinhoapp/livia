@@ -89,7 +89,15 @@ describe("operação de pedidos no painel", () => {
     render(<OrderOperations orders={[current]} onOrderUpdated={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Aceitar pedido" }));
     expect((await screen.findByRole("status")).textContent).toContain("Pedido atualizado");
-    expect(screen.getByRole("status").textContent).toContain("Não foi possível enviar");
+    expect(screen.getByRole("status").textContent).toContain("Falha ao enviar");
+  });
+
+  it("distingue notificação ignorada de falha de envio", async () => {
+    const current = order(); const updated = { ...current, status: "accepted" as const, version: 5 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ order: updated, notification: { status: "skipped" } }) }));
+    render(<OrderOperations orders={[current]} onOrderUpdated={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Aceitar pedido" }));
+    expect((await screen.findByRole("status")).textContent).toContain("Notificação não enviada");
   });
 
   it("separa encerrados da fila ativa", () => {
