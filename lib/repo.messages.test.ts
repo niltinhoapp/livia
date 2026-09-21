@@ -25,6 +25,16 @@ describe("appendMessage V2", () => {
     await expect(listMessages("est", "conv")).resolves.toEqual([
       expect.objectContaining({ id: result.id, role: "customer", text: "olá", waMessageId: "wamid.text" }),
     ]);
+    const conversation = await fakeDb.collection("establishments").doc("est").collection("conversations").doc("conv").get();
+    expect(conversation.data()).toMatchObject({ lastMessageAt: result.at, lastCustomerMessageAt: result.at });
+  });
+
+  it("resposta outbound não renova artificialmente a janela do cliente", async () => {
+    await criarConversa();
+    const inbound = await appendMessage("est", "conv", "customer", "oi");
+    await appendMessage("est", "conv", "bot", "olá");
+    const conversation = await fakeDb.collection("establishments").doc("est").collection("conversations").doc("conv").get();
+    expect(conversation.data()).toMatchObject({ lastCustomerMessageAt: inbound.at });
   });
 
   it("persiste metadata V2 opcional sem mudar o documento textual", async () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { FoodOrder, OrderStatus } from "@/types";
+import type { FoodOrder, OrderStatus, OrderStatusNotification } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -45,6 +45,7 @@ export function OrderOperations({ orders, onOrderUpdated }: { orders: FoodOrder[
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cancelOrder, setCancelOrder] = useState<FoodOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const operational = orders.filter((order) => ACTIVE.has(order.status) || CLOSED.has(order.status));
   const active = operational.filter((order) => ACTIVE.has(order.status));
   const closed = operational.filter((order) => CLOSED.has(order.status));
@@ -52,16 +53,27 @@ export function OrderOperations({ orders, onOrderUpdated }: { orders: FoodOrder[
   const selected = operational.find((order) => order.id === selectedId) ?? null;
 
   async function transition(order: FoodOrder, status: OrderStatus) {
-    setBusyId(order.id); setError(null);
+    setBusyId(order.id); setError(null); setNotice(null);
     try {
       const response = await fetch(`/api/orders/${order.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, expectedVersion: order.version }),
       });
-      const body = await response.json().catch(() => ({})) as { order?: FoodOrder; error?: string };
+      const body = await response.json().catch(() => ({})) as { order?: FoodOrder; notification?: OrderStatusNotification | null; notificationError?: boolean; error?: string };
       if (!response.ok || !body.order) { setError(body.error || "Não foi possível atualizar o pedido."); return; }
       onOrderUpdated(body.order);
+      if (body.notification && ["sent", "delivered", "read"].includes(body.notification.status)) {
+        setNotice("Pedido atualizado e notificação enviada ao cliente.");
+      } else if (body.notification?.status === "skipped") {
+        setNotice("Pedido atualizado. Notificação não enviada: janela encerrada ou template indisponível.");
+      } else if (body.notification?.status === "failed" || body.notificationError) {
+        setNotice("Pedido atualizado. Falha ao enviar a notificação ao cliente.");
+      } else if (body.notification || body.notificationError) {
+        setNotice("Pedido atualizado. Notificação ainda pendente.");
+      } else {
+        setNotice("Pedido atualizado.");
+      }
     } catch {
       setError("Não foi possível atualizar o pedido. Verifique a conexão e tente novamente.");
     } finally {
@@ -78,6 +90,7 @@ export function OrderOperations({ orders, onOrderUpdated }: { orders: FoodOrder[
       </div>
     </div>
     {error ? <p role="alert" className="mb-3 rounded-control border border-danger/30 bg-danger-bg/40 p-3 text-sm text-danger-fg">{error}</p> : null}
+    {notice ? <p role="status" className="mb-3 rounded-control border border-line bg-surface-subtle p-3 text-sm text-ink-600">{notice}</p> : null}
     {shown.length === 0 ? <EmptyState title={tab === "active" ? "Nenhum pedido ativo" : "Nenhum pedido encerrado"} description={tab === "active" ? "Pedidos confirmados pelo WhatsApp aparecem aqui." : "Pedidos concluídos ou cancelados ficam disponíveis para consulta."} /> : <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
       <div className="space-y-3">{shown.map((order) => {
         const action = primaryAction(order);

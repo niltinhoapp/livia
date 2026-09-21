@@ -252,12 +252,34 @@ async function correlateCampaignStatusUpdates(value: WebhookValue | undefined): 
     const status = mapMetaDeliveryStatus(s.status);
     if (!s.id || !status) continue;
     const error = s.errors?.[0];
-    await applyCampaignDeliveryStatus(
-      est.id,
-      s.id,
-      status,
-      error ? { code: error.code, title: error.title ?? error.message } : undefined,
-    );
+    try {
+      await applyCampaignDeliveryStatus(
+        est.id,
+        s.id,
+        status,
+        error ? { code: error.code, title: error.title ?? error.message } : undefined,
+      );
+    } catch (correlationError) {
+      console.error("[livia webhook] campaign status correlation failed", {
+        errorType: correlationError instanceof Error ? correlationError.name : "unknown",
+      });
+    }
+    // A mesma callback também pode pertencer a uma notificação operacional
+    // de pedido. O lookup continua escopado ao tenant resolvido pelo
+    // phoneNumberId; wamid desconhecido é no-op, como em Campanhas.
+    try {
+      const { applyOrderNotificationDeliveryStatus } = await import("@/lib/orderNotifications");
+      await applyOrderNotificationDeliveryStatus(
+        est.id,
+        s.id,
+        status,
+        error ? { code: error.code, title: error.title ?? error.message } : undefined,
+      );
+    } catch (correlationError) {
+      console.error("[livia webhook] order notification status correlation failed", {
+        errorType: correlationError instanceof Error ? correlationError.name : "unknown",
+      });
+    }
   }
 }
 

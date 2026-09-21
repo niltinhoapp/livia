@@ -23,6 +23,7 @@ const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
 const applyCampaignDeliveryStatus = vi.fn(async (..._a: unknown[]) => "not_found");
+const applyOrderNotificationDeliveryStatus = vi.fn(async (..._a: unknown[]) => "no_match");
 const correlateCampaignReply = vi.fn(async (..._a: unknown[]) => "no_match");
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
@@ -60,6 +61,9 @@ vi.mock("@/lib/whatsapp/client", () => ({
   sendText: (...a: unknown[]) => sendText(...a),
   markAsRead: (...a: unknown[]) => markAsRead(...a),
   normalizePhone: (raw: string) => raw.replace(/\D/g, ""),
+}));
+vi.mock("@/lib/orderNotifications", () => ({
+  applyOrderNotificationDeliveryStatus: (...a: unknown[]) => applyOrderNotificationDeliveryStatus(...a),
 }));
 
 vi.mock("@/lib/ai/brain", () => ({ think: (...a: unknown[]) => think(...a) }));
@@ -209,6 +213,7 @@ describe("Observabilidade de status do WhatsApp", () => {
     // isso continua sem tocar dedupe/IA/persistência de conversa.
     expect(findEstablishmentByPhoneNumberId).toHaveBeenCalledWith("pn_1");
     expect(applyCampaignDeliveryStatus).toHaveBeenCalledWith("est_odonto", "wamid.a", "sent", undefined);
+    expect(applyOrderNotificationDeliveryStatus).toHaveBeenCalledWith("est_odonto", "wamid.a", "sent", undefined);
     expect(think).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
     expect(appendMessage).not.toHaveBeenCalled();

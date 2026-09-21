@@ -11,7 +11,7 @@
 // trava a própria operação). Quem valida o dado de verdade continua sendo
 // `normalizeOrderSettings` no backend.
 import { useCallback, useEffect, useState } from "react";
-import type { DeliveryFeeRule, OrderPaymentMethod, OrderSettings } from "@/types";
+import type { DeliveryFeeRule, OrderNotificationEvent, OrderPaymentMethod, OrderSettings } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input, Label, Textarea } from "@/components/ui/Field";
@@ -24,6 +24,12 @@ const PAYMENT_LABELS: Record<OrderPaymentMethod, string> = {
   debit_card: "Cartão de débito",
 };
 const PAYMENT_ORDER: OrderPaymentMethod[] = ["pix", "cash", "credit_card", "debit_card"];
+const NOTIFICATION_EVENTS: Array<{ event: OrderNotificationEvent; label: string }> = [
+  { event: "accepted", label: "Pedido aceito" },
+  { event: "ready_for_pickup", label: "Pronto para retirada" },
+  { event: "out_for_delivery", label: "Saiu para entrega" },
+  { event: "cancelled", label: "Pedido cancelado" },
+];
 
 // Mesma conversão usada no editor de cardápio: centavos <-> "19,90".
 function parseReais(raw: string): number | null {
@@ -52,6 +58,7 @@ interface Draft {
   neighborhoods: NeighborhoodDraft[];
   methods: OrderPaymentMethod[];
   pixInstructions: string;
+  notificationTemplates: Record<OrderNotificationEvent, { templateName: string; languageCode: string }>;
 }
 
 let neighborhoodSeq = 0;
@@ -69,6 +76,10 @@ export function toDraft(settings: OrderSettings): Draft {
       .map((r) => ({ key: nextKey(), name: r.neighborhood, feeText: reaisText(r.feeCents) })),
     methods: settings.acceptedPaymentMethods,
     pixInstructions: settings.pixInstructions ?? "",
+    notificationTemplates: Object.fromEntries(NOTIFICATION_EVENTS.map(({ event }) => [event, {
+      templateName: settings.notificationTemplates?.[event]?.templateName ?? "",
+      languageCode: settings.notificationTemplates?.[event]?.languageCode ?? "pt_BR",
+    }])) as Draft["notificationTemplates"],
   };
 }
 
@@ -93,6 +104,12 @@ export function validateDraft(draft: Draft): string | null {
       return "Com entrega ligada, cadastre a taxa padrão ou pelo menos um bairro.";
     }
   }
+  for (const { event, label } of NOTIFICATION_EVENTS) {
+    const configured = draft.notificationTemplates[event];
+    if (!configured.templateName.trim()) continue;
+    if (!/^[a-z0-9_]+$/.test(configured.templateName.trim())) return `Nome de template inválido em ${label}.`;
+    if (!/^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/.test(configured.languageCode.trim())) return `Idioma de template inválido em ${label}.`;
+  }
   return null;
 }
 
@@ -107,6 +124,10 @@ export function toSettings(draft: Draft): OrderSettings {
     deliveryRules: rules,
     acceptedPaymentMethods: draft.methods,
     pixInstructions: draft.pixInstructions.trim() || null,
+    notificationTemplates: Object.fromEntries(NOTIFICATION_EVENTS.flatMap(({ event }) => {
+      const configured = draft.notificationTemplates[event];
+      return configured.templateName.trim() ? [[event, { templateName: configured.templateName.trim(), languageCode: configured.languageCode.trim() }]] : [];
+    })),
   };
 }
 
@@ -225,6 +246,17 @@ export function OrderSettingsEditor() {
       />
       <p className="mt-1.5 text-xs text-ink-400">Guardado agora para a Livia poder repassar ao cliente. Pagamento automático ainda não existe: a confirmação continua sendo sua.</p>
     </div>}
+
+    <div className="mt-4 border-t border-line/60 pt-4">
+      <p className="text-sm font-semibold text-ink-700">Templates fora da janela de 24 horas</p>
+      <p className="mt-1 text-xs text-ink-400">Opcional. Informe apenas templates operacionais já aprovados na Meta. Sem configuração válida, a mudança do pedido continua e a notificação é registrada como não enviada.</p>
+      <div className="mt-3 space-y-3">
+        {NOTIFICATION_EVENTS.map(({ event, label }) => <div key={event} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+          <div><Label hint="opcional">{label}</Label><Input aria-label={`Template — ${label}`} value={draft.notificationTemplates[event].templateName} placeholder="pedido_aceito" onChange={(e) => patch({ notificationTemplates: { ...draft.notificationTemplates, [event]: { ...draft.notificationTemplates[event], templateName: e.target.value } } })} /></div>
+          <div><Label>Idioma</Label><Input aria-label={`Idioma — ${label}`} value={draft.notificationTemplates[event].languageCode} placeholder="pt_BR" onChange={(e) => patch({ notificationTemplates: { ...draft.notificationTemplates, [event]: { ...draft.notificationTemplates[event], languageCode: e.target.value } } })} /></div>
+        </div>)}
+      </div>
+    </div>
 
     {error && <p className="mt-4 text-sm font-medium text-danger-fg">{error}</p>}
     <div className="mt-4 flex items-center gap-3">

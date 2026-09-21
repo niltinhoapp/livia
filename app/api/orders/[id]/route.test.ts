@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 const resolveEstablishmentId = vi.fn();
 const getOrder = vi.fn();
 const transitionOrder = vi.fn();
+const dispatchOrderStatusNotification = vi.fn();
 class OrderOperationError extends Error { constructor(public code: string, message: string) { super(message); } }
 
 vi.mock("@/lib/auth/session", () => ({
@@ -17,6 +18,13 @@ vi.mock("@/lib/orders", () => ({
   transitionOrder: (...args: unknown[]) => transitionOrder(...args),
   OrderOperationError,
 }));
+vi.mock("@/lib/orderNotifications", () => ({
+  dispatchOrderStatusNotification: (...args: unknown[]) => dispatchOrderStatusNotification(...args),
+}));
+vi.mock("@/lib/orderNotificationPolicy", () => ({
+  orderNotificationEvent: (_fulfillment: unknown, status: string) => ["accepted", "ready_for_pickup", "out_for_delivery", "cancelled"].includes(status) ? status : null,
+  orderNotificationId: (id: string, status: string, version: number) => `${id}__v${version}__${status}`,
+}));
 
 const { GET, PATCH } = await import("./route");
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -25,7 +33,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   resolveEstablishmentId.mockResolvedValue("est-1");
   getOrder.mockResolvedValue({ id: "pedido-1", status: "preparing" });
-  transitionOrder.mockResolvedValue({ id: "pedido-1", status: "out_for_delivery" });
+  transitionOrder.mockResolvedValue({ id: "pedido-1", status: "out_for_delivery", fulfillment: "delivery", version: 8 });
+  dispatchOrderStatusNotification.mockResolvedValue({ status: "sent" });
 });
 
 describe("/api/orders/[id]", () => {
@@ -56,6 +65,7 @@ describe("/api/orders/[id]", () => {
 
     expect(response.status).toBe(200);
     expect(transitionOrder).toHaveBeenCalledWith("est-1", "pedido-1", "out_for_delivery", 7);
+    expect(dispatchOrderStatusNotification).toHaveBeenCalledWith("est-1", "pedido-1__v8__out_for_delivery");
   });
 
   it("PATCH sem status continua recusando", async () => {
@@ -94,6 +104,16 @@ describe("/api/orders/[id]", () => {
     const response = await PATCH(request, params("pedido-1"));
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: "stale_version" });
+  });
+
+  it("falha da notificação não desfaz nem transforma a mudança de status em erro", async () => {
+    dispatchOrderStatusNotification.mockRejectedValueOnce(new Error("Meta indisponível"));
+    const request = new NextRequest("https://livia.test/api/orders/pedido-1", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "out_for_delivery", expectedVersion: 7 }),
+    });
+    const response = await PATCH(request, params("pedido-1"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ order: { status: "out_for_delivery" }, notificationError: true });
   });
 
   it("não revela pedido de outro tenant quando o lookup escopado não encontra", async () => {

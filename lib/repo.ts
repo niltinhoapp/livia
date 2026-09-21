@@ -1946,7 +1946,10 @@ export async function appendMessage(
     ...(metadata?.transcription ? { transcription: metadata.transcription } : {}),
   };
   await msgRef.set(msg);
-  await convRef.update({ lastMessageAt: msg.at });
+  await convRef.update({
+    lastMessageAt: msg.at,
+    ...(role === "customer" ? { lastCustomerMessageAt: msg.at } : {}),
+  });
   return { id: msg.id, at: msg.at };
 }
 

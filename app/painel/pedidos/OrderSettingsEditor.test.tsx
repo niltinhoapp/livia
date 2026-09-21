@@ -56,6 +56,11 @@ describe("conversão entre OrderSettings e formulário", () => {
     expect(toSettings(toDraft(settings({ pixInstructions: "   " }))).pixInstructions).toBeNull();
   });
 
+  it("preserva templates operacionais explicitamente configurados", () => {
+    const original = settings({ notificationTemplates: { accepted: { templateName: "pedido_aceito", languageCode: "pt_BR" } } });
+    expect(toSettings(toDraft(original)).notificationTemplates).toEqual({ accepted: { templateName: "pedido_aceito", languageCode: "pt_BR" } });
+  });
+
   it("bairro sem nome é descartado na hora de salvar", () => {
     const draft = { ...toDraft(settings({ deliveryEnabled: true })), neighborhoods: [{ key: "a", name: "  ", feeText: "5,00" }, { key: "b", name: "Centro", feeText: "5,00" }] };
 
@@ -86,6 +91,12 @@ describe("travas de formulário", () => {
 
   it("aceita configuração válida", () => {
     expect(validateDraft(toDraft(settings()))).toBeNull();
+  });
+
+  it("recusa nome inválido de template antes de salvar", () => {
+    const draft = toDraft(settings());
+    draft.notificationTemplates.accepted.templateName = "Pedido Aceito";
+    expect(validateDraft(draft)).toMatch(/template inválido/i);
   });
 });
 
