@@ -27,6 +27,13 @@ describe("importação isolada e idempotente", () => {
     expect(ai.recognize).toHaveBeenCalledTimes(2);
   });
 
+  it("duas reservas simultâneas do mesmo hash fazem uma única chamada de visão", async () => {
+    const image = validateMenuImage(png(), "image/png"); const ai = vision(result);
+    const [first, second] = await Promise.all([processMenuImage("A", "menu.png", image, ai), processMenuImage("A", "menu.png", image, ai)]);
+    expect([first.kind, second.kind].sort()).toEqual(["duplicate", "processed"]);
+    expect(ai.recognize).toHaveBeenCalledTimes(1);
+  });
+
   it("falha parcial da IA fica registrada e não publica produto", async () => {
     const imported = await processMenuImage("A", "ruim.png", validateMenuImage(png(), "image/png"), vision({ categories: [], products: [] }));
     expect(imported.item).toMatchObject({ status: "failed", errorCode: "empty_result" });
