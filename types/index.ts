@@ -203,6 +203,10 @@ export interface MenuModifierOption { id: string; name: string; priceDeltaCents:
 export interface MenuModifierGroup { id: string; name: string; required: boolean; minSelections: number; maxSelections: number; options: MenuModifierOption[]; }
 export interface MenuVariant { id: string; name: string; priceDeltaCents: number; active: boolean; }
 export interface MenuProduct { id: string; categoryId: string; name: string; description: string | null; basePriceCents: number; active: boolean; variants: MenuVariant[]; modifierGroups: MenuModifierGroup[]; createdAt: number; updatedAt: number; }
+export type MenuImportStatus = "processing" | "ready" | "failed" | "confirmed";
+export interface MenuImportDraftProduct { id: string; categoryName: string; name: string; description: string | null; basePriceCents: number | null; variants: MenuVariant[]; modifierGroups: MenuModifierGroup[]; reviewReasons: string[]; }
+export interface MenuImportPreview { categories: string[]; products: MenuImportDraftProduct[]; }
+export interface MenuImageImport { id: string; establishmentId: string; hash: string; fileName: string; mimeType: string; byteSize: number; status: MenuImportStatus; attemptCount: number; preview: MenuImportPreview | null; errorCode: string | null; createdAt: number; updatedAt: number; confirmedAt: number | null; createdCategoryIds?: string[]; createdProductIds?: string[]; }
 export type DeliveryFeeRule = { kind: "fixed"; feeCents: number } | { kind: "neighborhood"; neighborhood: string; feeCents: number };
 // Janela opcional de recebimento de pedidos. Ausente significa herdar o
 // expediente canônico de ScheduleConfig; não há cópia obrigatória dele.

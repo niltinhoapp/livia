@@ -95,6 +95,18 @@ describe("list_menu", () => {
     expect(data.categories[0]!.products).toHaveLength(60);
     expect(data.truncated).toBe(true);
   });
+
+  it("consulta uma categoria específica com preços, variantes e adicionais reais", async () => {
+    const { bebidas, xburger } = await seedMenu();
+    const result = await runTool("list_menu_category", { category: "hambúrgueres" }, ctx());
+
+    expect(result.ok).toBe(true);
+    expect((result.data as { name: string; products: { id: string; basePriceCents: number; variants: unknown[]; modifierGroups: unknown[] }[] }).name).toBe("Hambúrgueres");
+    const product = (result.data as { products: { id: string; basePriceCents: number; variants: unknown[]; modifierGroups: unknown[] }[] }).products[0]!;
+    expect(product).toMatchObject({ id: xburger.id, basePriceCents: 2000 });
+    expect(product.variants).toHaveLength(1); expect(product.modifierGroups).toHaveLength(1);
+    expect(await runTool("list_menu_category", { category: bebidas.id }, ctx())).toMatchObject({ ok: true });
+  });
 });
 
 describe("instruções de PIX chegando à Livia", () => {
