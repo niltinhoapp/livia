@@ -6,13 +6,16 @@ import { NextRequest } from "next/server";
 const resolveEstablishmentId = vi.fn();
 const getOrder = vi.fn();
 const transitionOrder = vi.fn();
+class OrderOperationError extends Error { constructor(public code: string, message: string) { super(message); } }
 
 vi.mock("@/lib/auth/session", () => ({
   resolveEstablishmentId: (...args: unknown[]) => resolveEstablishmentId(...args),
 }));
 vi.mock("@/lib/orders", () => ({
   getOrder: (...args: unknown[]) => getOrder(...args),
+  isOperationalOrder: (order: { status?: string }) => !["draft", "awaiting_confirmation"].includes(order.status ?? ""),
   transitionOrder: (...args: unknown[]) => transitionOrder(...args),
+  OrderOperationError,
 }));
 
 const { GET, PATCH } = await import("./route");
@@ -46,13 +49,13 @@ describe("/api/orders/[id]", () => {
     const request = new NextRequest("https://livia.test/api/orders/pedido-1", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "out_for_delivery" }),
+      body: JSON.stringify({ status: "out_for_delivery", expectedVersion: 7, establishmentId: "est-injetado" }),
     });
 
     const response = await PATCH(request, params("pedido-1"));
 
     expect(response.status).toBe(200);
-    expect(transitionOrder).toHaveBeenCalledWith("est-1", "pedido-1", "out_for_delivery");
+    expect(transitionOrder).toHaveBeenCalledWith("est-1", "pedido-1", "out_for_delivery", 7);
   });
 
   it("PATCH sem status continua recusando", async () => {
@@ -66,5 +69,37 @@ describe("/api/orders/[id]", () => {
 
     expect(response.status).toBe(400);
     expect(transitionOrder).not.toHaveBeenCalled();
+  });
+
+  it("GET não expõe carrinho draft como pedido operacional", async () => {
+    getOrder.mockResolvedValueOnce({ id: "draft-1", status: "draft" });
+    const response = await GET(new NextRequest("https://livia.test/api/orders/draft-1"), params("draft-1"));
+    expect(response.status).toBe(404);
+  });
+
+  it("PATCH exige a versão observada pela interface", async () => {
+    const request = new NextRequest("https://livia.test/api/orders/pedido-1", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "accepted" }),
+    });
+    const response = await PATCH(request, params("pedido-1"));
+    expect(response.status).toBe(400);
+    expect(transitionOrder).not.toHaveBeenCalled();
+  });
+
+  it("retorna conflito seguro quando outra aba já atualizou o pedido", async () => {
+    transitionOrder.mockRejectedValueOnce(new OrderOperationError("stale_version", "O pedido foi atualizado por outro operador."));
+    const request = new NextRequest("https://livia.test/api/orders/pedido-1", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "accepted", expectedVersion: 3 }),
+    });
+    const response = await PATCH(request, params("pedido-1"));
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "stale_version" });
+  });
+
+  it("não revela pedido de outro tenant quando o lookup escopado não encontra", async () => {
+    getOrder.mockResolvedValueOnce(null);
+    const response = await GET(new NextRequest("https://livia.test/api/orders/pedido-de-b"), params("pedido-de-b"));
+    expect(response.status).toBe(404);
+    expect(getOrder).toHaveBeenCalledWith("est-1", "pedido-de-b");
   });
 });

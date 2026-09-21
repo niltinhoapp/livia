@@ -4,6 +4,8 @@ import { normalizePhone } from "@/lib/whatsapp/client";
 
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
 const TERMINAL = new Set<OrderStatus>(["completed", "cancelled", "rejected"]);
+const OPERATIONAL = new Set<OrderStatus>(["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery", "completed", "cancelled", "rejected"]);
+const ACTIVE_OPERATION_PRIORITY: Partial<Record<OrderStatus, number>> = { confirmed: 0, accepted: 1, preparing: 2, ready_for_pickup: 3, out_for_delivery: 4 };
 export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true, deliveryEnabled: false, deliveryRules: [{ kind: "fixed", feeCents: 0 }], acceptedPaymentMethods: ["pix", "cash", "credit_card", "debit_card"], pixInstructions: null });
 
 const cents = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
@@ -294,9 +296,60 @@ export async function confirmOrder(establishmentId: string, orderId: string, exp
       if (!current || current.unitPriceCents !== before.unitPriceCents || current.lineTotalCents !== before.lineTotalCents || current.productName !== before.productName) throw new Error(`${before.productName} mudou de preço; confira o resumo atualizado antes de confirmar.`);
     }
     if (refreshed.subtotalCents !== order.subtotalCents || refreshed.deliveryFeeCents !== order.deliveryFeeCents || refreshed.discountCents !== order.discountCents || refreshed.totalCents !== order.totalCents) throw new Error("O total mudou; confira o resumo atualizado antes de confirmar.");
-    const now = Date.now(); const snapshot = { items: refreshed.items, subtotalCents: refreshed.subtotalCents, discountCents: refreshed.discountCents, deliveryFeeCents: refreshed.deliveryFeeCents, totalCents: refreshed.totalCents, fulfillment: refreshed.fulfillment!, deliveryAddress: refreshed.deliveryAddress, payment: refreshed.payment as NonNullable<FoodOrder["snapshot"]>["payment"], createdAt: now }; const confirmed: FoodOrder = { ...refreshed, status: "confirmed", snapshot, version: order.version + 1, appliedOperationIds: operationId ? [...(order.appliedOperationIds ?? []).slice(-49), operationId] : order.appliedOperationIds, confirmedAt: now, updatedAt: now }; tx.set(ref, confirmed); tx.set(sub(establishmentId, "conversations").doc(order.conversationId), { activeOrderId: null, lastConfirmedOrderId: order.id }, { merge: true }); return confirmed;
+    const now = Date.now(); const snapshot = { items: refreshed.items, subtotalCents: refreshed.subtotalCents, discountCents: refreshed.discountCents, deliveryFeeCents: refreshed.deliveryFeeCents, totalCents: refreshed.totalCents, fulfillment: refreshed.fulfillment!, deliveryAddress: refreshed.deliveryAddress, payment: refreshed.payment as NonNullable<FoodOrder["snapshot"]>["payment"], createdAt: now }; const confirmed: FoodOrder = { ...refreshed, status: "confirmed", snapshot, version: order.version + 1, appliedOperationIds: operationId ? [...(order.appliedOperationIds ?? []).slice(-49), operationId] : order.appliedOperationIds, operationalHistory: [...(order.operationalHistory ?? []), { from: "awaiting_confirmation", to: "confirmed", at: now, source: "customer_confirmation" }], confirmedAt: now, updatedAt: now }; tx.set(ref, confirmed); tx.set(sub(establishmentId, "conversations").doc(order.conversationId), { activeOrderId: null, lastConfirmedOrderId: order.id }, { merge: true }); return confirmed;
   });
 }
-const TRANSITIONS: Partial<Record<OrderStatus, OrderStatus[]>> = { confirmed: ["accepted", "rejected", "cancelled"], accepted: ["preparing", "cancelled"], preparing: ["ready_for_pickup", "out_for_delivery", "cancelled"], ready_for_pickup: ["completed", "cancelled"], out_for_delivery: ["completed", "cancelled"] };
-export async function transitionOrder(establishmentId: string, orderId: string, status: OrderStatus): Promise<FoodOrder> { const ref = orderRef(establishmentId, orderId); return db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; if (order.status === status) return order; if (!TRANSITIONS[order.status]?.includes(status)) throw new Error("Transição de status inválida."); const next = { ...order, status, updatedAt: Date.now(), version: order.version + 1 }; tx.set(ref, next); return next; }); }
-export async function listOrders(establishmentId: string): Promise<FoodOrder[]> { const snap = await sub(establishmentId, "orders").orderBy("createdAt", "desc").limit(200).get(); return snap.docs.map((d) => d.data() as FoodOrder); }
+
+export type OrderOperationErrorCode = "not_found" | "stale_version" | "invalid_transition";
+export class OrderOperationError extends Error {
+  constructor(public readonly code: OrderOperationErrorCode, message: string) { super(message); this.name = "OrderOperationError"; }
+}
+
+export function allowedOrderTransitions(order: Pick<FoodOrder, "status" | "fulfillment">): OrderStatus[] {
+  if (TERMINAL.has(order.status) || ACTIVE_DRAFT.has(order.status)) return [];
+  if (order.status === "confirmed") return ["accepted", "cancelled"];
+  if (order.status === "accepted") return ["preparing", "cancelled"];
+  if (order.status === "preparing") return ["ready_for_pickup", "cancelled"];
+  if (order.status === "ready_for_pickup") return order.fulfillment === "delivery" ? ["out_for_delivery", "cancelled"] : order.fulfillment === "pickup" ? ["completed", "cancelled"] : [];
+  if (order.status === "out_for_delivery") return order.fulfillment === "delivery" ? ["completed", "cancelled"] : [];
+  return [];
+}
+
+export function isOperationalOrder(order: Pick<FoodOrder, "status">): boolean { return OPERATIONAL.has(order.status); }
+
+export async function transitionOrder(establishmentId: string, orderId: string, status: OrderStatus, expectedVersion: number): Promise<FoodOrder> {
+  const ref = orderRef(establishmentId, orderId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new OrderOperationError("not_found", "Pedido não encontrado.");
+    const order = snap.data() as FoodOrder;
+    // Retry técnico da mesma intenção: a primeira chamada já venceu. Não cria
+    // histórico nem incrementa versão novamente.
+    if (order.status === status) {
+      if (!isOperationalOrder(order)) throw new OrderOperationError("invalid_transition", "Carrinhos ainda não confirmados não aceitam transições operacionais.");
+      return order;
+    }
+    if (!Number.isInteger(expectedVersion) || order.version !== expectedVersion) throw new OrderOperationError("stale_version", "O pedido foi atualizado por outro operador. Atualize a tela e tente novamente.");
+    if (!allowedOrderTransitions(order).includes(status)) throw new OrderOperationError("invalid_transition", "Transição de status inválida para este pedido.");
+    const now = Date.now();
+    const next: FoodOrder = { ...order, status, operationalHistory: [...(order.operationalHistory ?? []), { from: order.status, to: status, at: now, source: "panel" }], updatedAt: now, version: order.version + 1 };
+    tx.set(ref, next);
+    return next;
+  });
+}
+
+export async function listOrders(establishmentId: string): Promise<FoodOrder[]> {
+  // Filtrar depois de um limit global permite que muitos drafts recentes
+  // escondam pedidos ativos mais antigos. Consulta cada estado operacional
+  // diretamente: carrinhos nunca disputam a janela da fila do restaurante.
+  const snapshots = await Promise.all([...OPERATIONAL].map((status) => sub(establishmentId, "orders").where("status", "==", status).limit(200).get()));
+  return snapshots
+    .flatMap((snap) => snap.docs.map((d) => d.data() as FoodOrder))
+    .sort((a, b) => {
+      const aPriority = ACTIVE_OPERATION_PRIORITY[a.status]; const bPriority = ACTIVE_OPERATION_PRIORITY[b.status];
+      if (aPriority !== undefined && bPriority === undefined) return -1;
+      if (aPriority === undefined && bPriority !== undefined) return 1;
+      if (aPriority !== undefined && bPriority !== undefined) return aPriority - bPriority || a.createdAt - b.createdAt;
+      return b.updatedAt - a.updatedAt;
+    });
+}

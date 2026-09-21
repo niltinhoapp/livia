@@ -151,6 +151,7 @@ describe("Concorrência — confirmação", () => {
     const confirmed = await confirmOrder(EST, summary.id, summary.version, PHONE, "toolcall.confirm-1");
     expect(confirmed.snapshot).toMatchObject({ subtotalCents: 3500, discountCents: 0, deliveryFeeCents: 0, totalCents: 3500, fulfillment: "pickup", payment: { method: "cash" } });
     expect(confirmed.snapshot?.items[0]).toMatchObject({ productName: "X-Burger", quantity: 2, unitPriceCents: 1750, lineTotalCents: 3500 });
+    expect(confirmed.operationalHistory?.at(-1)).toMatchObject({ from: "awaiting_confirmation", to: "confirmed", source: "customer_confirmation" });
   });
 
   it("alteração depois do resumo invalida a confirmação até haver novo resumo", async () => {

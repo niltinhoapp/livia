@@ -208,10 +208,16 @@ export interface OrderSettings { pickupEnabled: boolean; deliveryEnabled: boolea
 export type OrderStatus = "draft" | "awaiting_confirmation" | "confirmed" | "accepted" | "preparing" | "ready_for_pickup" | "out_for_delivery" | "completed" | "cancelled" | "rejected";
 export type OrderPaymentMethod = "pix" | "cash" | "credit_card" | "debit_card";
 export interface OrderItem { id: string; productId: string; productName: string; variantId: string | null; variantName: string | null; quantity: number; unitPriceCents: number; modifiers: Array<{ optionId: string; name: string; priceDeltaCents: number }>; notes: string | null; lineTotalCents: number; }
+export interface OrderStatusHistoryEntry {
+  from: OrderStatus;
+  to: OrderStatus;
+  at: number;
+  source: "customer_confirmation" | "panel";
+}
 // Valores e composição congelados no instante do fechamento. O histórico não
 // consulta o cardápio atual para reconstruir um pedido já confirmado.
 export interface FoodOrderSnapshot { items: OrderItem[]; subtotalCents: number; discountCents: number; deliveryFeeCents: number; totalCents: number; fulfillment: "pickup" | "delivery"; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; payment: { method: OrderPaymentMethod; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; createdAt: number; }
-export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; createdAt: number; updatedAt: number; confirmedAt: number | null; }
+export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; operationalHistory?: OrderStatusHistoryEntry[]; createdAt: number; updatedAt: number; confirmedAt: number | null; }
 
 // ---- Base de conhecimento do estabelecimento ----
 // É o que a IA consulta pra responder. Sem isso, ela não inventa.
