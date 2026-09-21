@@ -57,6 +57,7 @@ export function defaultBotConfig(): BotConfig {
     tone: "acolhedora e objetiva",
     bookingEnabled: false,
     ordersEnabled: false,
+    voiceRepliesEnabled: false,
     handoffKeywords: ["falar com atendente", "atendente", "humano"],
     medicalGuardrail: false,
   };

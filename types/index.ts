@@ -189,6 +189,8 @@ export interface BotConfig {
   // Pedidos é uma capacidade independente da agenda. Ausência em tenants
   // antigos significa desligado, para nunca alterar o comportamento legado.
   ordersEnabled?: boolean;
+  // Opt-in: tenants existentes continuam respondendo texto.
+  voiceRepliesEnabled?: boolean;
   // Palavras/intenções que forçam transferência pra humano.
   handoffKeywords: string[];
   // Se true, o bot NUNCA dá orientação clínica/médica (trava p/ clínicas).
