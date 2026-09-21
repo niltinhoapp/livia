@@ -9,7 +9,7 @@ vi.mock("@/lib/whatsapp/client", () => ({ normalizePhone: (value: string) => val
 vi.mock("@/lib/whatsapp/sender", () => ({ sendTemplate: (...args: unknown[]) => sendTemplate(...args) }));
 
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import { getOrder, listOrders, transitionOrder } from "@/lib/orders";
+import { getOrder, listOrders, MAX_ACTIVE_ORDERS_PER_STATUS, MAX_CLOSED_ORDERS_PER_STATUS, transitionOrder } from "@/lib/orders";
 import type { FoodOrder, FoodOrderSnapshot, OrderStatus } from "@/types";
 
 const EST_A = "est-a";
@@ -67,6 +67,14 @@ describe("fila operacional", () => {
     seed(EST_A, { ...order("active", "accepted"), createdAt: 1 });
     for (let index = 0; index < 200; index += 1) seed(EST_A, { ...order(`draft-${index}`, "draft"), createdAt: 10_000 + index });
     expect((await listOrders(EST_A)).map((item) => item.id)).toEqual(["active"]);
+  });
+
+  it("mantém custo de refresh limitado por status, sem ler histórico indefinidamente", async () => {
+    for (let index = 0; index <= MAX_ACTIVE_ORDERS_PER_STATUS; index += 1) seed(EST_A, order(`active-${index}`, "confirmed"));
+    for (let index = 0; index <= MAX_CLOSED_ORDERS_PER_STATUS; index += 1) seed(EST_A, order(`closed-${index}`, "completed"));
+    const listed = await listOrders(EST_A);
+    expect(listed.filter((item) => item.status === "confirmed")).toHaveLength(MAX_ACTIVE_ORDERS_PER_STATUS);
+    expect(listed.filter((item) => item.status === "completed")).toHaveLength(MAX_CLOSED_ORDERS_PER_STATUS);
   });
 });
 
