@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) return NextResponse.json({ error: "não autorizado" }, { status: 401 });
+  if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) return NextResponse.json({ error: "não autorizado" }, { status: 401 });
   const snap = await db.collection("establishments").where("whatsapp.status", "==", "connected").get();
   const now = Date.now(); let sent = 0, skipped = 0; const errors: string[] = [];
   for (const doc of snap.docs) {
