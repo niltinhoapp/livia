@@ -13,7 +13,8 @@ export const MAX_TTS_AUDIO_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_SPEECH_INSTRUCTIONS =
   "Speak in Brazilian Portuguese with a natural, warm, and professional female voice. " +
   "Sound like a receptionist chatting casually over WhatsApp — spontaneous, friendly, and clear. " +
-  "Use natural conversational rhythm and human intonation with subtle pauses where they feel right. " +
+  "Use a slightly quicker, flowing pace with short pauses only where natural — avoid dragging between sentences. " +
+  "Keep the rhythm light and steady, never rushed but never slow. " +
   "Avoid announcer tone, formal reading style, or mechanical pacing. " +
   "Be warm and confident without being overly enthusiastic.";
 
