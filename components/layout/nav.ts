@@ -29,5 +29,6 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/painel/whatsapp", label: "WhatsApp", mobileLabel: "WhatsApp", icon: MessageCircle, group: "ajustes" },
   { href: "/painel/conhecimento", label: "Conhecimento", mobileLabel: "Base", icon: BookOpen, group: "ajustes" },
   { href: "/painel/plano", label: "Plano e cobrança", mobileLabel: "Plano", icon: CreditCard, group: "ajustes" },
+  { href: "/painel/pagamentos", label: "Recebimentos", mobileLabel: "Receber", icon: CreditCard, group: "ajustes" },
   { href: "/painel/configuracoes", label: "Configurações", mobileLabel: "Ajustes", icon: Settings, group: "ajustes" },
 ];

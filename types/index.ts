@@ -244,6 +244,36 @@ export interface PaymentAttempt { id: string; paymentId: string; ordinal: number
 export interface PaymentEvent { id: string; paymentId: string; type: PaymentEventType; at: number; source: "system" | "manual" | "provider"; actorUid: string | null; previousStatus: PaymentStatus | null; nextStatus: PaymentStatus; amountCents: number; provider: string | null; providerEventId: string | null; }
 export interface PaymentProviderCapabilities { supported: PaymentProviderCapability[]; }
 
+// Conexões de recebimento são um domínio separado de Establishment.billing.
+// Metadata pode ser mostrada ao painel; credenciais vivem em documento
+// separado, cifrado e acessível somente pelo Admin SDK.
+export type PaymentConnectionProvider = "mercado_pago" | "infinitepay" | "stone" | "asaas" | "pagarme";
+export type PaymentConnectionStatus = "pending" | "connected" | "requires_reauth" | "disconnected" | "error";
+export interface PaymentConnection {
+  id: PaymentConnectionProvider;
+  establishmentId: string;
+  provider: PaymentConnectionProvider;
+  status: PaymentConnectionStatus;
+  providerAccountId: string | null;
+  scopes: string[];
+  connectedAt: number | null;
+  disconnectedAt: number | null;
+  expiresAt: number | null;
+  // Incrementada quando o estabelecimento inicia OAuth. Só a tentativa desta
+  // geração pode gravar credenciais; protege refresh/callbacks antigos.
+  oauthGeneration: number;
+  createdAt: number;
+  updatedAt: number;
+  refreshLeaseId?: string;
+  refreshLeaseExpiresAt?: number;
+}
+export interface PaymentConnectionCredentials {
+  connectionId: PaymentConnectionProvider;
+  accessToken: EncryptedToken;
+  refreshToken: EncryptedToken;
+  updatedAt: number;
+}
+
 export type OrderNotificationStatus = "pending" | "processing" | "sent" | "delivered" | "read" | "failed" | "skipped";
 export interface OrderStatusNotification {
   id: string;

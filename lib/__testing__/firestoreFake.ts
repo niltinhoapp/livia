@@ -269,6 +269,10 @@ class FakeTransaction {
     this.operations.push(() => ref.create(data));
   }
 
+  delete(ref: FakeDoc): void {
+    this.operations.push(() => ref.delete());
+  }
+
   async commit(): Promise<void> {
     for (const operation of this.operations) await operation();
   }
