@@ -322,15 +322,22 @@ function DailyPanel({ metrics }: { metrics: DashboardMetrics }) {
         </Card>
       )}
 
-      <Card className="mt-4">
-        <Link href="/painel/clientes" className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-primary" />
-            <p className="text-sm font-semibold text-ink-900">Ver clientes (CRM)</p>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-white p-4 shadow-e1 transition-colors hover:border-ink-300">
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control bg-primary-50 text-primary dark:bg-primary-950">
+            <Users className="h-5 w-5" />
+          </span>
+          <div>
+            <p className="text-sm font-semibold text-ink-900">Base de clientes (CRM)</p>
+            <p className="text-xs text-ink-500">Consulte o histórico dos seus contatos e controle de consentimento para mensagens.</p>
           </div>
-          <ArrowRight className="h-3.5 w-3.5 text-ink-400" />
+        </div>
+        <Link href="/painel/clientes">
+          <Button variant="secondary" size="sm">
+            Ver clientes <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
         </Link>
-      </Card>
+      </div>
     </>
   );
 }
