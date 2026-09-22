@@ -230,6 +230,19 @@ export interface OrderStatusHistoryEntry {
 export interface FoodOrderSnapshot { items: OrderItem[]; subtotalCents: number; discountCents: number; deliveryFeeCents: number; totalCents: number; fulfillment: "pickup" | "delivery"; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; payment: { method: OrderPaymentMethod; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; createdAt: number; }
 export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; operationalHistory?: OrderStatusHistoryEntry[]; createdAt: number; updatedAt: number; confirmedAt: number | null; }
 
+// Payments é deliberadamente separado de FoodOrder e de Establishment.billing.
+// O pedido conserva a intenção operacional; esta entidade é a verdade
+// financeira interna e nunca armazena cartão, token, segredo ou payload bruto.
+export type PaymentStatus = "created" | "awaiting_customer" | "processing" | "authorized" | "paid" | "failed" | "cancelled" | "expired" | "refund_pending" | "partially_refunded" | "refunded" | "disputed";
+export type PaymentChannel = "manual" | "provider";
+export type PaymentMethod = "manual_pix" | "cash" | "card_machine_credit" | "card_machine_debit" | "manual_other" | "pix" | "credit_card" | "debit_card";
+export type PaymentEventType = "payment_created" | "attempt_created" | "payment_processing" | "payment_authorized" | "payment_paid" | "payment_failed" | "payment_cancel_requested" | "payment_cancelled" | "manual_payment_recorded" | "refund_requested" | "refund_completed" | "reconciliation_mismatch";
+export type PaymentProviderCapability = "pix" | "creditCard" | "debitCard" | "hostedCheckout" | "refund" | "partialRefund" | "oauth" | "split" | "fees" | "netAmount" | "captureLater";
+export interface Payment { id: string; establishmentId: string; orderId: string; orderVersion: number; amountCents: number; currency: "BRL"; status: PaymentStatus; channel: PaymentChannel; method: PaymentMethod; provider: string | null; activeAttemptId: string | null; attemptCount: number; paidAmountCents: number; refundedAmountCents: number; version: number; createdAt: number; updatedAt: number; paidAt: number | null; cancelledAt: number | null; manualConfirmationId?: string; }
+export interface PaymentAttempt { id: string; paymentId: string; ordinal: number; idempotencyKey: string; channel: PaymentChannel; method: PaymentMethod; provider: string | null; providerPaymentId: string | null; status: PaymentStatus; amountCents: number; createdAt: number; updatedAt: number; expiresAt: number | null; }
+export interface PaymentEvent { id: string; paymentId: string; type: PaymentEventType; at: number; source: "system" | "manual" | "provider"; actorUid: string | null; previousStatus: PaymentStatus | null; nextStatus: PaymentStatus; amountCents: number; provider: string | null; providerEventId: string | null; }
+export interface PaymentProviderCapabilities { supported: PaymentProviderCapability[]; }
+
 export type OrderNotificationStatus = "pending" | "processing" | "sent" | "delivered" | "read" | "failed" | "skipped";
 export interface OrderStatusNotification {
   id: string;
