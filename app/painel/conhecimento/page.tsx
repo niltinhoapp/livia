@@ -32,7 +32,12 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { GuidedSection } from "@/components/knowledge/GuidedSection";
-import { KNOWLEDGE_TEMPLATES, suggestedTemplateFor, type KnowledgeTemplate } from "@/components/knowledge/templates";
+import {
+  KNOWLEDGE_TEMPLATES,
+  suggestedTemplateFor,
+  mergeTemplateIntoKnowledge,
+  type KnowledgeTemplate,
+} from "@/components/knowledge/templates";
 
 type SaveState = "idle" | "loading" | "saving" | "saved" | "error";
 
@@ -138,14 +143,25 @@ export default function KnowledgePanel() {
   const showFirstVisitChoice = !hasAnyContent && !firstVisitDismissed;
 
   function applyTemplate(t: KnowledgeTemplate) {
-    // Só preenche o que estiver vazio — nunca sobrescreve o que já existe.
-    if (!about.trim()) setAbout(t.about);
-    if (services.length === 0) setServices(t.services);
-    if (!paymentMethods.trim()) setPaymentMethods(t.paymentMethods);
-    if (!importantInfo.trim()) setImportantInfo(t.importantInfo);
-    if (!toneGuidelines.trim()) setToneGuidelines(t.toneGuidelines);
-    if (!prohibitions.trim()) setProhibitions(t.prohibitions);
-    if (!handoffTriggers.trim()) setHandoffTriggers(t.handoffTriggers);
+    const merged = mergeTemplateIntoKnowledge(
+      {
+        about,
+        services,
+        paymentMethods,
+        importantInfo,
+        toneGuidelines,
+        prohibitions,
+        handoffTriggers,
+      },
+      t
+    );
+    setAbout(merged.about);
+    setServices(merged.services);
+    setPaymentMethods(merged.paymentMethods);
+    setImportantInfo(merged.importantInfo);
+    setToneGuidelines(merged.toneGuidelines);
+    setProhibitions(merged.prohibitions);
+    setHandoffTriggers(merged.handoffTriggers);
     setConfirmApply(false);
   }
 
