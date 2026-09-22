@@ -31,21 +31,17 @@ describe("KNOWLEDGE_TEMPLATES — Modelos de Conhecimento", () => {
     for (const id of previousIds) {
       const template = KNOWLEDGE_TEMPLATES.find((t) => t.id === id);
       expect(template, `Modelo legado com id "${id}" deve existir`).toBeDefined();
+      expect(template!.services.length).toBeGreaterThan(0);
     }
     expect(KNOWLEDGE_TEMPLATES.length).toBe(10);
   });
 
-  it("todos os modelos possuem todos os campos obrigatórios preenchidos com conteúdo significativo", () => {
+  it("todos os modelos possuem campos textuais preenchidos com orientações relevantes", () => {
     for (const t of KNOWLEDGE_TEMPLATES) {
       expect(t.id.trim()).not.toBe("");
       expect(t.label.trim()).not.toBe("");
       expect(t.matchesTypes.length).toBeGreaterThan(0);
       expect(t.about.trim().length).toBeGreaterThan(20);
-      expect(t.services.length).toBeGreaterThan(0);
-      for (const s of t.services) {
-        expect(s.name.trim()).not.toBe("");
-        expect(s.priceText).toBeTruthy();
-      }
       expect(t.paymentMethods.trim().length).toBeGreaterThan(5);
       expect(t.importantInfo.trim().length).toBeGreaterThan(10);
       expect(t.toneGuidelines.trim().length).toBeGreaterThan(10);
@@ -91,7 +87,7 @@ describe("KNOWLEDGE_TEMPLATES — Modelos de Conhecimento", () => {
 
     const templatePizzaria = KNOWLEDGE_TEMPLATES.find((t) => t.id === "pizzaria")!;
 
-    it("preenche todos os campos quando o formulário está completamente vazio", () => {
+    it("preenche todos os campos textuais quando o formulário está completamente vazio", () => {
       const result = mergeTemplateIntoKnowledge(emptyCurrent, templatePizzaria);
 
       expect(result.about).toBe(templatePizzaria.about);
@@ -123,7 +119,7 @@ describe("KNOWLEDGE_TEMPLATES — Modelos de Conhecimento", () => {
     it("NUNCA sobrescreve conteúdo já existente cadastrado pelo comerciante", () => {
       const customCurrent: KnowledgeFormData = {
         about: "Minha Pizzaria do Zé existente e consolidada",
-        services: [{ name: "Pizza de Picanha", priceText: "R$ 80", durationText: null, description: "Exclusiva" }],
+        services: [{ name: "Pizza Customizada", priceText: "R$ 80", durationText: null, description: "Exclusiva" }],
         paymentMethods: "Somente dinheiro e Pix",
         importantInfo: "Não entregamos após as 23h",
         toneGuidelines: "Fale bem caipira e direto",
@@ -145,7 +141,7 @@ describe("KNOWLEDGE_TEMPLATES — Modelos de Conhecimento", () => {
     it("preenche SOMENTE os campos que estiverem vazios e preserva os já preenchidos", () => {
       const partiallyFilled: KnowledgeFormData = {
         about: "Hamburgueria Artesanal da Vila",
-        services: [], // vazio -> deve preencher
+        services: [{ name: "Meu Burger", priceText: "R$ 30", durationText: null, description: null }], // preenchido -> deve manter
         paymentMethods: "Pix e Cartão", // preenchido -> deve manter
         importantInfo: "", // vazio -> deve preencher
         toneGuidelines: "Tom amigável", // preenchido -> deve manter
@@ -158,30 +154,70 @@ describe("KNOWLEDGE_TEMPLATES — Modelos de Conhecimento", () => {
 
       // Campos que estavam preenchidos permanecem intactos
       expect(result.about).toBe("Hamburgueria Artesanal da Vila");
+      expect(result.services).toEqual(partiallyFilled.services);
       expect(result.paymentMethods).toBe("Pix e Cartão");
       expect(result.toneGuidelines).toBe("Tom amigável");
 
       // Campos vazios recebem o conteúdo do modelo
-      expect(result.services).toEqual(templateBurger.services);
       expect(result.importantInfo).toBe(templateBurger.importantInfo);
       expect(result.prohibitions).toBe(templateBurger.prohibitions);
       expect(result.handoffTriggers).toBe(templateBurger.handoffTriggers);
     });
   });
 
-  describe("Qualidade das diretrizes de alimentação — não concorre com o cardápio oficial", () => {
-    it("modelos de alimentação reforçam que cardápio oficial e pedidos são a fonte da verdade", () => {
-      const foodTemplates = KNOWLEDGE_TEMPLATES.filter((t) =>
-        ["restaurante", "lanchonete", "pizzaria", "hamburgueria"].includes(t.id)
-      );
+  describe("Vertical Alimentação — isolamento de dados operacionais e ausência de dados fictícios", () => {
+    const foodTemplates = KNOWLEDGE_TEMPLATES.filter((t) =>
+      ["restaurante", "lanchonete", "pizzaria", "hamburgueria"].includes(t.id)
+    );
 
+    it("modelos de alimentação NÃO contêm lista de serviços/preços fictícios (deve ser vazia)", () => {
       for (const t of foodTemplates) {
-        // Proibições devem impedir inventar pratos/preços fora do cardápio oficial
-        expect(t.prohibitions.toLowerCase()).toContain("cardápio");
-        // Handoff triggers devem tratar problemas típicos de delivery/pedidos
-        expect(t.handoffTriggers.toLowerCase()).toMatch(/pedido|cancelamento|trocado|atrasado/);
-        // Important info menciona tempo de entrega/retirada
-        expect(t.importantInfo.toLowerCase()).toMatch(/entrega|retirada/);
+        expect(
+          t.services,
+          `Template ${t.id} não deve injetar serviços fictícios, cardápio é a fonte de verdade`
+        ).toEqual([]);
+      }
+    });
+
+    it("modelos de alimentação NÃO contêm preços fixos ou valores monetários inventados (R$)", () => {
+      for (const t of foodTemplates) {
+        const fullContent = `${t.about} ${t.paymentMethods} ${t.importantInfo} ${t.toneGuidelines} ${t.prohibitions} ${t.handoffTriggers}`;
+        expect(fullContent).not.toMatch(/R\$\s*\d+/i);
+        expect(fullContent).not.toMatch(/R\$\d+/i);
+      }
+    });
+
+    it("modelos de alimentação NÃO contêm tempos fixos de entrega fictícios", () => {
+      for (const t of foodTemplates) {
+        const fullContent = `${t.about} ${t.paymentMethods} ${t.importantInfo}`;
+        // Não deve ter durações específicas como "40 a 60 minutos", "30 a 50", etc.
+        expect(fullContent).not.toMatch(/\d+\s*(a|-|às)\s*\d+\s*minutos?/i);
+      }
+    });
+
+    it("modelos de alimentação NÃO contêm regras operacionais inventadas (limite de sabores, ponto da carne)", () => {
+      for (const t of foodTemplates) {
+        const fullContent = `${t.about} ${t.importantInfo} ${t.prohibitions}`;
+        expect(fullContent).not.toMatch(/até \d+ sabores/i);
+        expect(fullContent).not.toMatch(/ponto padrão da carne/i);
+        expect(fullContent).not.toMatch(/ao ponto \(bem suculento\)/i);
+      }
+    });
+
+    it("modelos de alimentação NÃO fixam marcas específicas de vales-refeição como dado factual", () => {
+      for (const t of foodTemplates) {
+        const fullContent = `${t.paymentMethods} ${t.importantInfo}`;
+        expect(fullContent).not.toMatch(/alelo/i);
+        expect(fullContent).not.toMatch(/sodexo/i);
+        expect(fullContent).not.toMatch(/ticket/i);
+      }
+    });
+
+    it("modelos de alimentação instruem a Lívia a consultar o cardápio oficial e as configurações de pedidos", () => {
+      for (const t of foodTemplates) {
+        expect(t.about.toLowerCase()).toContain("cardápio");
+        expect(t.prohibitions.toLowerCase()).toContain("cardápio oficial");
+        expect(t.importantInfo.toLowerCase()).toContain("sistema de pedidos");
       }
     });
   });
