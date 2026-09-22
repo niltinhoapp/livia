@@ -136,6 +136,14 @@ describe("Payments Core", () => {
     }
   });
 
+  it("não permite nova attempt durante refund_pending ou partially_refunded", async () => {
+    for (const status of ["refund_pending", "partially_refunded"]) {
+      fakeDb.reset(); await seed(); const payment = await createPaymentForOrder(EST, ORDER);
+      await fakeDb.collection(`establishments/${EST}/payments`).doc(payment.id).update({ status });
+      await expect(createPaymentAttempt(EST, payment.id, `blocked-${status}`)).rejects.toMatchObject({ code: "invalid_transition" });
+    }
+  });
+
   it("mantém recuperação explícita de refund e falha de captura após autorização", () => {
     expect(PAYMENT_TRANSITIONS.refund_pending).toContain("paid");
     expect(PAYMENT_TRANSITIONS.authorized).toContain("failed");

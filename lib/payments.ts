@@ -1,7 +1,7 @@
 import { db, sub } from "@/lib/firebase/admin";
 import type { FoodOrder, Payment, PaymentAttempt, PaymentAttemptStatus, PaymentChannel, PaymentEvent, PaymentEventType, PaymentMethod, PaymentProviderCapabilities, PaymentStatus } from "@/types";
 
-const TERMINAL = new Set<PaymentStatus>(["paid", "failed", "cancelled", "expired", "refunded", "disputed"]);
+const ATTEMPT_BLOCKED = new Set<PaymentStatus>(["paid", "failed", "cancelled", "expired", "refund_pending", "partially_refunded", "refunded", "disputed"]);
 const orderRef = (establishmentId: string, orderId: string) => sub(establishmentId, "orders").doc(orderId);
 const paymentRef = (establishmentId: string, paymentId: string) => sub(establishmentId, "payments").doc(paymentId);
 
@@ -73,7 +73,7 @@ export async function createPaymentAttempt(establishmentId: string, paymentId: s
     const snap = await tx.get(ref); if (!snap.exists) throw new PaymentDomainError("not_found"); const current = snap.data() as Payment;
     const attempts = ref.collection("attempts"); const existing = await tx.get(attempts.doc(idempotencyKey));
     if (existing.exists) return existing.data() as PaymentAttempt;
-    if (TERMINAL.has(current.status) || current.status === "processing" || current.status === "authorized") throw new PaymentDomainError("invalid_transition");
+    if (ATTEMPT_BLOCKED.has(current.status) || current.status === "processing" || current.status === "authorized") throw new PaymentDomainError("invalid_transition");
     const channel = input?.channel ?? current.channel; const method = input?.method ?? current.method; const provider = channel === "provider" ? (input?.provider ?? null) : null;
     if ((channel === "provider" && !provider) || !isMethodCompatibleWithChannel(channel, method)) throw new PaymentDomainError("invalid_transition");
     if (current.activeAttemptId) {
