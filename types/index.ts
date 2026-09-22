@@ -259,6 +259,9 @@ export interface PaymentConnection {
   connectedAt: number | null;
   disconnectedAt: number | null;
   expiresAt: number | null;
+  // Incrementada quando o estabelecimento inicia OAuth. Só a tentativa desta
+  // geração pode gravar credenciais; protege refresh/callbacks antigos.
+  oauthGeneration: number;
   createdAt: number;
   updatedAt: number;
   refreshLeaseId?: string;

@@ -44,10 +44,49 @@ describe("Mercado Pago OAuth connection", () => {
     expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "connected" });
   });
 
+  it("refresh antigo não sobrescreve reconexão OAuth de geração nova", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(tokenResponse("old-account")), { status: 200 })));
+    await completeMercadoPagoOAuth("initial", await stateFromStart());
+    let releaseRefresh!: () => void;
+    let refreshStarted!: () => void;
+    const refreshStartedPromise = new Promise<void>((resolve) => { refreshStarted = resolve; });
+    const refreshResponse = new Promise<Response>((resolve) => { releaseRefresh = () => resolve(new Response(JSON.stringify(tokenResponse("old-account")), { status: 200 })); });
+    const fetchMock = vi.fn().mockImplementationOnce(() => { refreshStarted(); return refreshResponse; }).mockResolvedValueOnce(new Response(JSON.stringify(tokenResponse("new-account")), { status: 200 })); vi.stubGlobal("fetch", fetchMock);
+    const refresh = refreshMercadoPagoConnection(EST);
+    await refreshStartedPromise;
+    const reconnectState = await stateFromStart();
+    await completeMercadoPagoOAuth("reconnect", reconnectState);
+    releaseRefresh();
+    await expect(refresh).rejects.toMatchObject({ code: "refresh_in_progress" });
+    expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "connected", providerAccountId: "new-account", oauthGeneration: 2 });
+  });
+
+  it("callback OAuth iniciado antes não sobrescreve autorização mais recente", async () => {
+    const older = await stateFromStart(); const newer = await stateFromStart();
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(tokenResponse("new-account")), { status: 200 })).mockResolvedValueOnce(new Response(JSON.stringify(tokenResponse("old-account")), { status: 200 })); vi.stubGlobal("fetch", fetchMock);
+    await completeMercadoPagoOAuth("new-code", newer);
+    await expect(completeMercadoPagoOAuth("old-code", older)).rejects.toMatchObject({ code: "superseded_state" });
+    expect(await getMercadoPagoConnection(EST)).toMatchObject({ providerAccountId: "new-account", oauthGeneration: 2 });
+  });
+
+  it("429 e timeout liberam lease sem exigir reautorização", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(tokenResponse()), { status: 200 })));
+    await completeMercadoPagoOAuth("code", await stateFromStart());
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "local_rate_limited" }), { status: 429 })));
+    await expect(refreshMercadoPagoConnection(EST)).rejects.toMatchObject({ code: "provider_error" });
+    expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "connected", refreshLeaseId: null });
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))));
+    const timeout = refreshMercadoPagoConnection(EST); const timeoutExpectation = expect(timeout).rejects.toMatchObject({ code: "provider_timeout" }); await vi.advanceTimersByTimeAsync(10_000);
+    await timeoutExpectation;
+    expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "connected", refreshLeaseId: null });
+    vi.useRealTimers();
+  });
+
   it("falha de refresh exige reautorização e disconnect preserva metadata", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(tokenResponse()), { status: 200 })));
     await completeMercadoPagoOAuth("code", await stateFromStart());
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("no", { status: 401 })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })));
     await expect(refreshMercadoPagoConnection(EST)).rejects.toBeInstanceOf(PaymentConnectionError);
     expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "requires_reauth" });
     await disconnectMercadoPago(EST); expect(await getMercadoPagoConnection(EST)).toMatchObject({ status: "disconnected", providerAccountId: "merchant-a" });
