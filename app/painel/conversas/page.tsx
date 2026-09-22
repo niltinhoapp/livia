@@ -17,6 +17,7 @@ import { EmptyState, ErrorState } from "@/components/ui/States";
 import { SkeletonList, Skeleton } from "@/components/ui/Skeleton";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { SearchInput } from "@/components/ui/SearchInput";
 import { INBOX_CATEGORY_LABEL, applyOpportunityOverride } from "@/lib/ai/inbox";
 import { ConversationDetail, STATUS_LABEL } from "./ConversationDetail";
 
@@ -94,6 +95,7 @@ export default function ConversationsPage() {
   const [opportunityIds, setOpportunityIds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<InboxFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [canClear, setCanClear] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -197,7 +199,15 @@ export default function ConversationsPage() {
     inboxCategory: applyOpportunityOverride(c.inboxCategory, opportunityIds.has(c.id)),
   }));
   const selected = withOpportunities.find((c) => c.id === selectedId) ?? null;
-  const filtered = withOpportunities.filter((c) => matchesFilter(c, filter));
+  const filtered = withOpportunities
+    .filter((c) => matchesFilter(c, filter))
+    .filter((c) => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      const name = (c.contactName ?? "").toLowerCase();
+      const phone = (c.contactPhone ?? "").toLowerCase();
+      return name.includes(q) || phone.includes(q);
+    });
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -236,15 +246,25 @@ export default function ConversationsPage() {
         onCancel={() => setConfirmClear(false)}
       />
 
-      <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-card border border-line bg-white p-2 shadow-e1">
-        {FILTERS.map((f) => {
-          const count = f.id === "all" ? withOpportunities.length : withOpportunities.filter((c) => matchesFilter(c, f.id)).length;
-          return (
-            <Chip key={f.id} active={filter === f.id} onClick={() => setFilter(f.id)}>
-              {f.label} {count > 0 && <span className="opacity-70">({count})</span>}
-            </Chip>
-          );
-        })}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <SearchInput
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onClear={() => setSearchQuery("")}
+          placeholder="Buscar por cliente ou telefone…"
+          className="w-full sm:max-w-xs"
+        />
+
+        <div className="flex flex-wrap items-center gap-1.5 rounded-card border border-line bg-white p-1.5 shadow-e1">
+          {FILTERS.map((f) => {
+            const count = f.id === "all" ? withOpportunities.length : withOpportunities.filter((c) => matchesFilter(c, f.id)).length;
+            return (
+              <Chip key={f.id} active={filter === f.id} onClick={() => setFilter(f.id)}>
+                {f.label} {count > 0 && <span className="opacity-70">({count})</span>}
+              </Chip>
+            );
+          })}
+        </div>
       </div>
 
       <div className="flex h-[calc(100dvh-13rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">

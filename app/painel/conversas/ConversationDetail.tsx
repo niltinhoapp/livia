@@ -145,6 +145,22 @@ export function ConversationDetail({
         )}
       </div>
 
+      <div className="border-t border-line bg-white p-3 sm:px-4">
+        {status === "human" ? (
+          <div className="flex items-center gap-2 rounded-control border border-info/30 bg-info-bg/30 px-3 py-2 text-xs text-info-fg">
+            <UserCheck className="h-4 w-4 shrink-0 text-info" />
+            <span>
+              <strong>Atendimento assumido:</strong> a Lívia não responderá neste chat. Envie suas respostas pelo WhatsApp oficial do estabelecimento.
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs text-ink-500">
+            <Bot className="h-4 w-4 text-primary" />
+            <span>A Lívia está respondendo automaticamente pelo WhatsApp.</span>
+          </div>
+        )}
+      </div>
+
       <TeachDialog
         open={teachOpen}
         defaultQuestion={teachDefaultQuestion ?? undefined}

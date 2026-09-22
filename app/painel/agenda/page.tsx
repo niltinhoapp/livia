@@ -13,6 +13,7 @@ import { Input, Label } from "@/components/ui/Field";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 interface Slot {
   time: string;
@@ -59,6 +60,7 @@ export default function AgendaPanel() {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState(false);
+  const [cancelAppointment, setCancelAppointment] = useState<Appointment | null>(null);
 
   const offset = config?.utcOffsetMinutes ?? -180;
 
@@ -129,34 +131,51 @@ export default function AgendaPanel() {
         }
       />
 
-      <div className="mb-5 flex items-center justify-between gap-3 rounded-card border border-line bg-white p-3 shadow-e1 sm:justify-start">
-        <button
-          onClick={() => go(-1)}
-          className="rounded-control border border-line bg-white p-2.5 text-ink-600 shadow-e1 hover:bg-ink-50"
-          aria-label="Dia anterior"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <div className="min-w-[150px] flex-1 text-center sm:flex-none">
-          <p className="text-lg font-bold text-ink-900">{date && prettyDate(date)}</p>
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-white p-3 shadow-e1">
+        <div className="flex items-center gap-1.5">
           <button
-            className="text-xs font-semibold text-primary hover:underline"
+            onClick={() => go(-1)}
+            className="flex h-9 w-9 items-center justify-center rounded-control border border-line bg-white text-ink-600 shadow-e1 transition-colors hover:bg-ink-50"
+            aria-label="Dia anterior"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => go(1)}
+            className="flex h-9 w-9 items-center justify-center rounded-control border border-line bg-white text-ink-600 shadow-e1 transition-colors hover:bg-ink-50"
+            aria-label="Próximo dia"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <div className="ml-2">
+            <p className="text-base font-bold text-ink-900 sm:text-lg">{date && prettyDate(date)}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => {
+              if (e.target.value && config) {
+                setDate(e.target.value);
+                loadDay(config, e.target.value);
+              }
+            }}
+            aria-label="Selecionar data específica"
+            className="rounded-control border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-ink-700 shadow-e1 transition-colors hover:bg-ink-50 focus:border-primary focus:outline-none"
+          />
+          <button
+            className="rounded-control border border-primary-200 bg-primary-50 px-2.5 py-1.5 text-xs font-semibold text-primary shadow-e1 transition-colors hover:bg-primary-100"
             onClick={() => {
               const d = todayLocal(offset);
               setDate(d);
               loadDay(config, d);
             }}
           >
-            hoje
+            Hoje
           </button>
         </div>
-        <button
-          onClick={() => go(1)}
-          className="rounded-control border border-line bg-white p-2.5 text-ink-600 shadow-e1 hover:bg-ink-50"
-          aria-label="Próximo dia"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
       </div>
 
       {showNew && (
@@ -203,7 +222,7 @@ export default function AgendaPanel() {
                       <Button size="sm" variant="secondary" onClick={() => patch(a.id, { status: "no_show" })}>
                         Faltou
                       </Button>
-                      <Button size="sm" variant="danger" onClick={() => patch(a.id, { status: "cancelled" })}>
+                      <Button size="sm" variant="danger" onClick={() => setCancelAppointment(a)}>
                         Cancelar
                       </Button>
                     </>
@@ -215,6 +234,27 @@ export default function AgendaPanel() {
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(cancelAppointment)}
+        title="Cancelar agendamento?"
+        description={
+          cancelAppointment
+            ? `Deseja realmente cancelar o agendamento de "${cancelAppointment.contactName ?? cancelAppointment.contactPhone}" para ${cancelAppointment.serviceName}? Esta ação é irreversível.`
+            : undefined
+        }
+        confirmLabel="Confirmar cancelamento"
+        cancelLabel="Voltar"
+        danger
+        onCancel={() => setCancelAppointment(null)}
+        onConfirm={() => {
+          if (cancelAppointment) {
+            const id = cancelAppointment.id;
+            setCancelAppointment(null);
+            void patch(id, { status: "cancelled" });
+          }
+        }}
+      />
     </div>
   );
 }

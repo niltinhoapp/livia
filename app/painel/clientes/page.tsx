@@ -13,6 +13,7 @@ import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/States";
 import { Skeleton, SkeletonList } from "@/components/ui/Skeleton";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { SearchInput } from "@/components/ui/SearchInput";
 import { INTENT_LABEL } from "@/components/lib/labels";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select } from "@/components/ui/Field";
@@ -47,6 +48,7 @@ export default function CustomersPage() {
   const [error, setError] = useState(false);
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const load = useCallback(() => {
     fetch("/api/customers")
@@ -77,24 +79,53 @@ export default function CustomersPage() {
       </div>
     );
 
+  const filteredCustomers = customers.filter((c) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    const name = (c.name ?? "").toLowerCase();
+    const phone = c.phone.toLowerCase();
+    return name.includes(q) || phone.includes(q);
+  });
+
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="Clientes"
         description="Histórico e contexto dos seus clientes em um só lugar, com controle de consentimento para campanhas."
-        action={<Button onClick={() => setImportOpen((open) => !open)}><Plus className="h-4 w-4" /> Adicionar contatos</Button>}
+        action={
+          <Button onClick={() => setImportOpen((open) => !open)}>
+            <Plus className="h-4 w-4" /> Adicionar contatos
+          </Button>
+        }
       />
+
+      <div className="mb-3">
+        <SearchInput
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onClear={() => setSearchQuery("")}
+          placeholder="Buscar cliente por nome ou telefone…"
+          className="max-w-sm"
+        />
+      </div>
 
       {importOpen ? <ContactImportForm onImported={load} onClose={() => setImportOpen(false)} /> : null}
 
-      <div className="flex h-[calc(100dvh-11rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
+      <div className="flex h-[calc(100dvh-13rem)] min-h-[460px] overflow-hidden rounded-card border border-line bg-white shadow-e1">
         <div className={`w-full shrink-0 overflow-y-auto border-r border-line sm:w-80 ${selectedPhone ? "hidden sm:block" : "block"}`}>
-          {customers.length === 0 ? (
+          {filteredCustomers.length === 0 ? (
             <div className="p-4">
-              <EmptyState title="Nenhum cliente ainda" description="Assim que a Livia atender alguém, o perfil aparece aqui." />
+              <EmptyState
+                title={customers.length === 0 ? "Nenhum cliente ainda" : "Nenhum cliente encontrado"}
+                description={
+                  customers.length === 0
+                    ? "Assim que a Livia atender alguém, o perfil aparece aqui."
+                    : "Tente buscar com outro termo."
+                }
+              />
             </div>
           ) : (
-            customers.map((c) => (
+            filteredCustomers.map((c) => (
               <button
                 key={c.phone}
                 onClick={() => setSelectedPhone(c.phone)}

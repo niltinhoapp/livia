@@ -7,6 +7,7 @@ import { Input, Label, Select } from "@/components/ui/Field";
 import { ErrorState, LoadingState } from "@/components/ui/States";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Toggle } from "@/components/ui/Toggle";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { OrderOperations } from "./OrderOperations";
 import { OrderSettingsEditor } from "./OrderSettingsEditor";
 import { MenuImageImporter } from "./MenuImageImporter";
@@ -24,8 +25,21 @@ function reaisText(cents: number): string {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
+type PedidosTab = "operacao" | "cardapio" | "configuracao";
+
+const TABS: { id: PedidosTab; label: string }[] = [
+  { id: "operacao", label: "Fila de pedidos" },
+  { id: "cardapio", label: "Cardápio" },
+  { id: "configuracao", label: "Regras e horários" },
+];
+
 export default function PedidosPage() {
-  const [orders, setOrders] = useState<FoodOrder[]>([]); const [categories, setCategories] = useState<MenuCategory[]>([]); const [products, setProducts] = useState<MenuProduct[]>([]); const [ordersEnabled, setOrdersEnabled] = useState(true); const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [tab, setTab] = useState<PedidosTab>("operacao");
+  const [orders, setOrders] = useState<FoodOrder[]>([]);
+  const [categories, setCategories] = useState<MenuCategory[]>([]);
+  const [products, setProducts] = useState<MenuProduct[]>([]);
+  const [ordersEnabled, setOrdersEnabled] = useState(true);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   // Com a IA de pedidos desligada, a tela continua inteira: o comerciante
   // ainda precisa tocar os pedidos em andamento e mexer no cardápio. O que
   // muda é só o aviso no topo.
@@ -55,11 +69,67 @@ export default function PedidosPage() {
   const updateOrder = (updated: FoodOrder) => setOrders((current) => current.map((order) => order.id === updated.id ? updated : order));
   if (state === "loading") return <LoadingState />;
   if (state === "error") return <ErrorState onRetry={load} />;
-  return <div className="mx-auto max-w-7xl"><PageHeader title="Pedidos" description="Central operacional para acompanhar e movimentar pedidos durante o expediente." action={<Button variant="secondary" size="sm" onClick={() => void refreshOrders()}>Atualizar</Button>} />
-    {!ordersEnabled && <Card className="mb-4 p-4"><p className="font-semibold">A Livia não está aceitando pedidos novos</p><p className="mt-1 text-sm text-ink-500">Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.</p></Card>}
-    <OrderOperations orders={orders} onOrderUpdated={updateOrder} onRefresh={refreshOrders} />
-    <section className="mt-6 grid gap-4 lg:grid-cols-2"><div><h2 className="mb-3 text-lg font-bold">Cardápio</h2><MenuImageImporter onConfirmed={load} /><div className="mt-4"><MenuEditor categories={categories} products={products} onChanged={load} /></div></div></section>
-    <section className="mt-6"><h2 className="mb-3 text-lg font-bold">Operação</h2><OrderSettingsEditor /></section></div>;
+  return (
+    <div className="mx-auto max-w-7xl">
+      <PageHeader
+        title="Pedidos"
+        description="Central operacional para acompanhar pedidos, gerenciar cardápio e configurar regras de entrega."
+        action={
+          <Button variant="secondary" size="sm" onClick={() => void refreshOrders()}>
+            Atualizar
+          </Button>
+        }
+      />
+      {!ordersEnabled && (
+        <Card className="mb-4 border-warning/30 bg-warning-bg/20 p-4">
+          <p className="font-semibold text-ink-900">A Livia não está aceitando pedidos novos</p>
+          <p className="mt-1 text-sm text-ink-500">
+            Ative “Permitir pedidos pela IA” em Configurações para voltar a receber pedidos pelo WhatsApp. Os pedidos já feitos continuam aqui e podem ser tocados normalmente.
+          </p>
+        </Card>
+      )}
+
+      <SegmentedControl
+        className="mb-5 max-w-md rounded-card border border-line bg-white p-1 shadow-e1"
+        items={TABS}
+        value={tab}
+        onChange={setTab}
+      />
+
+      {tab === "operacao" && (
+        <OrderOperations orders={orders} onOrderUpdated={updateOrder} onRefresh={refreshOrders} />
+      )}
+
+      {tab === "cardapio" && (
+        <section className="space-y-6">
+          <div>
+            <div className="mb-3">
+              <h2 className="text-base font-bold text-ink-900">Importação e Reconhecimento</h2>
+              <p className="text-xs text-ink-500">Envie fotos de cardápio impresso para digitalização automática.</p>
+            </div>
+            <MenuImageImporter onConfirmed={load} />
+          </div>
+          <div>
+            <div className="mb-3">
+              <h2 className="text-base font-bold text-ink-900">Gerenciador de Cardápio</h2>
+              <p className="text-xs text-ink-500">Categorias, produtos, variações e complementos.</p>
+            </div>
+            <MenuEditor categories={categories} products={products} onChanged={load} />
+          </div>
+        </section>
+      )}
+
+      {tab === "configuracao" && (
+        <section>
+          <div className="mb-3">
+            <h2 className="text-base font-bold text-ink-900">Regras de Atendimento e Horários</h2>
+            <p className="text-xs text-ink-500">Formas de pagamento, taxas de entrega por bairro e notificações.</p>
+          </div>
+          <OrderSettingsEditor />
+        </section>
+      )}
+    </div>
+  );
 }
 
 function MenuEditor({ categories, products, onChanged }: { categories: MenuCategory[]; products: MenuProduct[]; onChanged: () => void }) {
