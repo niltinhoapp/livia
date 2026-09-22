@@ -51,9 +51,16 @@ async function exchange(body: Record<string, string>): Promise<TokenResponse> {
 export async function beginMercadoPagoOAuth(establishmentId: string): Promise<{ authorizationUrl: string }> {
   const { clientId, redirectUri } = config();
   const state = randomUUID(); const codeVerifier = verifier(); const now = Date.now(); const ref = connectionRef(establishmentId);
-  const oauthGeneration = await db.runTransaction(async (tx) => { const snap = await tx.get(ref); if (!snap.exists) { const pending: PaymentConnection = { id: PROVIDER, establishmentId, provider: PROVIDER, status: "pending", providerAccountId: null, scopes: [], connectedAt: null, disconnectedAt: null, expiresAt: null, oauthGeneration: 1, createdAt: now, updatedAt: now }; tx.create(ref, pending); return 1; } const current = snap.data() as PaymentConnection; const next = current.oauthGeneration + 1; tx.update(ref, { oauthGeneration: next, updatedAt: now }); return next; });
-  const record: OAuthState = { id: state, establishmentId, provider: PROVIDER, oauthGeneration, verifier: encryptPaymentConnectionSecret(codeVerifier), expiresAt: now + STATE_TTL_MS, consumedAt: null, createdAt: now };
-  await stateRef(state).create(record);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref); const oauthGeneration = snap.exists ? (snap.data() as PaymentConnection).oauthGeneration + 1 : 1;
+    const record: OAuthState = { id: state, establishmentId, provider: PROVIDER, oauthGeneration, verifier: encryptPaymentConnectionSecret(codeVerifier), expiresAt: now + STATE_TTL_MS, consumedAt: null, createdAt: now };
+    // Mesmo commit: uma geração nunca avança sem ter o state que a representa.
+    // O create vem antes no fake de testes para que uma colisão reproduzida
+    // também prove ausência de escrita parcial; no Firestore ambos são atômicos.
+    tx.create(stateRef(state), record);
+    if (!snap.exists) { const pending: PaymentConnection = { id: PROVIDER, establishmentId, provider: PROVIDER, status: "pending", providerAccountId: null, scopes: [], connectedAt: null, disconnectedAt: null, expiresAt: null, oauthGeneration, createdAt: now, updatedAt: now }; tx.create(ref, pending); }
+    else tx.update(ref, { oauthGeneration, updatedAt: now });
+  });
   const url = new URL(AUTH_URL);
   url.search = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, state, code_challenge: challenge(codeVerifier), code_challenge_method: "S256", platform_id: "mp", scope: "offline_access" }).toString();
   return { authorizationUrl: url.toString() };
