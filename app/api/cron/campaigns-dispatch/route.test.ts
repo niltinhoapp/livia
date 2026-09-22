@@ -96,11 +96,31 @@ describe("GET /api/cron/campaigns-dispatch", () => {
 
     const response = await GET(req("https://example.test/api/cron/campaigns-dispatch"));
     expect(response.status).toBe(401);
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dispatchCampaignBatch).not.toHaveBeenCalled();
+  });
+
+  it("com CRON_SECRET vazio, falha fechado sem executar operações", async () => {
+    process.env.CRON_SECRET = "";
+
+    const response = await GET(req("https://example.test/api/cron/campaigns-dispatch"));
+
+    expect(response.status).toBe(401);
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dispatchCampaignBatch).not.toHaveBeenCalled();
+  });
+
+  it("rejeita Bearer incorreto sem executar operações", async () => {
+    const response = await GET(req("https://example.test/api/cron/campaigns-dispatch", { authorization: "Bearer incorreto" }));
+
+    expect(response.status).toBe(401);
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dispatchCampaignBatch).not.toHaveBeenCalled();
   });
 
   it("kill switch fechado impede qualquer leitura ou dispatcher", async () => {
     process.env.CAMPAIGNS_SEND_ENABLED = "false";
-    const response = await GET(req("https://example.test/api/cron/campaigns-dispatch"));
+    const response = await GET(req("https://example.test/api/cron/campaigns-dispatch", { authorization: "Bearer s3cr3t" }));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ enabled: false, processed: 0 });
     expect(dbGet).not.toHaveBeenCalled();

@@ -42,6 +42,30 @@ describe("GET /api/cron/billing-expiry", () => {
     expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["ausente", undefined],
+    ["vazio", ""],
+  ])("com CRON_SECRET %s, falha fechado sem executar operações", async (_label, secret) => {
+    if (secret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = secret;
+
+    const response = await GET(req("https://example.test/api/cron/billing-expiry"));
+
+    expect(response.status).toBe(401);
+    expect(trialGet).not.toHaveBeenCalled();
+    expect(pastDueGet).not.toHaveBeenCalled();
+    expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
+  });
+
+  it("rejeita Bearer incorreto sem executar operações", async () => {
+    const response = await GET(req("https://example.test/api/cron/billing-expiry", { authorization: "Bearer incorreto" }));
+
+    expect(response.status).toBe(401);
+    expect(trialGet).not.toHaveBeenCalled();
+    expect(pastDueGet).not.toHaveBeenCalled();
+    expect(applyBillingStatusExpiry).not.toHaveBeenCalled();
+  });
+
   it("trial vencido HÁ MAIS de 24h (tolerância de regularização esgotada) dispara trial_expired", async () => {
     const now = Date.now();
     trialGet.mockResolvedValue({

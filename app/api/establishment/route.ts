@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveEstablishmentId } from "@/lib/auth/session";
 import { getEstablishment, upsertEstablishmentConfig, defaultBotConfig } from "@/lib/repo";
-import type { BotConfig, EstablishmentType, DailyOwnerSummaryConfig } from "@/types";
+import type { BotConfig, Establishment, EstablishmentType, DailyOwnerSummaryConfig } from "@/types";
 
 const TYPES: EstablishmentType[] = [
   "clinica",
@@ -18,12 +18,24 @@ const TYPES: EstablishmentType[] = [
   "outro",
 ];
 
+type ClientEstablishment = Omit<Establishment, "whatsapp"> & {
+  whatsapp?: Omit<NonNullable<Establishment["whatsapp"]>, "accessToken" | "pin" | "pinsByPhoneNumberId">;
+};
+
+export function sanitizeEstablishmentForClient(establishment: Establishment): ClientEstablishment {
+  const { whatsapp, ...publicEstablishment } = establishment;
+  if (!whatsapp) return publicEstablishment;
+
+  const { accessToken: _accessToken, pin: _pin, pinsByPhoneNumberId: _pinsByPhoneNumberId, ...publicWhatsapp } = whatsapp;
+  return { ...publicEstablishment, whatsapp: publicWhatsapp };
+}
+
 export async function GET(req: NextRequest) {
   const id = await resolveEstablishmentId(req);
   if (!id) return NextResponse.json({ error: "estabelecimento não identificado" }, { status: 401 });
 
   const est = await getEstablishment(id);
-  if (est) return NextResponse.json({ establishment: est, exists: true });
+  if (est) return NextResponse.json({ establishment: sanitizeEstablishmentForClient(est), exists: true });
   // Ainda não cadastrado: devolve um esqueleto com padrões pro painel editar.
   return NextResponse.json({
     establishment: { id, name: "", type: "outro", status: "active", bot: defaultBotConfig() },
@@ -73,5 +85,5 @@ export async function PUT(req: NextRequest) {
     bot,
     dailyOwnerSummary,
   });
-  return NextResponse.json({ establishment: est });
+  return NextResponse.json({ establishment: sanitizeEstablishmentForClient(est) });
 }

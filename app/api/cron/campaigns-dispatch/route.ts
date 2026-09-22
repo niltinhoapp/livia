@@ -24,12 +24,13 @@ export const dynamic = "force-dynamic";
 const DEFAULT_BATCH_SIZE = 20;
 
 export async function GET(req: NextRequest) {
-  if (!campaignsSendEnabled()) {
-    return NextResponse.json({ enabled: false, processed: 0, results: [], errors: [] });
-  }
   const secret = process.env.CRON_SECRET;
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "não autorizado" }, { status: 401 });
+  }
+
+  if (!campaignsSendEnabled()) {
+    return NextResponse.json({ enabled: false, processed: 0, results: [], errors: [] });
   }
 
   const targetEstablishmentId = req.nextUrl.searchParams.get("establishmentId");

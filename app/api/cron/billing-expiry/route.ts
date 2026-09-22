@@ -28,7 +28,7 @@ const GRACE_PERIOD_MS = 3 * 24 * 60 * 60 * 1000; // 3 dias de carência (past_du
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "não autorizado" }, { status: 401 });
   }
 
