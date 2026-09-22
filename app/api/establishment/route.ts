@@ -22,7 +22,7 @@ type ClientEstablishment = Omit<Establishment, "whatsapp"> & {
   whatsapp?: Omit<NonNullable<Establishment["whatsapp"]>, "accessToken" | "pin" | "pinsByPhoneNumberId">;
 };
 
-export function sanitizeEstablishmentForClient(establishment: Establishment): ClientEstablishment {
+function sanitizeEstablishmentForClient(establishment: Establishment): ClientEstablishment {
   const { whatsapp, ...publicEstablishment } = establishment;
   if (!whatsapp) return publicEstablishment;
 
