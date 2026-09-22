@@ -4,7 +4,7 @@
 // Fuso: guardamos startAt em epoch UTC. A config tem um offset fixo
 // (utcOffsetMinutes; Brasil = -180, sem horário de verão) usado pra converter
 // entre o "relógio de parede" local e o epoch. Simples e sem dependências.
-import { sub } from "@/lib/firebase/admin";
+import { db, sub } from "@/lib/firebase/admin";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import type {
   ScheduleConfig,
@@ -206,6 +206,79 @@ export async function createAppointment(
   };
   await ref.set(appt);
   return appt;
+}
+
+export class AppointmentConflictError extends Error {
+  constructor(public readonly reason: NotBookableReason) {
+    super(reason);
+    this.name = "AppointmentConflictError";
+  }
+}
+
+// A versão compartilhada serializa mutações da agenda de um estabelecimento.
+// Sem essa leitura/escrita comum, uma query transacional vazia não conflita com
+// um documento criado em paralelo que ela ainda não podia enxergar.
+function scheduleMutationRef(establishmentId: string) {
+  return sub(establishmentId, "meta").doc("scheduleMutation");
+}
+
+function conflictQuery(establishmentId: string, startAt: number) {
+  return sub(establishmentId, "appointments")
+    .where("startAt", ">=", startAt - 24 * 3600000)
+    .where("startAt", "<", startAt + 48 * 3600000)
+    .orderBy("startAt", "asc");
+}
+
+type AppointmentInput = Parameters<typeof createAppointment>[1];
+
+function newAppointment(establishmentId: string, id: string, data: AppointmentInput): Appointment {
+  return {
+    id, establishmentId, contactPhone: normalizePhone(data.contactPhone), contactName: data.contactName,
+    serviceName: data.serviceName, startAt: data.startAt, durationMin: data.durationMin,
+    status: "pending", source: data.source, note: data.note ?? null, createdAt: Date.now(), confirmedAt: null, reminderSentAt: null,
+  };
+}
+
+export async function bookAppointment(
+  establishmentId: string,
+  config: ScheduleConfig,
+  data: AppointmentInput,
+  now = Date.now(),
+): Promise<Appointment> {
+  const ref = sub(establishmentId, "appointments").doc();
+  const lockRef = scheduleMutationRef(establishmentId);
+  return db.runTransaction(async (tx) => {
+    const lock = await tx.get(lockRef);
+    const snap = await tx.get(conflictQuery(establishmentId, data.startAt));
+    const reason = slotBookability(config, data.startAt, data.durationMin, snap.docs.map((d) => d.data() as Appointment), now);
+    if (reason) throw new AppointmentConflictError(reason);
+    const appointment = newAppointment(establishmentId, ref.id, data);
+    tx.set(ref, appointment);
+    tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
+    return appointment;
+  });
+}
+
+export async function rescheduleBookedAppointment(
+  establishmentId: string,
+  config: ScheduleConfig,
+  id: string,
+  startAt: number,
+  durationMin: number,
+  now = Date.now(),
+): Promise<void> {
+  const ref = sub(establishmentId, "appointments").doc(id);
+  const lockRef = scheduleMutationRef(establishmentId);
+  await db.runTransaction(async (tx) => {
+    const lock = await tx.get(lockRef);
+    const current = await tx.get(ref);
+    if (!current.exists) throw new Error("appointment_not_found");
+    const snap = await tx.get(conflictQuery(establishmentId, startAt));
+    const reason = slotBookability(config, startAt, durationMin, snap.docs.map((d) => d.data() as Appointment), now, id);
+    if (reason) throw new AppointmentConflictError(reason);
+    tx.update(ref, { startAt, durationMin, status: "pending", confirmedAt: null, reminderSentAt: null });
+    tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
+  });
 }
 
 // Agendamentos num intervalo [from, to) (por startAt).
@@ -557,7 +630,7 @@ export async function hasScheduleConflict(
   );
 }
 
-export function setStatus(
+export async function setStatus(
   establishmentId: string,
   id: string,
   status: AppointmentStatus,
@@ -569,7 +642,18 @@ export function setStatus(
   // alternativa seria inventar/aproximar, que é exatamente o que não pode
   // acontecer.
   if (status === "cancelled") patch.cancelledAt = Date.now();
-  return updateAppointment(establishmentId, id, patch as Partial<Appointment>);
+  if (status !== "cancelled" && status !== "no_show") {
+    await updateAppointment(establishmentId, id, patch as Partial<Appointment>);
+    return;
+  }
+
+  const ref = sub(establishmentId, "appointments").doc(id);
+  const lockRef = scheduleMutationRef(establishmentId);
+  await db.runTransaction(async (tx) => {
+    const lock = await tx.get(lockRef);
+    tx.update(ref, patch);
+    tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
+  });
 }
 
 // ---- Consultas por intervalo de data (Passo 13 — painel diário) ----

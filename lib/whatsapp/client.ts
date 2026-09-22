@@ -17,6 +17,7 @@ export const MAX_INBOUND_AUDIO_BYTES = 16 * 1024 * 1024;
 export const MAX_INBOUND_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
 export const AUDIO_SEND_TIMEOUT_MS = 10_000;
+export const TEXT_SEND_TIMEOUT_MS = 10_000;
 export const MAX_OUTBOUND_AUDIO_BYTES = 8 * 1024 * 1024;
 export const MESSAGE_TEMPLATES_PAGE_LIMIT = 10;
 
@@ -336,7 +337,9 @@ export async function sendText(
 ): Promise<{ waMessageId?: string }> {
   const { phoneNumberId, accessToken } = resolveSendCredentials(wa, establishmentId);
   const to = normalizePhone(toPhone);
-  const res = await fetch(`${GRAPH}/${phoneNumberId}/messages`, {
+  let res: Response;
+  try {
+    res = await fetchWithTextSendTimeout(`${GRAPH}/${phoneNumberId}/messages`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -349,16 +352,36 @@ export async function sendText(
       type: "text",
       text: { preview_url: false, body: text },
     }),
-  });
+    });
+  } catch {
+    // Um POST que expirou pode ter alcançado a Meta; o webhook nunca faz retry
+    // automático desse erro para não duplicar a mensagem ao cliente.
+    throw new WhatsAppTextSendError("text_send_ambiguous");
+  }
 
   if (!res.ok) {
-    const detail = graphErrorDetail(await res.clone().text());
-    throw new Error(`WhatsApp sendText falhou: ${JSON.stringify({ status: res.status, ...detail })}`);
+    throw new WhatsAppTextSendError("text_send_failed", res.status);
   }
   const data = (await res.json().catch(() => ({}))) as {
     messages?: { id: string }[];
   };
   return { waMessageId: data.messages?.[0]?.id };
+}
+export class WhatsAppTextSendError extends Error {
+  constructor(public readonly code: "text_send_failed" | "text_send_ambiguous", public readonly status?: number) {
+    super(code);
+    this.name = "WhatsAppTextSendError";
+  }
+}
+
+async function fetchWithTextSendTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TEXT_SEND_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 export class WhatsAppAudioSendError extends Error { constructor(public readonly code: "audio_upload_failed" | "audio_upload_ambiguous" | "audio_send_failed" | "audio_send_ambiguous", public readonly safeTextFallback: boolean, public readonly status?: number) { super(code); this.name = "WhatsAppAudioSendError"; } }
 

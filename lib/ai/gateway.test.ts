@@ -187,3 +187,11 @@ describe("semântica de erro preservada", () => {
     }
   });
 });
+
+describe("limites de execução", () => {
+  it("define timeout explícito e desativa retries automáticos do provider", async () => {
+    const { AI_COMPLETION_TIMEOUT_MS, runCompletion } = await loadGateway("gpt-4o-mini");
+    await runCompletion({ purpose: "reception", messages: [], temperature: 0.4, maxOutputTokens: 500 });
+    expect(mocks.create.mock.calls[0]?.[1]).toEqual({ timeout: AI_COMPLETION_TIMEOUT_MS, maxRetries: 0 });
+  });
+});
