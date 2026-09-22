@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const resolveEstablishmentId = vi.fn();
 const getScheduleConfig = vi.fn();
 const listAppointments = vi.fn();
-const createAppointment = vi.fn();
+const bookAppointment = vi.fn();
 const computeSlots = vi.fn();
 const logError = vi.fn();
 
@@ -13,7 +13,8 @@ vi.mock("@/lib/auth/session", () => ({
 vi.mock("@/lib/scheduling", () => ({
   getScheduleConfig: (...a: unknown[]) => getScheduleConfig(...a),
   listAppointments: (...a: unknown[]) => listAppointments(...a),
-  createAppointment: (...a: unknown[]) => createAppointment(...a),
+  bookAppointment: (...a: unknown[]) => bookAppointment(...a),
+  AppointmentConflictError: class AppointmentConflictError extends Error {},
   computeSlots: (...a: unknown[]) => computeSlots(...a),
 }));
 vi.mock("@/lib/observability", () => ({
@@ -46,7 +47,7 @@ beforeEach(() => {
   resolveEstablishmentId.mockResolvedValue(EST_ID);
   getScheduleConfig.mockResolvedValue({ defaultDurationMin: 30 });
   listAppointments.mockResolvedValue([]);
-  createAppointment.mockResolvedValue({ id: "appt_1" });
+  bookAppointment.mockResolvedValue({ id: "appt_1" });
 });
 
 afterEach(() => {
@@ -61,8 +62,8 @@ describe("POST /api/appointments — delta OT-READY-02 (observabilidade)", () =>
     expect(logError).not.toHaveBeenCalled();
   });
 
-  it("falha em createAppointment agora retorna 500 com log estruturado, em vez de exceção não tratada", async () => {
-    createAppointment.mockRejectedValueOnce(new Error("Firestore indisponível"));
+  it("falha em bookAppointment agora retorna 500 com log estruturado, em vez de exceção não tratada", async () => {
+    bookAppointment.mockRejectedValueOnce(new Error("Firestore indisponível"));
     const res = await POST(request(validBody()));
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "internal_error" });
@@ -72,7 +73,7 @@ describe("POST /api/appointments — delta OT-READY-02 (observabilidade)", () =>
   });
 
   it("resposta de erro nao vaza mensagem bruta do erro interno", async () => {
-    createAppointment.mockRejectedValueOnce(new Error("detalhe interno sensível"));
+    bookAppointment.mockRejectedValueOnce(new Error("detalhe interno sensível"));
     const res = await POST(request(validBody()));
     const text = await res.text();
     expect(text).not.toContain("detalhe interno sensível");

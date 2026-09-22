@@ -5,7 +5,7 @@ vi.mock("@/lib/whatsapp/tokenCrypto", () => ({
   decryptToken: () => "stored-access-token",
 }));
 
-const { sendText } = await import("./client");
+const { sendText, WhatsAppTextSendError } = await import("./client");
 
 const wa: EstablishmentWhatsapp = {
   wabaId: "waba",
@@ -68,5 +68,23 @@ describe("sendText com credenciais de App Review", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/stored-phone-number-id/messages");
     expect(init.headers).toMatchObject({ Authorization: "Bearer stored-access-token" });
+  });
+});
+
+describe("sendText com timeout controlado", () => {
+  it("passa AbortSignal ao POST", async () => {
+    await sendText(wa, "est", "5511999999999", "oi");
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("classifica falha de transporte como ambígua e não tenta reenviar", async () => {
+    fetchMock.mockRejectedValueOnce(new DOMException("aborted", "AbortError"));
+    await expect(sendText(wa, "est", "5511999999999", "oi")).rejects.toMatchObject({ code: "text_send_ambiguous" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifica rejeição HTTP explicitamente", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("denied", { status: 400 }));
+    await expect(sendText(wa, "est", "5511999999999", "oi")).rejects.toEqual(new WhatsAppTextSendError("text_send_failed", 400));
   });
 });

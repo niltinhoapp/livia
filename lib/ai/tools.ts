@@ -14,12 +14,12 @@ import {
   listActiveCustomerAppointments,
   getAppointment,
   computeSlots,
-  createAppointment,
+  bookAppointment,
   localToEpoch,
-  assertBookable,
+  AppointmentConflictError,
   resolveServiceDuration,
   type NotBookableReason,
-  updateAppointment,
+  rescheduleBookedAppointment,
   setStatus,
   weekdayOf,
   isActive,
@@ -260,19 +260,19 @@ const createAppointmentTool: ToolDefinition = {
     // um horário oferecido continue reservável aqui.
     const duration = resolveServiceDuration(config, ctx.kb?.services, args.serviceName);
 
-    // Validação final com a MESMA regra da listagem, relendo a agenda (protege
-    // contra concorrência real entre a oferta e a escolha).
-    const reason = await assertBookable(ctx.est.id, config, args.startAt, duration);
-    if (reason) return { ok: false, error: NOT_BOOKABLE_MESSAGE[reason], reasonCode: reason };
-
-    await createAppointment(ctx.est.id, {
-      contactPhone: ctx.contactPhone,
-      contactName: typeof args.contactName === "string" ? args.contactName : ctx.contactName,
-      serviceName: args.serviceName,
-      startAt: args.startAt,
-      durationMin: duration,
-      source: "bot",
-    });
+    try {
+      await bookAppointment(ctx.est.id, config, {
+        contactPhone: ctx.contactPhone,
+        contactName: typeof args.contactName === "string" ? args.contactName : ctx.contactName,
+        serviceName: args.serviceName,
+        startAt: args.startAt,
+        durationMin: duration,
+        source: "bot",
+      });
+    } catch (error) {
+      if (error instanceof AppointmentConflictError) return { ok: false, error: NOT_BOOKABLE_MESSAGE[error.reason], reasonCode: error.reason };
+      throw error;
+    }
     return { ok: true, data: { when: formatWhen(args.startAt, ctx.offset), serviceName: args.serviceName } };
   },
 };
@@ -490,16 +490,12 @@ const rescheduleAppointment: ToolDefinition = {
     // modelo — e a MESMA regra de reservabilidade da listagem/criação, senão
     // uma remarcação poderia cair dentro do almoço ou fora do expediente.
     const duration = resolveServiceDuration(ctx.config!, ctx.kb?.services, appt.serviceName);
-    const reason = await assertBookable(ctx.est.id, ctx.config!, args.newStartAt, duration, Date.now(), appt.id);
-    if (reason) return { ok: false, error: NOT_BOOKABLE_MESSAGE[reason], reasonCode: reason };
-
-    await updateAppointment(ctx.est.id, appt.id, {
-      startAt: args.newStartAt,
-      durationMin: duration,
-      status: "pending",
-      confirmedAt: null,
-      reminderSentAt: null,
-    });
+    try {
+      await rescheduleBookedAppointment(ctx.est.id, ctx.config!, appt.id, args.newStartAt, duration);
+    } catch (error) {
+      if (error instanceof AppointmentConflictError) return { ok: false, error: NOT_BOOKABLE_MESSAGE[error.reason], reasonCode: error.reason };
+      throw error;
+    }
     return { ok: true, data: { when: formatWhen(args.newStartAt, ctx.offset), serviceName: appt.serviceName } };
   },
 };

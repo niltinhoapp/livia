@@ -7,7 +7,8 @@ import {
   getScheduleConfig,
   listAppointments,
   computeSlots,
-  createAppointment,
+  bookAppointment,
+  AppointmentConflictError,
 } from "@/lib/scheduling";
 
 export async function GET(req: NextRequest) {
@@ -45,21 +46,7 @@ export async function POST(req: NextRequest) {
     const config = await getScheduleConfig(id);
     const durationMin = b.durationMin ?? config.defaultDurationMin;
 
-    // Revalida no servidor que o horário ainda está livre (evita corrida).
-    const dayStart = b.startAt - (b.startAt % (24 * 3600000));
-    const existing = await listAppointments(id, dayStart - 24 * 3600000, dayStart + 48 * 3600000);
-    const clash = existing.some(
-      (a) =>
-        a.status !== "cancelled" &&
-        a.status !== "no_show" &&
-        b.startAt! < a.startAt + a.durationMin * 60000 &&
-        a.startAt < b.startAt! + durationMin * 60000,
-    );
-    if (clash) {
-      return NextResponse.json({ error: "horário indisponível" }, { status: 409 });
-    }
-
-    const appt = await createAppointment(id, {
+    const appt = await bookAppointment(id, config, {
       contactPhone: b.contactPhone,
       contactName: b.contactName ?? null,
       serviceName: b.serviceName,
@@ -70,6 +57,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ appointment: appt });
   } catch (err) {
+    if (err instanceof AppointmentConflictError) return NextResponse.json({ error: "horário indisponível" }, { status: 409 });
     // Antes desta OT, uma falha aqui virava um 500 genérico do Next.js sem
     // nenhum log nosso — agora fica visível e com contexto mínimo.
     logError({ category: "agenda", operation: "create_appointment", establishmentId: id, error: err });

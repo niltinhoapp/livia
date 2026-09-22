@@ -18,6 +18,11 @@ import { chatCompletionCompatibilityParams } from "@/lib/ai/openaiCompatibility"
 // semântica, agora sem duplicação.
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.LIVIA_MODEL ?? "gpt-4o-mini";
+// Mantém margem para persistência e resposta do webhook; o loop chama o
+// gateway mais de uma vez quando há ferramentas, portanto cada chamada precisa
+// terminar bem antes do limite do runtime. Sem retry automático: uma resposta
+// de ferramenta pode refletir uma mutação já concluída.
+export const AI_COMPLETION_TIMEOUT_MS = 20_000;
 
 // Hoje só identifica a origem da chamada. Não escolhe modelo nem altera
 // parâmetros — é a fundação para telemetria/roteamento futuros.
@@ -44,6 +49,6 @@ export async function runCompletion(
     temperature: request.temperature,
     ...chatCompletionCompatibilityParams(MODEL, request.maxOutputTokens),
     ...(request.tools && request.tools.length > 0 ? { tools: request.tools } : {}),
-  });
+  }, { timeout: AI_COMPLETION_TIMEOUT_MS, maxRetries: 0 });
   return completion.choices[0]?.message;
 }
