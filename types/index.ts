@@ -395,6 +395,14 @@ export interface Conversation {
   // atendimento humano e a continuidade numa próxima conversa.
   summary?: string;
   summaryUpdatedAt?: number;
+  // Lease distribuída do processamento automático. Não é estado de negócio:
+  // vence sozinha para que uma função interrompida nunca deixe a conversa
+  // travada. Só o dono do lease pode renová-la ou liberá-la.
+  aiProcessingLease?: {
+    leaseId: string;
+    acquiredAt: number;
+    expiresAt: number;
+  } | null;
 }
 
 // ---- Agenda ----

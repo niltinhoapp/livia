@@ -36,6 +36,9 @@ import {
   resolvePendingTask,
   getPendingTask,
   alreadyProcessed,
+  tryAcquireConversationProcessingLease,
+  renewConversationProcessingLease,
+  releaseConversationProcessingLease,
   applyCampaignDeliveryStatus,
   correlateCampaignReply,
 } from "@/lib/repo";
@@ -408,7 +411,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // Marca como lida (feedback visual pro cliente).
   if (inbound.waMessageId) await markAsRead(wa, est.id, inbound.waMessageId);
 
-  const { conversation, history } = await loadConversation(
+  let { conversation, history } = await loadConversation(
     est.id,
     contactPhone,
     contactName,
@@ -602,6 +605,26 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     return;
   }
 
+  // A mensagem já está persistida antes de disputar o lease: um segundo
+  // webhook da mesma conversa nunca perde histórico, só deixa o dono atual
+  // consumir o contexto agregado. O vencimento e a renovação são tratados no
+  // repositório para funcionar entre instâncias serverless.
+  const leaseId = await tryAcquireConversationProcessingLease(est.id, conversation.id);
+  if (!leaseId) {
+    logStage("conversation already being processed, message queued in history", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+    });
+    return;
+  }
+
+  const canContinueAutomation = () => renewConversationProcessingLease(est.id, conversation.id, leaseId);
+  try {
+    // Recarrega depois de adquirir o lease para que mensagens rápidas que
+    // chegaram antes da aquisição façam parte do mesmo contexto da IA.
+    ({ conversation, history } = await loadConversation(est.id, contactPhone, contactName));
+
   // Uma oferta de humano não interrompe a Lívia. Só um pedido explícito ou
   // uma confirmação inequívoca, enquanto a oferta ainda está pendente, pode
   // mudar `bot` para `handoff`.
@@ -618,7 +641,13 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
         type: "awaiting_human",
         waitingFor: "atendimento humano",
       });
-      await replyAndLog(wa, est, conversation.id, contactPhone, "Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.", shouldReplyWithVoice(inbound.kind, est), msg.id);
+      // Este é o único envio que nasce da própria transição para handoff.
+      // Ele pode atravessar "handoff" (a confirmação seria impossível de
+      // outra forma), mas nunca um humano que tenha assumido em seguida.
+      await replyAndLog(wa, est, conversation.id, contactPhone, "Certo! Vou chamar uma pessoa da equipe para te ajudar por aqui.", shouldReplyWithVoice(inbound.kind, est), msg.id, async () => {
+        const current = await getConversation(est.id, conversation.id);
+        return current?.status !== "human";
+      });
       logStage("customer accepted human offer, handoff started", {
         msgId: msg.id,
         estId: est.id,
@@ -679,7 +708,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // subindo para o catch do POST, sem virar "conta inativa").
   if (est.status !== "active") {
     if (!warnedServicePausedRecently(history, Date.now())) {
-      await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, shouldReplyWithVoice(inbound.kind, est), msg.id);
+      await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, shouldReplyWithVoice(inbound.kind, est), msg.id, canContinueAutomation);
     }
     return;
   }
@@ -698,7 +727,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     }
 
     await resolvePendingTask(est.id, conversation.id);
-    await replyAndLog(wa, est, conversation.id, contactPhone, "Entendido! Vou encerrar por aqui. Até mais!", shouldReplyWithVoice(inbound.kind, est), msg.id);
+    await replyAndLog(wa, est, conversation.id, contactPhone, "Entendido! Vou encerrar por aqui. Até mais!", shouldReplyWithVoice(inbound.kind, est), msg.id, canContinueAutomation);
     logStage("automated recipient detected, conversation closed", {
       msgId: msg.id,
       estId: est.id,
@@ -815,6 +844,10 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
   // assim "sim"/"ok" no meio de outra conversa não é confundido.
   const intent = confirmCancelReminderIntent(customerText);
   if (intent) {
+    if (!(await canContinueAutomation())) {
+      logStage("automation discarded after handoff before reminder action", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
+      return;
+    }
     const next = await findNextAppointment(est.id, normalizePhone(contactPhone));
     if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
       if (intent === "confirm") {
@@ -827,9 +860,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       // mesmo se uma etapa posterior (como o envio da resposta) falhar.
       await setConversationTask(est.id, conversation.id, null);
       if (intent === "confirm") {
-        await replyAndLog(wa, est, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊", shouldReplyWithVoice(inbound.kind, est), msg.id);
+        await replyAndLog(wa, est, conversation.id, contactPhone, "Perfeito, agendamento confirmado! Te esperamos. 😊", shouldReplyWithVoice(inbound.kind, est), msg.id, canContinueAutomation);
       } else {
-        await replyAndLog(wa, est, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!", shouldReplyWithVoice(inbound.kind, est), msg.id);
+        await replyAndLog(wa, est, conversation.id, contactPhone, "Tudo bem, seu horário foi cancelado. Quando quiser remarcar, é só chamar!", shouldReplyWithVoice(inbound.kind, est), msg.id, canContinueAutomation);
       }
       // Confirmar/cancelar o lembrete resolve qualquer pendência que essa
       // conversa tivesse (Passo 9) — tipicamente "cliente confirmar o
@@ -896,6 +929,7 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       intent: detectedIntent,
       hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
       orderAwaitingConfirmation,
+      canContinueAutomation,
     });
   } catch (err) {
     // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).
@@ -908,6 +942,14 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       errorType: err instanceof Error ? err.name : "unknown",
     });
     throw err;
+  }
+  if (brainResult.abortedForHandoff || !(await canContinueAutomation())) {
+    logStage("AI response discarded because human handoff won during processing", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+    });
+    return;
   }
   const {
     reply,
@@ -950,11 +992,11 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     ? "Posso chamar uma pessoa da equipe para te ajudar com isso?"
     : reply;
 
-  let sent: { waMessageId?: string };
+  let sent: { waMessageId?: string } | null;
   try {
     // A resposta textual já é definitiva; a entrega só escolhe o canal e
     // nunca volta a chamar IA, ferramentas ou mutações.
-    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est), msg.id);
+    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est), msg.id, canContinueAutomation);
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar
@@ -968,6 +1010,14 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
       errorType: err instanceof Error ? err.name : "unknown",
     });
     throw err;
+  }
+  if (!sent) {
+    logStage("AI response discarded because handoff won before delivery", {
+      msgId: msg.id,
+      estId: est.id,
+      conversationId: conversation.id,
+    });
+    return;
   }
   logStage("WhatsApp send ok", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
   await appendMessage(est.id, conversation.id, "bot", replyToSend, sent.waMessageId);
@@ -1053,6 +1103,9 @@ async function processMessage(value: WebhookValue, msg: MetaInboundMessage): Pro
     });
     if (summary) await setConversationSummary(est.id, conversation.id, summary);
   }
+  } finally {
+    await releaseConversationProcessingLease(est.id, conversation.id, leaseId);
+  }
 }
 
 async function replyAndLog(
@@ -1063,8 +1116,10 @@ async function replyAndLog(
   text: string,
   preferVoice: boolean,
   msgId?: string,
+  canSend?: () => Promise<boolean>,
 ): Promise<void> {
-  const sent = await deliverFinalReply(wa, establishment, conversationId, toPhone, text, preferVoice, msgId);
+  const sent = await deliverFinalReply(wa, establishment, conversationId, toPhone, text, preferVoice, msgId, canSend);
+  if (!sent) return;
   await appendMessage(establishment.id, conversationId, "bot", text, sent.waMessageId);
 }
 
@@ -1090,7 +1145,20 @@ async function deliverFinalReply(
   text: string,
   preferVoice: boolean,
   msgId?: string,
-): Promise<{ waMessageId?: string }> {
+  canSend?: () => Promise<boolean>,
+): Promise<{ waMessageId?: string } | null> {
+  // Esta é a última fronteira antes da comunicação externa. Mesmo caminhos
+  // determinísticos (lembrete, áudio com fallback) passam aqui; portanto um
+  // handoff que ocorreu durante o processamento não consegue vazar texto nem
+  // áudio para o cliente.
+  const allowed = canSend ?? (async () => {
+    const current = await getConversation(establishment.id, conversationId);
+    return current?.status !== "human" && current?.status !== "handoff";
+  });
+  if (!(await allowed())) {
+    logStage("automatic delivery discarded after handoff", { ...(msgId ? { msgId } : {}), estId: establishment.id, conversationId });
+    return null;
+  }
   if (!preferVoice) return sendText(wa, establishment.id, toPhone, text);
 
   const context = { ...(msgId ? { msgId } : {}), estId: establishment.id, conversationId };
@@ -1105,6 +1173,10 @@ async function deliverFinalReply(
       sizeBytes: speech.bytes.length,
     });
     logStage("WhatsApp audio upload/send started", context);
+    if (!(await allowed())) {
+      logStage("automatic audio delivery discarded after handoff", context);
+      return null;
+    }
     const sent = await sendAudio(wa, establishment.id, toPhone, speech.bytes, speech.mimeType);
     logStage("WhatsApp audio upload/send completed", context);
     return sent;
@@ -1125,6 +1197,10 @@ async function deliverFinalReply(
     }
 
     logStage("voice fallback to text", errorData);
+    if (!(await allowed())) {
+      logStage("automatic text fallback discarded after handoff", context);
+      return null;
+    }
     return sendText(wa, establishment.id, toPhone, text);
   }
 }

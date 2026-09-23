@@ -22,6 +22,9 @@ const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const tryAcquireConversationProcessingLease = vi.fn(async () => "lease-test");
+const renewConversationProcessingLease = vi.fn(async () => true);
+const releaseConversationProcessingLease = vi.fn(async () => undefined);
 const applyCampaignDeliveryStatus = vi.fn(async (..._a: unknown[]) => "not_found");
 const applyOrderNotificationDeliveryStatus = vi.fn(async (..._a: unknown[]) => "no_match");
 const correlateCampaignReply = vi.fn(async (..._a: unknown[]) => "no_match");
@@ -53,6 +56,9 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: vi.fn(),
   getPendingTask: vi.fn(async () => null),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  tryAcquireConversationProcessingLease,
+  renewConversationProcessingLease,
+  releaseConversationProcessingLease,
   applyCampaignDeliveryStatus: (...a: unknown[]) => applyCampaignDeliveryStatus(...a),
   correlateCampaignReply: (...a: unknown[]) => correlateCampaignReply(...a),
 }));

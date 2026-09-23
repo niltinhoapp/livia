@@ -27,6 +27,9 @@ const upsertCustomerProfile = vi.fn();
 const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const tryAcquireConversationProcessingLease = vi.fn(async (): Promise<string | null> => "lease-test");
+const renewConversationProcessingLease = vi.fn(async () => true);
+const releaseConversationProcessingLease = vi.fn(async () => undefined);
 const closeConversation = vi.fn();
 const tryCloseAutomatedConversation = vi.fn(async (..._a: unknown[]) => true);
 const reopenConversation = vi.fn(async (..._a: unknown[]) => undefined);
@@ -72,6 +75,9 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   getPendingTask: (...a: unknown[]) => getPendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  tryAcquireConversationProcessingLease,
+  renewConversationProcessingLease,
+  releaseConversationProcessingLease,
   applyCampaignDeliveryStatus: vi.fn(async () => "not_found"),
   correlateCampaignReply: vi.fn(async () => "no_match"),
 }));
@@ -201,6 +207,9 @@ function payloadMensagem(overrides: { type?: string; omitText?: boolean; id?: st
 
 beforeEach(() => {
   vi.clearAllMocks();
+  tryAcquireConversationProcessingLease.mockResolvedValue("lease-test");
+  renewConversationProcessingLease.mockResolvedValue(true);
+  releaseConversationProcessingLease.mockResolvedValue(undefined);
   alreadyProcessed.mockResolvedValue(false);
   tryCloseAutomatedConversation.mockResolvedValue(true);
   getPendingTask.mockResolvedValue(null);
@@ -235,6 +244,53 @@ beforeEach(() => {
     rescheduled: false,
     cancelled: false,
     toolCalls: [],
+  });
+});
+
+describe("OT pré-comercialização — serialização e handoff durante IA", () => {
+  it("duas mensagens simultâneas da mesma conversa não disparam duas respostas independentes", async () => {
+    let releaseThink!: () => void;
+    think.mockImplementationOnce(() => new Promise((resolve) => { releaseThink = () => resolve({
+      reply: "Resposta consolidada", handoff: false, booked: false, rescheduled: false, cancelled: false, toolCalls: [],
+    }); }));
+    tryAcquireConversationProcessingLease.mockResolvedValueOnce("lease-a").mockResolvedValueOnce(null);
+
+    const first = enviarPayload(payloadMensagem({ id: "wamid.serial.a", text: "quero às 15h" }));
+    await vi.waitFor(() => expect(think).toHaveBeenCalledTimes(1));
+    const second = enviarPayload(payloadMensagem({ id: "wamid.serial.b", text: "melhor às 16h" }));
+    await second;
+
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalled();
+    releaseThink();
+    await first;
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(releaseConversationProcessingLease).toHaveBeenCalledWith("est_odonto", PHONE, "lease-a");
+  });
+
+  it("falha no processamento libera a lease para que a conversa não fique travada", async () => {
+    think.mockRejectedValueOnce(new Error("falha controlada da IA"));
+    await enviarPayload(payloadMensagem({ id: "wamid.serial.failure", text: "oi" }));
+    expect(releaseConversationProcessingLease).toHaveBeenCalledWith("est_odonto", PHONE, "lease-test");
+  });
+
+  it.each(["human", "handoff"] as const)("%s assumido durante think descarta resposta e não persiste ação posterior", async (status) => {
+    let releaseThink!: () => void;
+    think.mockImplementationOnce(() => new Promise((resolve) => { releaseThink = () => resolve({
+      reply: "Resposta que não pode sair", handoff: false, booked: false, rescheduled: false, cancelled: false, toolCalls: [],
+    }); }));
+
+    const processing = enviarPayload(payloadMensagem({ id: `wamid.handoff.${status}`, text: "quero marcar" }));
+    await vi.waitFor(() => expect(think).toHaveBeenCalledTimes(1));
+    // Representa a leitura transacional autoritativa depois do clique do CRM.
+    getConversation.mockResolvedValue({ ...conversa("bot").conversation, status });
+    renewConversationProcessingLease.mockResolvedValue(false);
+    releaseThink();
+    await processing;
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(setConversationIntent).not.toHaveBeenCalled();
+    expect(setConversationTask).not.toHaveBeenCalled();
   });
 });
 

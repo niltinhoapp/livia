@@ -14,6 +14,9 @@ const findEstablishmentByPhoneNumberId = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const tryAcquireConversationProcessingLease = vi.fn(async () => "lease-test");
+const renewConversationProcessingLease = vi.fn(async () => true);
+const releaseConversationProcessingLease = vi.fn(async () => undefined);
 const correlateCampaignReply = vi.fn(async (..._a: unknown[]) => "no_match");
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
@@ -43,6 +46,9 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: vi.fn(),
   getPendingTask: vi.fn(async () => null),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  tryAcquireConversationProcessingLease,
+  renewConversationProcessingLease,
+  releaseConversationProcessingLease,
   applyCampaignDeliveryStatus: vi.fn(async () => "not_found"),
   correlateCampaignReply: (...a: unknown[]) => correlateCampaignReply(...a),
 }));

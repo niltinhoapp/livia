@@ -2199,6 +2199,71 @@ export async function alreadyProcessed(waMessageId: string): Promise<boolean> {
   }
 }
 
+// Serializa o processamento automático por conversa entre instâncias. O
+// vencimento é obrigatório: uma invocação interrompida não pode silenciar o
+// cliente para sempre. O dono renova o lease nas bordas externas (IA/tools/
+// envio), onde pode haver espera relevante.
+const CONVERSATION_PROCESSING_LEASE_MS = 2 * 60 * 1000;
+
+export async function tryAcquireConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  options: { now?: number; leaseId?: string; ttlMs?: number } = {},
+): Promise<string | null> {
+  const now = options.now ?? Date.now();
+  const leaseId = options.leaseId ?? randomUUID();
+  const ttlMs = options.ttlMs ?? CONVERSATION_PROCESSING_LEASE_MS;
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const active = (snap.data() as Conversation).aiProcessingLease;
+    if (active && active.expiresAt > now) return null;
+    tx.update(ref, { aiProcessingLease: { leaseId, acquiredAt: now, expiresAt: now + ttlMs } });
+    return leaseId;
+  });
+}
+
+// Renova somente o lease ainda pertencente a esta execução e, ao mesmo tempo,
+// faz a leitura autoritativa do handoff. Isso impede que um processamento que
+// já perdeu a conversa para um humano siga para nova IA/tool ou entrega.
+export async function renewConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+  options: { now?: number; ttlMs?: number } = {},
+): Promise<boolean> {
+  const now = options.now ?? Date.now();
+  const ttlMs = options.ttlMs ?? CONVERSATION_PROCESSING_LEASE_MS;
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const conversation = snap.data() as Conversation;
+    const active = conversation.aiProcessingLease;
+    if (!active || active.leaseId !== leaseId || active.expiresAt <= now) return false;
+    if (conversation.status === "human" || conversation.status === "handoff") return false;
+    tx.update(ref, { "aiProcessingLease.expiresAt": now + ttlMs });
+    return true;
+  });
+}
+
+export async function releaseConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+): Promise<void> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const active = (snap.data() as Conversation).aiProcessingLease;
+    if (active?.leaseId === leaseId) tx.update(ref, { aiProcessingLease: null });
+  });
+}
+
 // ALREADY_EXISTS do Firestore: código gRPC 6. Checa também a mensagem porque
 // o emulador/algumas versões do SDK só trazem o texto.
 function isAlreadyExists(err: unknown): boolean {

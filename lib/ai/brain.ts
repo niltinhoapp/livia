@@ -511,6 +511,7 @@ async function resolveCancellation(
     const resposta = readConfirmation(ultima.text);
     if (resposta === "no") return { kind: "aborted" };
     if (resposta === "yes") {
+      if (input.canContinueAutomation && !(await input.canContinueAutomation())) return null;
       const result = await runTool("cancel_appointment", { appointmentId: pendingId }, toolCtx);
       toolCalls.push({ name: "cancel_appointment", args: { appointmentId: pendingId } });
       if (!result.ok) return { kind: "failed", error: result.error ?? "não foi possível cancelar" };
@@ -520,6 +521,7 @@ async function resolveCancellation(
     // "unclear": mantém o alvo e pede confirmação inequívoca de novo.
   }
 
+  if (input.canContinueAutomation && !(await input.canContinueAutomation())) return null;
   const lookup = await runTool("get_customer_appointments", {}, toolCtx);
   toolCalls.push({ name: "get_customer_appointments", args: {} });
   if (!lookup.ok) return { kind: "failed", error: lookup.error ?? "não foi possível consultar a agenda" };
@@ -744,6 +746,7 @@ async function resolveTimeSelection(
     const initialArgs = selectedAppointmentId
       ? { newStartAt: startAt, appointmentId: selectedAppointmentId }
       : { newStartAt: startAt };
+    if (input.canContinueAutomation && !(await input.canContinueAutomation())) return null;
     let result = await runTool("reschedule_appointment", initialArgs, toolCtx);
     toolCalls.push({ name: "reschedule_appointment", args: initialArgs });
 
@@ -756,6 +759,7 @@ async function resolveTimeSelection(
     const alvo = pickRescheduleTargetFromAmbiguity(result, serviceName);
     if (alvo) {
       const args = { newStartAt: startAt, appointmentId: alvo };
+      if (input.canContinueAutomation && !(await input.canContinueAutomation())) return null;
       result = await runTool("reschedule_appointment", args, toolCtx);
       toolCalls.push({ name: "reschedule_appointment", args });
     }
@@ -781,6 +785,7 @@ async function resolveTimeSelection(
     return { kind: "free_needs_service", time: `${String(escolhido.hour).padStart(2, "0")}:${String(escolhido.minute).padStart(2, "0")}` };
   }
 
+  if (input.canContinueAutomation && !(await input.canContinueAutomation())) return null;
   const result = await runTool("create_appointment", { serviceName, startAt }, toolCtx);
   toolCalls.push({ name: "create_appointment", args: { serviceName, startAt } });
 
@@ -858,6 +863,10 @@ export interface BrainInput {
   // O webhook obtém este fato do pedido persistido depois de registrar a
   // mensagem atual. Sem ele, uma tool call não tem autoridade para fechar.
   orderAwaitingConfirmation?: { orderId: string; version: number } | null;
+  // Guarda autoritativa fornecida pelo webhook. É consultada antes de cada
+  // chamada externa e tool; se um humano assumir, o loop termina sem nova
+  // comunicação ou mutação.
+  canContinueAutomation?: () => Promise<boolean>;
 }
 
 export interface BrainResult {
@@ -899,6 +908,8 @@ export interface BrainResult {
   // já nomeou outro serviço (OT-02G). Resolvido por código
   // (lib/ai/serviceSelection.ts).
   statedService: string | null;
+  // O webhook perdeu a autorização para automação durante este turno.
+  abortedForHandoff?: boolean;
 }
 
 // Uma alteração de agenda é um fato consumado do turno. O modelo pode seguir
@@ -1090,6 +1101,20 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
   const toolCalls: ToolCallRecord[] = [];
+  const canContinueAutomation = async () => !input.canContinueAutomation || input.canContinueAutomation();
+  const abortForHandoff = (): BrainResult => ({
+    reply: "",
+    handoff: false,
+    booked,
+    rescheduled,
+    cancelled,
+    agendaMutationCompleted: Boolean(agendaMutation),
+    toolCalls,
+    pendingCancelAppointmentId: null,
+    statedDate,
+    statedService,
+    abortedForHandoff: true,
+  });
 
   // ---- Consulta OBRIGATÓRIA à fonte de verdade ----
   // Quando a mensagem é deterministicamente uma pergunta sobre um
@@ -1100,6 +1125,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // momento" com um Appointment real existindo na agenda.
   let appointmentLookup: Awaited<ReturnType<typeof runTool>> | null = null;
   if (intent.type === "check_appointment") {
+    if (!(await canContinueAutomation())) return abortForHandoff();
     appointmentLookup = await runTool("get_customer_appointments", {}, toolCtx);
     toolCalls.push({ name: "get_customer_appointments", args: {} });
   }
@@ -1116,6 +1142,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Agora o backend resolve o horário, valida e TENTA RESERVAR antes de
   // gerar qualquer texto. "Confirmado", "ocupado" e "indisponível" passam a
   // ser sempre resultado real de execução.
+  if (!(await canContinueAutomation())) return abortForHandoff();
   const bookingOutcome = booking ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
   if (bookingOutcome?.kind === "created") {
     booked = true;
@@ -1129,6 +1156,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   }
 
   // Cancelamento: alvo resolvido e confirmação exigida pelo backend.
+  if (!(await canContinueAutomation())) return abortForHandoff();
   const cancelOutcome = booking ? await resolveCancellation(input, toolCtx, toolCalls) : null;
   if (cancelOutcome?.kind === "cancelled") {
     cancelled = true;
@@ -1155,6 +1183,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
+    if (!(await canContinueAutomation())) return abortForHandoff();
     const msg = await runCompletion({
       purpose: "reception",
       messages,
@@ -1167,6 +1196,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (msg.tool_calls?.length) {
       messages.push(msg as OpenAI.Chat.ChatCompletionMessageParam);
       for (const tc of msg.tool_calls) {
+        if (!(await canContinueAutomation())) return abortForHandoff();
         const name = tc.function.name as ToolName;
         let args: Record<string, unknown> = {};
         try {
