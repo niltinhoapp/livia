@@ -4,8 +4,10 @@
 // GET /api/dashboard) sem criar nenhuma fonte de dados nova.
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, MessageCircle } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { ArrowRight, MessageCircle, X } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
 import { StatCard } from "@/components/ui/StatCard";
 import { StatusBadge, type StatusTone } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState } from "@/components/ui/States";
@@ -33,7 +35,13 @@ export default function CrmPage() {
   const [funnel, setFunnel] = useState<FunnelResult | null>(null);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
+  // Estados do Modal de Detalhes
+  const [selectedOpp, setSelectedOpp] = useState<Opportunity | null>(null);
+  const [details, setDetails] = useState<{ summary?: string; status?: string } | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [acting, setActing] = useState(false);
+
+  const loadData = () => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const from = startOfDay.getTime();
@@ -48,9 +56,46 @@ export default function CrmPage() {
         setFunnel((metrics as DashboardMetrics | null)?.funnel ?? null);
       })
       .catch(() => setError(true));
+  };
+
+  useEffect(() => {
+    loadData();
   }, []);
 
-  if (error) return <ErrorState onRetry={() => window.location.reload()} />;
+  function handleOpenDetails(opp: Opportunity) {
+    setSelectedOpp(opp);
+    setDetails(null);
+    setLoadingDetails(true);
+    fetch(`/api/conversations/${opp.conversationId}`)
+      .then((r) => r.json())
+      .then((j) => {
+        setDetails({
+          summary: j.conversation?.summary,
+          status: j.conversation?.status,
+        });
+      })
+      .finally(() => setLoadingDetails(false));
+  }
+
+  async function handleTakeOver() {
+    if (!selectedOpp) return;
+    setActing(true);
+    try {
+      const res = await fetch(`/api/conversations/${selectedOpp.conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assume" }),
+      });
+      if (res.ok) {
+        setSelectedOpp(null);
+        loadData(); // Atualiza o pipeline para o card sumir ou mudar
+      }
+    } finally {
+      setActing(false);
+    }
+  }
+
+  if (error) return <ErrorState onRetry={loadData} />;
 
   if (opportunities === null) {
     return (
@@ -108,47 +153,110 @@ export default function CrmPage() {
         />
       </div>
 
-      {/* ---- Lista de oportunidades ---- */}
-      <Card>
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <CardTitle>Oportunidades</CardTitle>
-            <p className="-mt-2 text-xs text-ink-500">Cada item abaixo tem evidência concreta — nada inventado pela IA.</p>
-          </div>
-        </div>
+      {/* ---- Pipeline Visual (Kanban) ---- */}
+      <div className="mb-4">
+        <h2 className="text-lg font-bold text-ink-900">Pipeline</h2>
+        <p className="text-sm text-ink-500">Acompanhe as oportunidades organizadas por estágio.</p>
+      </div>
 
-        {opportunities.length === 0 ? (
-          <EmptyState title="Tudo limpo" description="Nenhuma oportunidade aberta no momento. A Livia monitora automaticamente." />
-        ) : (
-          <div className="divide-y divide-line">
-            {opportunities.map((opp, idx) => {
-              const meta = OPPORTUNITY_META[opp.type];
-              return (
-                <div key={`${opp.conversationId}-${opp.type}-${idx}`} className="flex items-center justify-between gap-3 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold text-ink-900">{opp.contactName ?? opp.contactPhone}</p>
-                      <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
-                    </div>
-                    <p className="mt-0.5 text-xs text-ink-500">{opp.label}</p>
-                    <p className="mt-0.5 text-[10px] text-ink-400">
-                      {new Date(opp.detectedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                    </p>
+      <div className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 lg:grid lg:grid-cols-3 lg:overflow-visible lg:pb-0">
+        <KanbanColumn
+          title="Precisa de Atenção"
+          description="Ação imediata necessária"
+          tone="danger"
+          items={opportunities.filter((o) => o.type === "handoff_waiting" || o.type === "complaint_unresolved")}
+          onCardClick={handleOpenDetails}
+        />
+        <KanbanColumn
+          title="Em Negociação"
+          description="Agendamentos pausados"
+          tone="warning"
+          items={opportunities.filter((o) => o.type === "appointment_incomplete" || o.type === "awaiting_confirmation")}
+          onCardClick={handleOpenDetails}
+        />
+        <KanbanColumn
+          title="Resgate"
+          description="Potencial venda/recuperação"
+          tone="info"
+          items={opportunities.filter((o) => o.type === "price_inquiry_no_booking" || o.type === "cancelled_no_rebooking")}
+          onCardClick={handleOpenDetails}
+        />
+      </div>
+
+      {/* MODAL DE DETALHES RÁPIDOS */}
+      <Dialog.Root open={!!selectedOpp} onOpenChange={(open) => !open && setSelectedOpp(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-ink-900/40 backdrop-blur-[1px]" />
+          <Dialog.Content className="fixed right-0 top-0 z-50 flex h-[100dvh] w-full max-w-sm flex-col bg-white shadow-xl focus:outline-none sm:w-[400px]">
+            {selectedOpp && (
+              <>
+                <div className="flex items-center justify-between border-b border-line px-5 py-4">
+                  <div>
+                    <Dialog.Title className="text-base font-semibold text-ink-900">
+                      {selectedOpp.contactName ?? selectedOpp.contactPhone}
+                    </Dialog.Title>
+                    <Dialog.Description className="mt-0.5 text-xs text-ink-500">
+                      Detectado às {new Date(selectedOpp.detectedAt).toLocaleString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    </Dialog.Description>
                   </div>
-                  <Link
-                    href={`/painel/conversas?conversa=${encodeURIComponent(opp.conversationId)}`}
-                    className="flex shrink-0 items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                  >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    Ver conversa
-                    <ArrowRight className="h-3 w-3" />
-                  </Link>
+                  <button onClick={() => setSelectedOpp(null)} className="rounded-control p-2 text-ink-400 hover:bg-ink-50 hover:text-ink-600">
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+                
+                <div className="flex-1 overflow-y-auto p-5">
+                  <div className="mb-6">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-400">Motivo</p>
+                    <StatusBadge tone={OPPORTUNITY_META[selectedOpp.type].tone}>
+                      {OPPORTUNITY_META[selectedOpp.type].label}
+                    </StatusBadge>
+                    <p className="mt-2 text-sm text-ink-700">{selectedOpp.label}</p>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-400">Resumo da IA</p>
+                    {loadingDetails ? (
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-5/6" />
+                        <Skeleton className="h-4 w-4/6" />
+                      </div>
+                    ) : (
+                      <div className="rounded-lg bg-surface-muted p-3 text-sm text-ink-800">
+                        {details?.summary ? (
+                          <p className="whitespace-pre-wrap">{details.summary}</p>
+                        ) : (
+                          <p className="italic text-ink-400">Nenhum resumo disponível ainda.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t border-line bg-surface-muted/30 p-5">
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      variant="primary"
+                      onClick={handleTakeOver}
+                      disabled={acting || loadingDetails || details?.status === "human"}
+                    >
+                      {acting ? "Assumindo..." : details?.status === "human" ? "Já em atendimento" : "Assumir Conversa"}
+                    </Button>
+                    <Link
+                      href={`/painel/conversas?conversa=${encodeURIComponent(selectedOpp.conversationId)}`}
+                      className="block"
+                    >
+                      <Button variant="secondary" className="w-full">
+                        Ir para chat completo
+                      </Button>
+                    </Link>
+                  </div>
+                </div>
+              </>
+            )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -158,6 +266,77 @@ function FunnelStep({ label, value, tone }: { label: string; value: number; tone
     <div className="rounded-card border border-line bg-surface-muted/60 px-3 py-3 text-center">
       <p className={`text-2xl font-bold ${tone ?? "text-ink-900"}`}>{value}</p>
       <p className="mt-0.5 text-[11px] font-medium text-ink-500">{label}</p>
+    </div>
+  );
+}
+
+function KanbanColumn({
+  title,
+  description,
+  tone,
+  items,
+  onCardClick,
+}: {
+  title: string;
+  description: string;
+  tone: StatusTone;
+  items: Opportunity[];
+  onCardClick: (opp: Opportunity) => void;
+}) {
+  return (
+    <div className="flex min-w-[280px] max-w-[340px] shrink-0 snap-center flex-col rounded-xl bg-surface-muted/60 p-3 lg:max-w-none">
+      <div className="mb-3 flex items-center justify-between px-1">
+        <div>
+          <h3 className="text-sm font-bold text-ink-900">{title}</h3>
+          <p className="text-[11px] text-ink-500">{description}</p>
+        </div>
+        <StatusBadge tone={tone}>{items.length}</StatusBadge>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-3">
+        {items.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-line p-6 text-center">
+            <p className="text-xs font-medium text-ink-400">Nenhuma</p>
+          </div>
+        ) : (
+          items.map((opp, idx) => {
+            const meta = OPPORTUNITY_META[opp.type];
+            return (
+              <div
+                key={`${opp.conversationId}-${opp.type}-${idx}`}
+                onClick={() => onCardClick(opp)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && onCardClick(opp)}
+                className="group relative flex cursor-pointer flex-col gap-2 rounded-card border border-line bg-white p-3 shadow-sm transition-shadow hover:shadow-e2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-bold text-ink-900 leading-tight">
+                    {opp.contactName ?? opp.contactPhone}
+                  </p>
+                  <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+                </div>
+                <p className="text-xs text-ink-600 line-clamp-2">{opp.label}</p>
+                
+                <div className="mt-1 flex items-center justify-between border-t border-line/50 pt-2">
+                  <p className="text-[10px] font-medium text-ink-400">
+                    {new Date(opp.detectedAt).toLocaleString("pt-BR", {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </p>
+                  <span className="flex shrink-0 items-center gap-1 text-[11px] font-bold text-primary group-hover:underline">
+                    Atender
+                    <ArrowRight className="h-3 w-3" />
+                  </span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
