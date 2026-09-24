@@ -25,7 +25,7 @@ function getEstablishmentId(): string | null {
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { phone: string } }
+  { params }: { params: Promise<{ phone: string }> }
 ) {
   if (!authenticate(req)) {
     return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
@@ -36,7 +36,7 @@ export async function PATCH(
     return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
   }
 
-  const rawPhone = params.phone;
+  const { phone: rawPhone } = await params;
   const normalizedPhone = normalizePhone(rawPhone);
   if (!normalizedPhone) {
     return NextResponse.json({ error: "INVALID_PHONE" }, { status: 400 });

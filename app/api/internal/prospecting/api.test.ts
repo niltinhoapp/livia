@@ -104,14 +104,14 @@ describe("Prospecção Assistida API", () => {
   it("11. PATCH confirm_manual_send → 200 e 12. PATCH repetido → idempotente", async () => {
     await POST(createReq("POST", "/", validPayload, `Bearer ${SECRET}`));
     const req = createReq("PATCH", "/", { action: "confirm_manual_send" }, `Bearer ${SECRET}`);
-    const res = await PATCH(req, { params: { phone: validPayload.phone } });
+    const res = await PATCH(req, { params: Promise.resolve({ phone: validPayload.phone }) });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.session.status).toBe("WAITING_REPLY");
     expect(data.session.manualSendConfirmedAt).toBeDefined();
 
     const req2 = createReq("PATCH", "/", { action: "confirm_manual_send" }, `Bearer ${SECRET}`);
-    const res2 = await PATCH(req2, { params: { phone: validPayload.phone } });
+    const res2 = await PATCH(req2, { params: Promise.resolve({ phone: validPayload.phone }) });
     expect(res2.status).toBe(200);
     expect((await res2.json()).session.status).toBe("WAITING_REPLY");
   });
@@ -123,7 +123,7 @@ describe("Prospecção Assistida API", () => {
     
     // Agora tenta confirmar
     const req = createReq("PATCH", "/", { action: "confirm_manual_send" }, `Bearer ${SECRET}`);
-    const res = await PATCH(req, { params: { phone: validPayload.phone } });
+    const res = await PATCH(req, { params: Promise.resolve({ phone: validPayload.phone }) });
     const session = (await res.json()).session;
     expect(session.status).toBe("LIVIA_ACTIVE"); // não regrediu
     expect(session.manualSendConfirmedAt).toBeTruthy();
@@ -135,7 +135,7 @@ describe("Prospecção Assistida API", () => {
   it("15. PATCH abort válido → CLOSED", async () => {
     await POST(createReq("POST", "/", validPayload, `Bearer ${SECRET}`));
     const req = createReq("PATCH", "/", { action: "abort" }, `Bearer ${SECRET}`);
-    const res = await PATCH(req, { params: { phone: validPayload.phone } });
+    const res = await PATCH(req, { params: Promise.resolve({ phone: validPayload.phone }) });
     expect(res.status).toBe(200);
     expect((await res.json()).session.status).toBe("CLOSED");
   });
@@ -145,7 +145,7 @@ describe("Prospecção Assistida API", () => {
     await transitionProspectingSession(EST_ID, validPayload.phone, { action: "opt_out" });
 
     const req = createReq("PATCH", "/", { action: "abort" }, `Bearer ${SECRET}`);
-    const res = await PATCH(req, { params: { phone: validPayload.phone } });
+    const res = await PATCH(req, { params: Promise.resolve({ phone: validPayload.phone }) });
     expect(res.status).toBe(409); // Tentativa de abort em terminal state -> invalid_transition
     
     const getRes = await GET(createReq("GET", "/?leadId=lead-1", null, `Bearer ${SECRET}`));

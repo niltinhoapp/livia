@@ -42,9 +42,9 @@ const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
 const tryAcquireConversationProcessingLease = vi.fn(async (): Promise<string | null> => "lease-test");
-const renewConversationProcessingLease = vi.fn(async () => true);
-const releaseConversationProcessingLease = vi.fn(async () => undefined);
-const releaseConversationProcessingLeaseIfDrained = vi.fn(async () => true);
+const renewConversationProcessingLease = vi.fn(async (..._args: unknown[]) => true);
+const releaseConversationProcessingLease = vi.fn(async (..._args: unknown[]) => undefined);
+const releaseConversationProcessingLeaseIfDrained = vi.fn(async (..._args: unknown[]) => true);
 let leaseHeld = false;
 let inboundJobs: WhatsAppInboundJob[] = [];
 const enqueueWhatsAppInboundJob = vi.fn(async (input: { waMessageId: string; establishmentId: string; conversationId: string; value: Record<string, unknown>; message: Record<string, unknown> }) => {
@@ -273,7 +273,8 @@ beforeEach(() => {
   });
   renewConversationProcessingLease.mockResolvedValue(true);
   releaseConversationProcessingLease.mockImplementation(async () => { leaseHeld = false; });
-  releaseConversationProcessingLeaseIfDrained.mockImplementation(async (_establishmentId: string, conversationId: string) => {
+  releaseConversationProcessingLeaseIfDrained.mockImplementation(async (...args: unknown[]) => {
+    const conversationId = args[1] as string;
     if (inboundJobs.some((job) => job.conversationId === conversationId)) return false;
     leaseHeld = false;
     return true;
