@@ -68,11 +68,25 @@ describe("parseInboundMessage", () => {
     })).toMatchObject({ kind: "interactive", text: "Confirmar" });
   });
 
-  it("normaliza payload desconhecido e campos ausentes com marcador estável", () => {
-    expect(parseInboundMessage({ type: "future_type" })).toEqual({
-      waMessageId: undefined, from: "", kind: "unsupported", text: "[Mensagem não suportada]",
+  it("preserva os metadados técnicos mínimos de payload unsupported", () => {
+    expect(parseInboundMessage({
+      ...base,
+      type: "future_type",
+      unsupported: { type: "unsupported_message" },
+      errors: [{ code: 131051 }],
+    })).toEqual({
+      waMessageId: "wamid.1", from: base.from, kind: "unsupported", text: "[Mensagem não suportada]",
+      metaType: "future_type", unsupportedType: "unsupported_message", metaErrorCode: 131051,
     });
-    expect(parseInboundMessage({ ...base, type: "text" })).toMatchObject({ kind: "unsupported", text: "[Mensagem não suportada]" });
+  });
+
+  it("normaliza payload unsupported sem metadados opcionais", () => {
+    expect(parseInboundMessage({ type: "future_type" })).toEqual({
+      waMessageId: undefined, from: "", kind: "unsupported", text: "[Mensagem não suportada]", metaType: "future_type",
+    });
+    expect(parseInboundMessage({ ...base, type: "text" })).toEqual({
+      waMessageId: "wamid.1", from: base.from, kind: "unsupported", text: "[Mensagem não suportada]", metaType: "text",
+    });
   });
 
   it("nunca expõe URL presente acidentalmente no payload", () => {

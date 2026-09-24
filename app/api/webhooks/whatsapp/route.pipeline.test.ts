@@ -1099,7 +1099,17 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
   });
 
   it("unsupported continua reconhecido sem download ou interpretação", async () => {
-    await enviarPayload(payloadMensagem({ type: "unsupported", omitText: true, id: "wamid.unsupported" }));
+    const payload = payloadMensagem({ type: "unsupported", omitText: true, id: "wamid.unsupported" });
+    const msg = payload.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    msg.unsupported = { type: "unsupported_message", rawPayload: "não persistir" };
+    msg.errors = [{ code: 131051, detail: "não persistir" }];
+
+    await enviarPayload(payload);
+
+    expect(appendMessage).toHaveBeenCalledWith("est_odonto", PHONE, "customer", "[Mensagem não suportada]", "wamid.unsupported", expect.objectContaining({
+      kind: "unsupported", metaType: "unsupported", unsupportedType: "unsupported_message", metaErrorCode: 131051,
+    }));
+    expect(JSON.stringify(appendMessage.mock.calls)).not.toContain("não persistir");
     expect(downloadWhatsAppMedia).not.toHaveBeenCalled();
     expect(storeConversationAttachment).not.toHaveBeenCalled();
     expect(think).not.toHaveBeenCalled();

@@ -1937,7 +1937,7 @@ export async function appendMessage(
   role: MessageRole,
   text: string,
   waMessageId?: string,
-  metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "attachment" | "transcription">,
+  metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "attachment" | "transcription" | "metaType" | "unsupportedType" | "metaErrorCode">,
 ): Promise<{ id: string; at: number }> {
   const convRef = sub(establishmentId, "conversations").doc(conversationId);
   // Para inbound, o wamid é também a chave persistente. Um job recuperado
@@ -1963,6 +1963,11 @@ export async function appendMessage(
     ...(metadata?.media ? { media: metadata.media } : {}),
     ...(metadata?.attachment ? { attachment: metadata.attachment } : {}),
     ...(metadata?.transcription ? { transcription: metadata.transcription } : {}),
+    ...(metadata?.metaType ? { metaType: metadata.metaType } : {}),
+    ...(metadata?.unsupportedType ? { unsupportedType: metadata.unsupportedType } : {}),
+    ...(typeof metadata?.metaErrorCode === "number" || typeof metadata?.metaErrorCode === "string"
+      ? { metaErrorCode: metadata.metaErrorCode }
+      : {}),
   };
   await msgRef.set(msg);
   await convRef.update({
