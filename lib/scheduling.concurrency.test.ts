@@ -31,6 +31,16 @@ describe("ocupação transacional da agenda", () => {
     expect(results.find((result) => result.status === "rejected")?.reason).toBeInstanceOf(AppointmentConflictError);
   });
 
+  it("replay do mesmo inbound cria exatamente um agendamento", async () => {
+    const operationId = "waop_same_inbound";
+    const [first, replay] = await Promise.all([
+      bookAppointment("est-a", config, { ...input(), operationId }),
+      bookAppointment("est-a", config, { ...input(), operationId }),
+    ]);
+    expect(replay.id).toBe(first.id);
+    expect(await listAppointments("est-a", START - 1, START + 1)).toHaveLength(1);
+  });
+
   it("detecta horários parcialmente sobrepostos", async () => {
     await bookAppointment("est-a", config, input());
     await expect(bookAppointment("est-a", config, input(START + 30 * 60000, 60))).rejects.toMatchObject({ reason: "overlap" });

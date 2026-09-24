@@ -3,7 +3,7 @@
 // para consultar horários livres e criar agendamentos sozinha, durante a
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import type OpenAI from "openai";
-import type { Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
+import type { AutomationFence, Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
@@ -11,6 +11,7 @@ import { parseServiceSelection } from "@/lib/ai/serviceSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
+import type { ProspectingContext } from "@/types";
 import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
@@ -18,6 +19,7 @@ import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
+import { operationSemanticKey, stableToolOperationId } from "@/lib/ai/operationId";
 import { composeOrderConfirmationRequest, composeOrderReply, type OrderSummaryForReply } from "@/lib/ai/orderReply";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
@@ -177,6 +179,7 @@ function buildSystemPrompt(
   task: ConversationTask | null,
   intent: Intent,
   appointmentLookup: { ok: boolean; data?: unknown } | null,
+  prospectingContext?: import("@/types").ProspectingContext,
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
@@ -207,6 +210,38 @@ function buildSystemPrompt(
   // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
   // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
   rules.push(...knowledgeGuidanceToText(kb));
+  if (prospectingContext) {
+    if (prospectingContext.status === "PREPARED" || prospectingContext.status === "WAITING_REPLY" || prospectingContext.status === "LIVIA_ACTIVE") {
+      rules.push(
+        "--- MODO DEMONSTRAÇÃO ATIVO ---",
+        "Você NÃO é apenas a recepcionista. Você está realizando uma demonstração em tempo real para este estabelecimento.",
+        "Uma mensagem inicial simulando um cliente foi enviada manualmente para eles. A mensagem foi: \"" + prospectingContext.initialManualMessage + "\"",
+        "O objetivo desta simulação é avaliar como eles respondem e revelar que você é a Lívia, a recepcionista com IA da ConectWeb.",
+        prospectingContext.preRevealReplyCount >= 1
+          ? "Atenção LIMITE ATINGIDO: Você JÁ enviou uma interação de simulação antes. O limite máximo de interações pré-revelação (1) foi atingido. Você NÃO PODE MAIS SIMULAR NADA NESTE TURNO. Você é OBRIGADA a revelar-se IMEDIATAMENTE chamando a ferramenta update_prospecting_status com status REVEALED."
+          : "Regra 1: Avalie a primeira resposta útil do estabelecimento. Se for útil (ex: informou horários, negou disponibilidade, fez perguntas para continuar o atendimento), REVELE IMEDIATAMENTE chamando a ferramenta update_prospecting_status com status REVEALED.",
+        prospectingContext.preRevealReplyCount >= 1
+          ? "Você DEVE OBRIGATORIAMENTE mudar de assunto para a prospecção AGORA MESMO usando update_prospecting_status."
+          : "Regra 2: Se a primeira resposta for apenas uma saudação genérica (ex: 'Olá', 'Bom dia', 'Pois não?'), envie no máximo UMA interação curta simulando o cliente (relacionada à mensagem inicial). Na resposta seguinte, REVELE IMEDIATAMENTE com a ferramenta update_prospecting_status.",
+        "Regra 3: ANTES de revelar, NUNCA invente nome falso, não invente dados pessoais, não marque nada. Se pedirem dados pessoais ou confirmação para prosseguir, REVELE imediatamente em vez de inventar.",
+        "Regra 4: A revelação deve ser natural e transparente. Identifique-se claramente como Lívia, agente de IA da ConectWeb, e explique que o contato era uma demonstração. NÃO use tom acusatório. NÃO diga que foi uma auditoria. Reconheça se responderam rápido ou bem.",
+        "IMPORTANTE: Você SÓ muda de assunto para a venda/prospecção APÓS usar a ferramenta update_prospecting_status com REVEALED."
+      );
+    } else if (prospectingContext.status === "REVEALED" || prospectingContext.status === "INTERESTED") {
+      rules.push(
+        "--- MODO PROSPECÇÃO COMERCIAL ---",
+        "A fase de simulação acabou. Você já se revelou como a Lívia, recepcionista com IA da ConectWeb.",
+        "NÃO finja ser cliente e NUNCA retorne à simulação.",
+        "Agora você está em uma conversa COMERCIAL com o estabelecimento. Explique o que é a Lívia, seus benefícios, como ela automatiza o WhatsApp e ajuda na retenção, baseado APENAS nos seus conhecimentos.",
+        "NÃO invente preços, descontos, integrações inexistentes ou promessas de vendas.",
+        "Se a pessoa demonstrar interesse claro, use a ferramenta update_prospecting_status com INTERESTED e continue respondendo dúvidas permitidas.",
+        "Se a pessoa disser que não tem interesse ou agradecer encerrando, responda educadamente, despeça-se e use update_prospecting_status com NOT_INTERESTED.",
+        "Se a pessoa pedir expressamente para parar de mandar mensagens, use update_prospecting_status com OPTED_OUT.",
+        "Se houver pedido explícito de humano, negociação de preço, ou dúvidas complexas comerciais que você não saiba responder, use request_human_handoff."
+      );
+    }
+  }
+
     if (bot.bookingEnabled) {
     rules.push(
       "Você PODE agendar, remarcar e cancelar. Regras:",
@@ -867,6 +902,12 @@ export interface BrainInput {
   // chamada externa e tool; se um humano assumir, o loop termina sem nova
   // comunicação ou mutação.
   canContinueAutomation?: () => Promise<boolean>;
+  automationFence?: AutomationFence;
+  // Escopo persistente do inbound (wamid). Em recuperação pós-crash, a mesma
+  // posição de tool recebe a mesma idempotency key mesmo que o provider gere
+  // outro tool_call id.
+  operationIdScope?: string;
+  prospectingContext?: ProspectingContext;
 }
 
 export interface BrainResult {
@@ -910,6 +951,7 @@ export interface BrainResult {
   statedService: string | null;
   // O webhook perdeu a autorização para automação durante este turno.
   abortedForHandoff?: boolean;
+  prospectingStatusTransition?: "REVEALED" | "INTERESTED" | "NOT_INTERESTED" | "OPTED_OUT";
 }
 
 // Uma alteração de agenda é um fato consumado do turno. O modelo pode seguir
@@ -930,6 +972,12 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
 const ORDER_MUTATION_TOOLS = new Set<ToolName>([
   "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
 ]);
+const COMMERCIAL_MUTATION_TOOLS = new Set<ToolName>([
+  ...AGENDA_MUTATION_TOOLS,
+  ...ORDER_MUTATION_TOOLS,
+  "update_customer_profile",
+]);
+
 // Diferente da agenda, um pedido pode exigir várias linhas numa única
 // mensagem. O teto limita tool loops sem bloquear um pedido composto.
 const MAX_ORDER_MUTATIONS_PER_TURN = 8;
@@ -1025,7 +1073,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
-  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null } = input;
+  const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
   const booking = est.bot.bookingEnabled;
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
@@ -1067,7 +1115,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const discussedDate =
     statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
   const tools = toolsFor(toolCtx);
 
   let booked = false;
@@ -1098,6 +1146,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // dele existe — o mesmo erro que o fallback da agenda já evita.
   let ultimoPedido: OrderSummaryForReply | null = null;
   let handoffRequested = false;
+  let prospectingStatusTransition: "REVEALED" | "INTERESTED" | "NOT_INTERESTED" | "OPTED_OUT" | undefined;
   // Só uma correção de enrolação por turno — evita laço com um modelo teimoso.
   let stallCorrected = false;
   const toolCalls: ToolCallRecord[] = [];
@@ -1114,6 +1163,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     statedDate,
     statedService,
     abortedForHandoff: true,
+    prospectingStatusTransition,
   });
 
   // ---- Consulta OBRIGATÓRIA à fonte de verdade ----
@@ -1171,7 +1221,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome),
     },
@@ -1181,6 +1231,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     })),
   ];
 
+  const operationOccurrences = new Map<string, number>();
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
     if (!(await canContinueAutomation())) return abortForHandoff();
@@ -1204,9 +1255,18 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         } catch {
           // args malformado — segue com {} e deixa a ferramenta validar.
         }
-        // Metadado interno: o modelo não escolhe esta chave. O mesmo tc.id
-        // reaplicado em retry converge na transação persistente do pedido.
-        if (ORDER_MUTATION_TOOLS.has(tc.function.name as ToolName)) args.__operationId = tc.id;
+        // Identidade semântica estável: independe da iteração, posição e ID
+        // efêmero produzidos pelo provider em um replay do mesmo inbound.
+        if (COMMERCIAL_MUTATION_TOOLS.has(name)) {
+          if (input.operationIdScope) {
+            const semanticKey = operationSemanticKey(name, args);
+            const occurrence = operationOccurrences.get(semanticKey) ?? 0;
+            operationOccurrences.set(semanticKey, occurrence + 1);
+            args.__operationId = stableToolOperationId(input.operationIdScope, name, args, occurrence);
+          } else {
+            args.__operationId = tc.id;
+          }
+        }
         if (name === "add_order_item" && ultimaDoCliente && explicitlyStartsOrder(ultimaDoCliente.text)) {
           args.__allowDraftCreation = true;
         }
@@ -1311,7 +1371,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       }
       if (canonicalConfirmationSummary) {
         const reply = composeOrderConfirmationRequest(canonicalConfirmationSummary) ?? "Seu pedido está pronto para confirmação. Responda “confirmo” para fechar.";
-        return { reply, handoff: false, booked, rescheduled, cancelled, agendaMutationCompleted: false, toolCalls, pendingCancelAppointmentId, statedDate, statedService };
+        return { reply, handoff: false, booked, rescheduled, cancelled, agendaMutationCompleted: false, toolCalls, pendingCancelAppointmentId, statedDate, statedService, prospectingStatusTransition };
       }
       continue; // volta ao modelo com os resultados
     }

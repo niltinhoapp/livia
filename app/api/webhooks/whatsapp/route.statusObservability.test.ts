@@ -11,10 +11,17 @@
 // eventos de Coexistence regrediu.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { ConversationTask, Establishment } from "@/types";
+import type { ConversationTask, Establishment, WhatsAppInboundJob } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
+
+vi.mock("@/lib/whatsapp/outbox", () => {
+  class OutboundRetryableError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundReconciliationRequiredError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundIntentConflictError extends Error {}
+  return { OutboundRetryableError, OutboundReconciliationRequiredError, OutboundIntentConflictError, getWhatsAppOutboundIntent: vi.fn(async () => null), executeDurableWhatsAppOutbound: vi.fn(async (input: { text: string }, sender: () => Promise<{ waMessageId?: string }>) => ({ ...(await sender()), text: input.text })) };
+});
 
 const findEstablishmentByPhoneNumberId = vi.fn();
 const getEstablishment = vi.fn();
@@ -25,6 +32,8 @@ const alreadyProcessed = vi.fn(async (_id: string) => false);
 const tryAcquireConversationProcessingLease = vi.fn(async () => "lease-test");
 const renewConversationProcessingLease = vi.fn(async () => true);
 const releaseConversationProcessingLease = vi.fn(async () => undefined);
+let inboundJobs: WhatsAppInboundJob[] = [];
+const enqueueWhatsAppInboundJob = vi.fn(async (input: { waMessageId: string; establishmentId: string; conversationId: string; value: Record<string, unknown>; message: Record<string, unknown> }) => { const now = Date.now(); const job: WhatsAppInboundJob = { id: input.waMessageId, establishmentId: input.establishmentId, conversationId: input.conversationId, conversationKey: `${input.establishmentId}:${input.conversationId}`, sequence: inboundJobs.length + 1, receivedAt: now, whatsappPhoneNumberId: String((input.value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id ?? ""), attempts: 0, nextAttemptAt: now, value: input.value, message: input.message }; if (!inboundJobs.some((item) => item.id === job.id)) inboundJobs.push(job); return { queued: true, sequence: job.sequence }; });
 const applyCampaignDeliveryStatus = vi.fn(async (..._a: unknown[]) => "not_found");
 const applyOrderNotificationDeliveryStatus = vi.fn(async (..._a: unknown[]) => "no_match");
 const correlateCampaignReply = vi.fn(async (..._a: unknown[]) => "no_match");
@@ -56,11 +65,22 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: vi.fn(),
   getPendingTask: vi.fn(async () => null),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  enqueueWhatsAppInboundJob,
+  listWhatsAppInboundJobs: vi.fn(async () => inboundJobs),
+  listRecoverableWhatsAppInboundJobs: vi.fn(async () => inboundJobs),
+  completeWhatsAppInboundJob: vi.fn(async (job: WhatsAppInboundJob) => { inboundJobs = inboundJobs.filter((item) => item.id !== job.id); return true; }),
+  failWhatsAppInboundJob: vi.fn(async () => "retry_scheduled"),
+  quarantineOrphanWhatsAppInboundJobs: vi.fn(async () => 0),
+  quarantineWhatsAppInboundSequenceGap: vi.fn(async () => true),
   tryAcquireConversationProcessingLease,
   renewConversationProcessingLease,
   releaseConversationProcessingLease,
+  releaseConversationProcessingLeaseIfDrained: vi.fn(async () => true),
+  transitionConversationStatusWithLease: vi.fn(async () => true),
   applyCampaignDeliveryStatus: (...a: unknown[]) => applyCampaignDeliveryStatus(...a),
   correlateCampaignReply: (...a: unknown[]) => correlateCampaignReply(...a),
+  getProspectingSessionByPhone: vi.fn(async () => null),
+  transitionProspectingSession: vi.fn(),
 }));
 
 vi.mock("@/lib/whatsapp/client", () => ({
@@ -176,6 +196,8 @@ let logSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  inboundJobs = [];
+  appendMessage.mockImplementation(async (...args: unknown[]) => ({ id: String(args[4] ?? "message"), at: Date.now() }));
   alreadyProcessed.mockResolvedValue(false);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
   findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());

@@ -183,7 +183,7 @@ describe("confirm_appointment — pending → confirmed só via backend", () => 
 
     const result = await runTool("confirm_appointment", {}, ctx);
 
-    expect(setStatus).toHaveBeenCalledWith("demo", "appt-hoje", "confirmed");
+    expect(setStatus).toHaveBeenCalledWith("demo", "appt-hoje", "confirmed", undefined, undefined);
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ confirmed: true, day: "hoje" });
   });
@@ -239,7 +239,7 @@ describe("confirm_appointment — pending → confirmed só via backend", () => 
     const result = await runTool("confirm_appointment", { appointmentId: "appt-2" }, ctx);
 
     expect(result.ok).toBe(true);
-    expect(setStatus).toHaveBeenCalledWith("demo", "appt-2", "confirmed");
+    expect(setStatus).toHaveBeenCalledWith("demo", "appt-2", "confirmed", undefined, undefined);
     expect(listActiveCustomerAppointments).not.toHaveBeenCalled();
   });
 

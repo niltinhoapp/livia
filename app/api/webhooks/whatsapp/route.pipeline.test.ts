@@ -8,10 +8,24 @@
 // status HTTP da resposta.
 import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { Conversation, ConversationTask, Establishment, Message } from "@/types";
+import type { Conversation, ConversationTask, Establishment, Message, WhatsAppInboundJob } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
+
+vi.mock("@/lib/whatsapp/outbox", () => {
+  class OutboundRetryableError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundReconciliationRequiredError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundIntentConflictError extends Error {}
+  return {
+    OutboundRetryableError, OutboundReconciliationRequiredError, OutboundIntentConflictError,
+    getWhatsAppOutboundIntent: vi.fn(async () => null),
+    executeDurableWhatsAppOutbound: vi.fn(async (input: { text: string; establishmentId: string; conversationId: string; leaseId: string }, sender: () => Promise<{ waMessageId?: string }>) => {
+      if (!(await renewConversationProcessingLease(input.establishmentId, input.conversationId, input.leaseId))) return null;
+      return { ...(await sender()), text: input.text };
+    }),
+  };
+});
 
 // ---- dublês ----
 const findEstablishmentByPhoneNumberId = vi.fn();
@@ -30,6 +44,37 @@ const alreadyProcessed = vi.fn(async (_id: string) => false);
 const tryAcquireConversationProcessingLease = vi.fn(async (): Promise<string | null> => "lease-test");
 const renewConversationProcessingLease = vi.fn(async () => true);
 const releaseConversationProcessingLease = vi.fn(async () => undefined);
+const releaseConversationProcessingLeaseIfDrained = vi.fn(async () => true);
+let leaseHeld = false;
+let inboundJobs: WhatsAppInboundJob[] = [];
+const enqueueWhatsAppInboundJob = vi.fn(async (input: { waMessageId: string; establishmentId: string; conversationId: string; value: Record<string, unknown>; message: Record<string, unknown> }) => {
+  if (inboundJobs.some((job) => job.id === input.waMessageId)) return { queued: false, sequence: inboundJobs.find((job) => job.id === input.waMessageId)!.sequence };
+  const now = Date.now();
+  const job: WhatsAppInboundJob = { id: input.waMessageId, establishmentId: input.establishmentId, conversationId: input.conversationId, conversationKey: `${input.establishmentId}:${input.conversationId}`, sequence: inboundJobs.length + 1, receivedAt: now, whatsappPhoneNumberId: String((input.value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id ?? ""), attempts: 0, nextAttemptAt: now, value: input.value, message: input.message };
+  inboundJobs.push(job);
+  return { queued: true, sequence: job.sequence };
+});
+const listWhatsAppInboundJobs = vi.fn(async (establishmentId: string, conversationId: string) => inboundJobs.filter((job) => job.establishmentId === establishmentId && job.conversationId === conversationId));
+const completeWhatsAppInboundJob = vi.fn(async (job: WhatsAppInboundJob) => {
+  if (!leaseHeld) return false;
+  inboundJobs = inboundJobs.filter((queued) => queued.id !== job.id);
+  return true;
+});
+const failWhatsAppInboundJob = vi.fn(async (job: WhatsAppInboundJob, _leaseId: string, _code: string, options?: { terminal?: boolean }) => {
+  if (!leaseHeld) return "lease_lost" as const;
+  if (options?.terminal) {
+    inboundJobs = inboundJobs.filter((queued) => queued.id !== job.id);
+    return "dead_letter" as const;
+  }
+  job.attempts += 1;
+  job.nextAttemptAt = Date.now() + 60_000;
+  return "retry_scheduled" as const;
+});
+const transitionConversationStatusWithLease = vi.fn(async (_est: string, _conversation: string, leaseId: string, _expected: string, next: string) => {
+  if (!leaseHeld || leaseId !== "lease-test") return false;
+  await setConversationStatus(_est, _conversation, next);
+  return true;
+});
 const closeConversation = vi.fn();
 const tryCloseAutomatedConversation = vi.fn(async (..._a: unknown[]) => true);
 const reopenConversation = vi.fn(async (..._a: unknown[]) => undefined);
@@ -60,6 +105,9 @@ vi.mock("@/lib/repo", () => ({
   getConversation: (...a: unknown[]) => getConversation(...a),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
+  loadProspectingSession: vi.fn(async () => null),
+  getProspectingSessionByPhone: vi.fn(async () => null),
+  transitionProspectingSession: vi.fn(async () => null),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
   setAwaitingHumanOfferConfirmation: (...a: unknown[]) => setAwaitingHumanOfferConfirmation(...a),
@@ -75,9 +123,18 @@ vi.mock("@/lib/repo", () => ({
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   getPendingTask: (...a: unknown[]) => getPendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  enqueueWhatsAppInboundJob,
+  listWhatsAppInboundJobs,
+  listRecoverableWhatsAppInboundJobs: vi.fn(async () => inboundJobs),
+  completeWhatsAppInboundJob,
+  failWhatsAppInboundJob,
+  quarantineOrphanWhatsAppInboundJobs: vi.fn(async () => 0),
+  quarantineWhatsAppInboundSequenceGap: vi.fn(async () => true),
   tryAcquireConversationProcessingLease,
   renewConversationProcessingLease,
   releaseConversationProcessingLease,
+  releaseConversationProcessingLeaseIfDrained,
+  transitionConversationStatusWithLease,
   applyCampaignDeliveryStatus: vi.fn(async () => "not_found"),
   correlateCampaignReply: vi.fn(async () => "no_match"),
 }));
@@ -118,7 +175,7 @@ vi.mock("@/lib/scheduling", () => ({
   findCustomerNameFromAppointments: vi.fn(async () => null),
 }));
 
-const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+const { POST, drainConversationInbox } = await import("@/app/api/webhooks/whatsapp/route");
 const { WhatsAppAudioSendError } = await import("@/lib/whatsapp/client");
 
 // ---- helpers ----
@@ -207,9 +264,20 @@ function payloadMensagem(overrides: { type?: string; omitText?: boolean; id?: st
 
 beforeEach(() => {
   vi.clearAllMocks();
-  tryAcquireConversationProcessingLease.mockResolvedValue("lease-test");
+  inboundJobs = [];
+  leaseHeld = false;
+  tryAcquireConversationProcessingLease.mockImplementation(async () => {
+    if (leaseHeld) return null;
+    leaseHeld = true;
+    return "lease-test";
+  });
   renewConversationProcessingLease.mockResolvedValue(true);
-  releaseConversationProcessingLease.mockResolvedValue(undefined);
+  releaseConversationProcessingLease.mockImplementation(async () => { leaseHeld = false; });
+  releaseConversationProcessingLeaseIfDrained.mockImplementation(async (_establishmentId: string, conversationId: string) => {
+    if (inboundJobs.some((job) => job.conversationId === conversationId)) return false;
+    leaseHeld = false;
+    return true;
+  });
   alreadyProcessed.mockResolvedValue(false);
   tryCloseAutomatedConversation.mockResolvedValue(true);
   getPendingTask.mockResolvedValue(null);
@@ -237,6 +305,7 @@ beforeEach(() => {
   loadConversation.mockResolvedValue(conversa("bot"));
   getConversation.mockResolvedValue(conversa("bot").conversation);
   findNextAppointment.mockResolvedValue(null);
+  appendMessage.mockImplementation(async (...args: unknown[]) => ({ id: String(args[4] ?? "message"), at: Date.now() }));
   think.mockResolvedValue({
     reply: "Claro! Posso te ajudar com isso.",
     handoff: false,
@@ -248,12 +317,37 @@ beforeEach(() => {
 });
 
 describe("OT pré-comercialização — serialização e handoff durante IA", () => {
+  it("recovery usa o tenant imutável do job sem refazer roteamento por phoneNumberId", async () => {
+    inboundJobs.push({
+      id: "wamid.recovery.tenant",
+      establishmentId: "est-original",
+      conversationId: PHONE,
+      conversationKey: `est-original:${PHONE}`,
+      sequence: 1,
+      receivedAt: 1,
+      whatsappPhoneNumberId: "phone-number-antigo",
+      attempts: 0,
+      nextAttemptAt: 1,
+      value: { metadata: { phone_number_id: "phone-number-antigo" }, contacts: [{ profile: { name: "Ana" } }] },
+      message: { id: "wamid.recovery.tenant", from: PHONE, type: "text", text: { body: "Oi" } },
+    });
+    getEstablishment.mockResolvedValue(establishment({ id: "est-original" }));
+
+    await drainConversationInbox("est-original", PHONE);
+
+    expect(getEstablishment).toHaveBeenCalledWith("est-original");
+    expect(findEstablishmentByPhoneNumberId).not.toHaveBeenCalled();
+    expect(inboundJobs).toHaveLength(0);
+  });
+
   it("duas mensagens simultâneas da mesma conversa não disparam duas respostas independentes", async () => {
     let releaseThink!: () => void;
     think.mockImplementationOnce(() => new Promise((resolve) => { releaseThink = () => resolve({
       reply: "Resposta consolidada", handoff: false, booked: false, rescheduled: false, cancelled: false, toolCalls: [],
     }); }));
-    tryAcquireConversationProcessingLease.mockResolvedValueOnce("lease-a").mockResolvedValueOnce(null);
+    tryAcquireConversationProcessingLease
+      .mockImplementationOnce(async () => { leaseHeld = true; return "lease-a"; })
+      .mockResolvedValueOnce(null);
 
     const first = enviarPayload(payloadMensagem({ id: "wamid.serial.a", text: "quero às 15h" }));
     await vi.waitFor(() => expect(think).toHaveBeenCalledTimes(1));
@@ -264,14 +358,66 @@ describe("OT pré-comercialização — serialização e handoff durante IA", ()
     expect(sendText).not.toHaveBeenCalled();
     releaseThink();
     await first;
-    expect(sendText).toHaveBeenCalledTimes(1);
-    expect(releaseConversationProcessingLease).toHaveBeenCalledWith("est_odonto", PHONE, "lease-a");
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(think).toHaveBeenCalledTimes(2);
+    expect(think.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ text: "melhor às 16h" })]),
+    }));
+    expect(inboundJobs).toHaveLength(0);
   });
 
   it("falha no processamento libera a lease para que a conversa não fique travada", async () => {
     think.mockRejectedValueOnce(new Error("falha controlada da IA"));
     await enviarPayload(payloadMensagem({ id: "wamid.serial.failure", text: "oi" }));
     expect(releaseConversationProcessingLease).toHaveBeenCalledWith("est_odonto", PHONE, "lease-test");
+  });
+
+  it("quatro mensagens rápidas ficam no inbox e todas são consideradas em ordem", async () => {
+    let releaseThink!: () => void;
+    const persistedHistory: Message[] = [];
+    let at = 0;
+    loadConversation.mockImplementation(async () => conversa("bot", undefined, [...persistedHistory]));
+    appendMessage.mockImplementation(async (_est: unknown, _conversation: unknown, role: unknown, text: unknown, waMessageId?: unknown) => {
+      const message: Message = {
+        id: typeof waMessageId === "string" ? waMessageId : `message-${++at}`,
+        role: role as Message["role"],
+        text: String(text),
+        at: ++at,
+        ...(typeof waMessageId === "string" ? { waMessageId } : {}),
+      };
+      if (!persistedHistory.some((item) => item.id === message.id)) persistedHistory.push(message);
+      return { id: message.id, at: message.at };
+    });
+    think.mockImplementationOnce(() => new Promise((resolve) => { releaseThink = () => resolve({
+      reply: "Oi!", handoff: false, booked: false, rescheduled: false, cancelled: false, toolCalls: [],
+    }); }));
+
+    const first = enviarPayload(payloadMensagem({ id: "wamid.fast.1", text: "Oi" }));
+    await vi.waitFor(() => expect(think).toHaveBeenCalledTimes(1));
+    await Promise.all([
+      enviarPayload(payloadMensagem({ id: "wamid.fast.2", text: "Quero agendar" })),
+      enviarPayload(payloadMensagem({ id: "wamid.fast.3", text: "amanhã" })),
+      enviarPayload(payloadMensagem({ id: "wamid.fast.4", text: "às 15h" })),
+    ]);
+    releaseThink();
+    await first;
+
+    expect(think).toHaveBeenCalledTimes(4);
+    const finalHistory = (think.mock.calls[3]?.[0] as { history: Message[] }).history;
+    expect(finalHistory.filter((message) => message.role === "customer").map((message) => message.text))
+      .toEqual(["Oi", "Quero agendar", "amanhã", "às 15h"]);
+    expect(inboundJobs).toHaveLength(0);
+  });
+
+  it("mensagem já persistida por recuperação aparece uma única vez no prompt", async () => {
+    const waMessageId = "wamid.recovered.once";
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [{
+      id: waMessageId, role: "customer", text: "Não, melhor às 16h", at: 10, waMessageId,
+    }]));
+    await enviarPayload(payloadMensagem({ id: waMessageId, text: "Não, melhor às 16h" }));
+
+    const history = (think.mock.calls[0]?.[0] as { history: Message[] }).history;
+    expect(history.filter((message) => message.text === "Não, melhor às 16h")).toHaveLength(1);
   });
 
   it.each(["human", "handoff"] as const)("%s assumido durante think descarta resposta e não persiste ação posterior", async (status) => {
@@ -291,6 +437,26 @@ describe("OT pré-comercialização — serialização e handoff durante IA", ()
     expect(sendText).not.toHaveBeenCalled();
     expect(setConversationIntent).not.toHaveBeenCalled();
     expect(setConversationTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["human", "handoff"] as const)("%s ainda é drenado para persistir a mensagem sem autorizar a IA", async (status) => {
+    loadConversation.mockResolvedValue(conversa(status));
+
+    await enviarPayload(payloadMensagem({ id: `wamid.drain.${status}`, text: "Ainda preciso de ajuda" }));
+
+    expect(renewConversationProcessingLease).toHaveBeenCalledWith("est_odonto", PHONE, "lease-test", {
+      allowNonAutomatedStatus: true,
+    });
+    expect(appendMessage).toHaveBeenCalledWith(
+      "est_odonto",
+      PHONE,
+      "customer",
+      "Ainda preciso de ajuda",
+      `wamid.drain.${status}`,
+      expect.any(Object),
+    );
+    expect(think).not.toHaveBeenCalled();
+    expect(inboundJobs).toHaveLength(0);
   });
 });
 
@@ -333,7 +499,7 @@ describe("OT-03F-R1 — encerramento bot ↔ bot", () => {
     expect(think).not.toHaveBeenCalled();
   });
 
-  it("impede o webhook B desatualizado de chegar à IA após A fechar destinatário automatizado", async () => {
+  it("serializa fechamento de destinatário automatizado atrás do turno já em andamento", async () => {
     let persistedConversation: Conversation = conversa("bot").conversation;
     let releaseB!: () => void;
     let bReachedAuthoritativeRead!: () => void;
@@ -378,8 +544,8 @@ describe("OT-03F-R1 — encerramento bot ↔ bot", () => {
     await webhookB;
 
     expect(tryCloseAutomatedConversation).toHaveBeenCalledTimes(1);
-    expect(sendText).toHaveBeenCalledTimes(1);
-    expect(think).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(think).toHaveBeenCalledTimes(1);
     expect(persistedConversation).toMatchObject({
       status: "closed",
       closedReason: "automated_recipient",
@@ -440,7 +606,7 @@ describe("lifecycle de ConversationTask concluida", () => {
 
     await enviarPayload(payloadMensagem({ id: `wamid.${_label}` }));
 
-    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null, expect.objectContaining({ leaseId: "lease-test" }));
   });
 
   it("regressao: confirmacao concluida limpa a task e o proximo ok fica silencioso", async () => {
@@ -495,8 +661,11 @@ describe("lifecycle de ConversationTask concluida", () => {
 
     await enviarPayload(payloadMensagem({ id: `wamid.reminder.${expectedStatus}`, text }));
 
-    expect(setStatus).toHaveBeenCalledWith("est_odonto", "appt-1", expectedStatus);
-    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    expect(setStatus).toHaveBeenCalledWith("est_odonto", "appt-1", expectedStatus, {
+      conversationId: PHONE,
+      leaseId: "lease-test",
+    }, expect.stringContaining(`wamid.reminder.${expectedStatus}`));
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null, expect.objectContaining({ leaseId: "lease-test" }));
     expect(think).not.toHaveBeenCalled();
   });
 
@@ -518,6 +687,7 @@ describe("lifecycle de ConversationTask concluida", () => {
       "est_odonto",
       PHONE,
       expect.objectContaining({ state: "confirm" }),
+      expect.objectContaining({ leaseId: "lease-test" }),
     );
   });
 
@@ -538,7 +708,7 @@ describe("lifecycle de ConversationTask concluida", () => {
     const response = await enviarPayload(payloadMensagem({ id: "wamid.send-failed", text: "confirmo" }));
 
     expect(response.status).toBe(200);
-    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null, expect.objectContaining({ leaseId: "lease-test" }));
     consoleError.mockRestore();
   });
 
@@ -586,6 +756,7 @@ describe("lifecycle de ConversationTask concluida", () => {
       "est_odonto",
       PHONE,
       expect.objectContaining({ state: "confirm" }),
+      expect.objectContaining({ leaseId: "lease-test" }),
     );
   });
 });
@@ -621,7 +792,9 @@ describe("1b — credenciais de App Review", () => {
       entry: [{ changes: [{ value: { ...payloadMensagem().entry[0].changes[0].value, metadata: { phone_number_id: testPhoneNumberId } } }] }],
     });
 
-    expect(getEstablishment).not.toHaveBeenCalled();
+    // Ingress usa o lookup por phoneNumberId; o drain relê o tenant durável
+    // pelo establishmentId já gravado no job.
+    expect(getEstablishment).toHaveBeenCalledWith("est_odonto");
     expect(findEstablishmentByPhoneNumberId).toHaveBeenCalledWith(testPhoneNumberId);
   });
 
@@ -641,6 +814,12 @@ describe("1b — credenciais de App Review", () => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
+  function enableVoiceReplies() {
+    const withVoice = establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } });
+    findEstablishmentByPhoneNumberId.mockResolvedValue(withVoice);
+    getEstablishment.mockResolvedValue(withVoice);
+  }
+
   function payloadAudio(id = "wamid.1") {
     const audio = payloadMensagem({ type: "audio", omitText: true });
     const msg = audio.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
@@ -673,28 +852,28 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
   });
 
   it("áudio com voz habilitada sintetiza a resposta final uma vez e envia mídia", async () => {
-    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    enableVoiceReplies();
     const res = await enviarPayload(payloadAudio("wamid.voice"));
     expect(res.status).toBe(200); expect(think).toHaveBeenCalledTimes(1); expect(synthesizeSpeech).toHaveBeenCalledWith("Claro! Posso te ajudar com isso.");
     expect(sendAudio).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, new Uint8Array([1, 2]), "audio/ogg"); expect(sendText).not.toHaveBeenCalled();
   });
 
   it("falha de TTS preserva a resposta textual sem reexecutar IA", async () => {
-    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    enableVoiceReplies();
     synthesizeSpeech.mockRejectedValueOnce(new Error("provider down"));
     await enviarPayload(payloadAudio("wamid.voice.fallback"));
     expect(think).toHaveBeenCalledTimes(1); expect(sendAudio).not.toHaveBeenCalled(); expect(sendText).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, "Claro! Posso te ajudar com isso.");
   });
 
   it("rejeição explícita de envio de áudio cai em texto sem repetir IA", async () => {
-    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    enableVoiceReplies();
     sendAudio.mockRejectedValueOnce(new WhatsAppAudioSendError("audio_send_failed", true, 500));
     await enviarPayload(payloadAudio("wamid.voice.upload"));
     expect(think).toHaveBeenCalledTimes(1); expect(synthesizeSpeech).toHaveBeenCalledTimes(1); expect(sendText).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, "Claro! Posso te ajudar com isso.");
   });
 
   it("resultado ambíguo após POST de áudio não envia texto nem repete o processamento", async () => {
-    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    enableVoiceReplies();
     sendAudio.mockRejectedValueOnce(new WhatsAppAudioSendError("audio_send_ambiguous", false));
     await enviarPayload(payloadAudio("wamid.voice.ambiguous"));
     expect(think).toHaveBeenCalledTimes(1); expect(synthesizeSpeech).toHaveBeenCalledTimes(1);
@@ -702,7 +881,7 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
   });
 
   it("resposta determinística de handoff também usa voz para inbound áudio", async () => {
-    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ bot: { personaName: "Livia", tone: "", bookingEnabled: true, medicalGuardrail: false, handoffKeywords: [], voiceRepliesEnabled: true } }));
+    enableVoiceReplies();
     loadConversation.mockResolvedValue(conversa("bot", undefined, [], { awaitingHumanOfferConfirmation: true }));
     transcribeAudio.mockResolvedValueOnce({ text: "sim", provider: "openai", model: "gpt-4o-mini-transcribe" });
     await enviarPayload(payloadAudio("wamid.voice.handoff"));
@@ -721,12 +900,12 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
 
     await enviarPayload(payloadAudio("wamid.audio.agenda"));
 
-    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null);
-    expect(setConversationIntent).toHaveBeenCalledWith("est_odonto", PHONE, "schedule_appointment");
+    expect(setConversationTask).toHaveBeenCalledWith("est_odonto", PHONE, null, expect.objectContaining({ leaseId: "lease-test" }));
+    expect(setConversationIntent).toHaveBeenCalledWith("est_odonto", PHONE, "schedule_appointment", expect.objectContaining({ leaseId: "lease-test" }));
     expect(upsertCustomerProfile).toHaveBeenCalledWith("est_odonto", PHONE, expect.objectContaining({
       lastIntent: "schedule_appointment",
       lastService: "Avaliação",
-    }));
+    }), expect.objectContaining({ leaseId: "lease-test" }));
   });
 
   it("transcript de handoff segue o fluxo textual existente", async () => {
@@ -770,8 +949,27 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
     expect(sendText.mock.calls[0]?.[3]).toMatch(/não consegui entender esse áudio/i);
   });
 
+  it("handoff durante falha de transcrição bloqueia o fallback de áudio", async () => {
+    let rejectTranscription!: () => void;
+    transcribeAudio.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectTranscription = () => reject(new Error("provider failure"));
+    }));
+    renewConversationProcessingLease.mockImplementation(async (...args: unknown[]) => {
+      const options = args[3] as { allowNonAutomatedStatus?: boolean } | undefined;
+      return Boolean(options?.allowNonAutomatedStatus);
+    });
+
+    const processing = enviarPayload(payloadAudio("wamid.audio.handoff-during-failure"));
+    await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(1));
+    rejectTranscription();
+    await processing;
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendAudio).not.toHaveBeenCalled();
+  });
+
   it.each(["human", "handoff"])("falha de áudio em %s preserva silêncio e fila humana", async (status) => {
-    loadConversation.mockResolvedValueOnce(conversa(status as "human" | "handoff"));
+    loadConversation.mockResolvedValue(conversa(status as "human" | "handoff"));
     transcribeAudio.mockRejectedValueOnce(new Error("provider failure"));
 
     await enviarPayload(payloadAudio(`wamid.audio.fail.${status}`));
@@ -1053,7 +1251,7 @@ describe("6 — erro da IA", () => {
     expect(res.status).toBe(200);
     expect(sendText).not.toHaveBeenCalled();
     expect(appendMessage).not.toHaveBeenCalledWith("est_odonto", PHONE, "bot", expect.anything(), expect.anything());
-    expect(consoleError).toHaveBeenCalled();
+    expect(failWhatsAppInboundJob).toHaveBeenCalled();
     consoleError.mockRestore();
   });
 });
@@ -1070,7 +1268,7 @@ describe("7 — erro da API do WhatsApp", () => {
     // appendMessage só é chamado para o "bot" DEPOIS de sendText suceder —
     // se sendText falhou, não existe registro de uma mensagem que nunca saiu.
     expect(appendMessage).not.toHaveBeenCalledWith("est_odonto", PHONE, "bot", expect.anything(), expect.anything());
-    expect(consoleError).toHaveBeenCalled();
+    expect(failWhatsAppInboundJob).toHaveBeenCalled();
     consoleError.mockRestore();
   });
 });
@@ -1148,9 +1346,9 @@ describe("múltiplas mensagens no mesmo POST (batch da Meta)", () => {
 
     const res = await enviarPayload(body);
 
-    expect(res.status).toBe(200);
-    expect(think).toHaveBeenCalledTimes(1);
-    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(503);
+    expect(enqueueWhatsAppInboundJob).toHaveBeenCalledWith(expect.objectContaining({ waMessageId: "wamid.ok" }));
+    expect(think).not.toHaveBeenCalled();
   });
 
   it("mídia durante atendimento humano é anexada sem resposta da Lívia", async () => {

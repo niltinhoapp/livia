@@ -6,6 +6,10 @@
   "framework": "nextjs",
   "crons": [
     {
+      "path": "/api/cron/whatsapp-inbound-recovery",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/reminders",
       "schedule": "0 11 * * *"
     },
