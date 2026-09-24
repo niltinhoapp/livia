@@ -70,12 +70,20 @@ export async function PUT(req: NextRequest) {
       }
     : undefined;
 
+  const existing = await getEstablishment(id);
+  const previousSummary = existing?.dailyOwnerSummary;
+  const requestedTime = String(raw.dailyOwnerSummary?.sendTime ?? previousSummary?.sendTime ?? "18:00").trim();
+  const sendTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(requestedTime) ? requestedTime : "18:00";
   const dailyOwnerSummary: DailyOwnerSummaryConfig | undefined = raw.dailyOwnerSummary
     ? {
         enabled: Boolean(raw.dailyOwnerSummary.enabled),
         ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\D/g, "").slice(0, 15),
-        templateName: String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),
-        templateLang: String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR",
+        // Template/idioma são configuração técnica: a tela não os expõe.
+        // Preserva os valores já provisionados no tenant.
+        templateName: previousSummary?.templateName ?? String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),
+        templateLang: previousSummary?.templateLang ?? (String(raw.dailyOwnerSummary.templateLang ?? "pt_BR").trim() || "pt_BR"),
+        sendTime,
+        ...(previousSummary?.lastSentDate ? { lastSentDate: previousSummary.lastSentDate } : {}),
       }
     : undefined;
 
