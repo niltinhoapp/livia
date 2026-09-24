@@ -52,4 +52,13 @@ describe("atalho de lembrete: cancelamento só com intenção positiva e inequí
       expect(confirmCancelReminderIntent(texto)).not.toBe("cancel");
     },
   );
+
+  it.each([
+    "Não vou.",
+    "Quero remarcar.",
+    "Pode mudar para amanhã?",
+    "Esse horário não dá, tem outro?",
+  ])("'%s' segue para o fluxo de remarcação, nunca cancela", (texto) => {
+    expect(confirmCancelReminderIntent(texto)).toBeNull();
+  });
 });

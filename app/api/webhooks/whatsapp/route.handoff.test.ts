@@ -5,10 +5,17 @@
 // recebe e o que ele NUNCA pode receber.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import type { Establishment, Message } from "@/types";
+import type { Establishment, Message, WhatsAppInboundJob } from "@/types";
 
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
+
+vi.mock("@/lib/whatsapp/outbox", () => {
+  class OutboundRetryableError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundReconciliationRequiredError extends Error { constructor(public code: string) { super(code); } }
+  class OutboundIntentConflictError extends Error {}
+  return { OutboundRetryableError, OutboundReconciliationRequiredError, OutboundIntentConflictError, getWhatsAppOutboundIntent: vi.fn(async () => null), executeDurableWhatsAppOutbound: vi.fn(async (input: { text: string }, sender: () => Promise<{ waMessageId?: string }>) => ({ ...(await sender()), text: input.text })) };
+});
 
 // ---- dublês ----
 const findEstablishmentByPhoneNumberId = vi.fn();
@@ -19,6 +26,11 @@ const setAwaitingHumanOfferConfirmation = vi.fn();
 const upsertPendingTask = vi.fn();
 const resolvePendingTask = vi.fn();
 const alreadyProcessed = vi.fn(async (_id: string) => false);
+const tryAcquireConversationProcessingLease = vi.fn(async () => "lease-test");
+const renewConversationProcessingLease = vi.fn(async () => true);
+const releaseConversationProcessingLease = vi.fn(async () => undefined);
+let inboundJobs: WhatsAppInboundJob[] = [];
+const enqueueWhatsAppInboundJob = vi.fn(async (input: { waMessageId: string; establishmentId: string; conversationId: string; value: Record<string, unknown>; message: Record<string, unknown> }) => { const now = Date.now(); const job: WhatsAppInboundJob = { id: input.waMessageId, establishmentId: input.establishmentId, conversationId: input.conversationId, conversationKey: `${input.establishmentId}:${input.conversationId}`, sequence: inboundJobs.length + 1, receivedAt: now, whatsappPhoneNumberId: String((input.value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id ?? ""), attempts: 0, nextAttemptAt: now, value: input.value, message: input.message }; if (!inboundJobs.some((item) => item.id === job.id)) inboundJobs.push(job); return { queued: true, sequence: job.sequence }; });
 const think = vi.fn();
 const sendText = vi.fn(async (..._a: unknown[]) => ({ waMessageId: "wamid.bot" }));
 const markAsRead = vi.fn();
@@ -26,7 +38,7 @@ const findNextAppointment = vi.fn(async (..._a: unknown[]) => null);
 
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
-  getEstablishment: vi.fn(async () => null),
+  getEstablishment: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
   getConversation: vi.fn(async () => null),
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
@@ -41,8 +53,22 @@ vi.mock("@/lib/repo", () => ({
   upsertPendingTask: (...a: unknown[]) => upsertPendingTask(...a),
   resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
   alreadyProcessed: (...a: unknown[]) => alreadyProcessed(...(a as [string])),
+  enqueueWhatsAppInboundJob,
+  listWhatsAppInboundJobs: vi.fn(async () => inboundJobs),
+  listRecoverableWhatsAppInboundJobs: vi.fn(async () => inboundJobs),
+  completeWhatsAppInboundJob: vi.fn(async (job: WhatsAppInboundJob) => { inboundJobs = inboundJobs.filter((item) => item.id !== job.id); return true; }),
+  failWhatsAppInboundJob: vi.fn(async () => "retry_scheduled"),
+  quarantineOrphanWhatsAppInboundJobs: vi.fn(async () => 0),
+  quarantineWhatsAppInboundSequenceGap: vi.fn(async () => true),
+  tryAcquireConversationProcessingLease,
+  renewConversationProcessingLease,
+  releaseConversationProcessingLease,
+  releaseConversationProcessingLeaseIfDrained: vi.fn(async () => true),
+  transitionConversationStatusWithLease: vi.fn(async (...a: unknown[]) => { await setConversationStatus(a[0], a[1], a[4]); return true; }),
   applyCampaignDeliveryStatus: vi.fn(async () => "not_found"),
   correlateCampaignReply: vi.fn(async () => "no_match"),
+  getProspectingSessionByPhone: vi.fn(async () => null),
+  transitionProspectingSession: vi.fn(),
 }));
 
 vi.mock("@/lib/whatsapp/client", () => ({
@@ -135,6 +161,8 @@ function textosEnviados(): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  inboundJobs = [];
+  appendMessage.mockImplementation(async (...args: unknown[]) => ({ id: String(args[4] ?? "message"), at: Date.now() }));
   alreadyProcessed.mockResolvedValue(false);
   sendText.mockResolvedValue({ waMessageId: "wamid.bot" });
   findNextAppointment.mockResolvedValue(null);
@@ -254,7 +282,7 @@ describe("o cliente pode desistir do atendente e a Livia volta", () => {
     await entregar("n");
 
     expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", PHONE, "bot");
-    expect(resolvePendingTask).toHaveBeenCalledWith("est_odonto", PHONE);
+    expect(resolvePendingTask).toHaveBeenCalledWith("est_odonto", PHONE, expect.objectContaining({ leaseId: "lease-test" }));
     expect(think).toHaveBeenCalled();
     expect(sendText).toHaveBeenCalled();
   });
@@ -323,7 +351,7 @@ describe("oferta de humano só transfere após aceite contextual", () => {
 
     expect(textosEnviados()).toEqual([OFERTA]);
     expect(setConversationStatus).not.toHaveBeenCalled();
-    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, true);
+    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, true, expect.objectContaining({ leaseId: "lease-test" }));
     expect(upsertPendingTask).not.toHaveBeenCalled();
   });
 
@@ -345,7 +373,7 @@ describe("oferta de humano só transfere após aceite contextual", () => {
 
     await entregar("não precisa");
 
-    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, false);
+    expect(setAwaitingHumanOfferConfirmation).toHaveBeenCalledWith("est_odonto", PHONE, false, expect.objectContaining({ leaseId: "lease-test" }));
     expect(setConversationStatus).not.toHaveBeenCalled();
     expect(think).toHaveBeenCalled();
     expect(upsertPendingTask).not.toHaveBeenCalled();

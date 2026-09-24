@@ -23,6 +23,20 @@ const NEGATED_CANCELLATION = [
 
 const AMBIGUOUS_CANCELLATION = ["acho que", "talvez", "quem sabe", "pode ser que", "nao sei", "sei la", "em duvida"];
 
+// Remarcar não é cancelar. Mesmo quando a pessoa não pode comparecer ao
+// horário atual, a mudança de data/horário precisa seguir o fluxo normal da
+// IA para escolher e reservar o novo slot com segurança.
+const RESCHEDULE_INTENT = [
+  "remarcar",
+  "remarca",
+  "mudar para",
+  "muda para",
+  "mudar o horario",
+  "muda o horario",
+  "outro horario",
+  "tem outro",
+];
+
 function hasExplicitCancellation(text: string): boolean {
   return /\b(?:quero|pode) cancelar\b/.test(text) || /\b(?:cancelar|cancela|desmarcar|desmarca)\b/.test(text);
 }
@@ -39,6 +53,7 @@ export function confirmCancelReminderIntent(text: string): ReminderIntent {
 
   if (NEGATED_CANCELLATION.some((phrase) => t.includes(phrase))) return null;
   if (AMBIGUOUS_CANCELLATION.some((phrase) => t.includes(phrase))) return null;
+  if (RESCHEDULE_INTENT.some((phrase) => t.includes(phrase))) return null;
 
   const confirmation = readConfirmation(t);
   if (confirmation === "no" && !hasInabilityToAttend(t)) return null;

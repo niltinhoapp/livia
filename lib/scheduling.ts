@@ -12,7 +12,9 @@ import type {
   Appointment,
   AppointmentStatus,
   KnowledgeService,
+  AutomationFence,
 } from "@/types";
+import { assertAutomationFence } from "@/lib/automationFence";
 
 // ---- Config padrão (Seg-Sex 9-18 com almoço 12-13, Sáb 9-13) ----
 export function defaultScheduleConfig(establishmentId: string): ScheduleConfig {
@@ -175,6 +177,7 @@ export async function createAppointment(
     durationMin: number;
     source: "bot" | "manual";
     note?: string | null;
+    operationId?: string;
   },
 ): Promise<Appointment> {
   const ref = sub(establishmentId, "appointments").doc();
@@ -203,6 +206,7 @@ export async function createAppointment(
     createdAt: Date.now(),
     confirmedAt: null,
     reminderSentAt: null,
+    ...(data.operationId ? { operationId: data.operationId, appliedOperationIds: [data.operationId] } : {}),
   };
   await ref.set(appt);
   return appt;
@@ -236,6 +240,7 @@ function newAppointment(establishmentId: string, id: string, data: AppointmentIn
     id, establishmentId, contactPhone: normalizePhone(data.contactPhone), contactName: data.contactName,
     serviceName: data.serviceName, startAt: data.startAt, durationMin: data.durationMin,
     status: "pending", source: data.source, note: data.note ?? null, createdAt: Date.now(), confirmedAt: null, reminderSentAt: null,
+    ...(data.operationId ? { operationId: data.operationId, appliedOperationIds: [data.operationId] } : {}),
   };
 }
 
@@ -244,11 +249,15 @@ export async function bookAppointment(
   config: ScheduleConfig,
   data: AppointmentInput,
   now = Date.now(),
+  automationFence?: AutomationFence,
 ): Promise<Appointment> {
-  const ref = sub(establishmentId, "appointments").doc();
+  const appointments = sub(establishmentId, "appointments");
+  const ref = data.operationId ? appointments.doc(data.operationId) : appointments.doc();
   const lockRef = scheduleMutationRef(establishmentId);
   return db.runTransaction(async (tx) => {
-    const lock = await tx.get(lockRef);
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
+    const [lock, existing] = await Promise.all([tx.get(lockRef), tx.get(ref)]);
+    if (data.operationId && existing.exists) return existing.data() as Appointment;
     const snap = await tx.get(conflictQuery(establishmentId, data.startAt));
     const reason = slotBookability(config, data.startAt, data.durationMin, snap.docs.map((d) => d.data() as Appointment), now);
     if (reason) throw new AppointmentConflictError(reason);
@@ -266,17 +275,29 @@ export async function rescheduleBookedAppointment(
   startAt: number,
   durationMin: number,
   now = Date.now(),
+  automationFence?: AutomationFence,
+  operationId?: string,
 ): Promise<void> {
   const ref = sub(establishmentId, "appointments").doc(id);
   const lockRef = scheduleMutationRef(establishmentId);
   await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
     const lock = await tx.get(lockRef);
     const current = await tx.get(ref);
     if (!current.exists) throw new Error("appointment_not_found");
+    const appointment = current.data() as Appointment;
+    if (operationId && appointment.appliedOperationIds?.includes(operationId)) return;
     const snap = await tx.get(conflictQuery(establishmentId, startAt));
     const reason = slotBookability(config, startAt, durationMin, snap.docs.map((d) => d.data() as Appointment), now, id);
     if (reason) throw new AppointmentConflictError(reason);
-    tx.update(ref, { startAt, durationMin, status: "pending", confirmedAt: null, reminderSentAt: null });
+    tx.update(ref, {
+      startAt,
+      durationMin,
+      status: "pending",
+      confirmedAt: null,
+      reminderSentAt: null,
+      ...(operationId ? { appliedOperationIds: [...(appointment.appliedOperationIds ?? []).slice(-49), operationId] } : {}),
+    });
     tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
   });
 }
@@ -634,6 +655,8 @@ export async function setStatus(
   establishmentId: string,
   id: string,
   status: AppointmentStatus,
+  automationFence?: AutomationFence,
+  operationId?: string,
 ): Promise<void> {
   const patch: Record<string, unknown> = { status };
   if (status === "confirmed") patch.confirmedAt = Date.now();
@@ -642,7 +665,7 @@ export async function setStatus(
   // alternativa seria inventar/aproximar, que é exatamente o que não pode
   // acontecer.
   if (status === "cancelled") patch.cancelledAt = Date.now();
-  if (status !== "cancelled" && status !== "no_show") {
+  if (!automationFence && status !== "cancelled" && status !== "no_show") {
     await updateAppointment(establishmentId, id, patch as Partial<Appointment>);
     return;
   }
@@ -650,9 +673,17 @@ export async function setStatus(
   const ref = sub(establishmentId, "appointments").doc(id);
   const lockRef = scheduleMutationRef(establishmentId);
   await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence);
     const lock = await tx.get(lockRef);
+    const current = await tx.get(ref);
+    if (!current.exists) throw new Error("appointment_not_found");
+    const appointment = current.data() as Appointment;
+    if (operationId && appointment.appliedOperationIds?.includes(operationId)) return;
+    if (operationId) patch.appliedOperationIds = [...(appointment.appliedOperationIds ?? []).slice(-49), operationId];
     tx.update(ref, patch);
-    tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
+    if (status === "cancelled" || status === "no_show") {
+      tx.set(lockRef, { version: Number(lock.data()?.version ?? 0) + 1, updatedAt: Date.now() });
+    }
   });
 }
 

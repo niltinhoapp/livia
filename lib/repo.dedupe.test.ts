@@ -13,39 +13,50 @@ vi.mock("@/lib/firebase/admin", async () => {
 });
 
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
-import { alreadyProcessed } from "@/lib/repo";
+import { alreadyProcessed, completeWhatsAppInboundJob, enqueueWhatsAppInboundJob, listWhatsAppInboundJobs, tryAcquireConversationProcessingLease } from "@/lib/repo";
 
 const MSG = "wamid.HBgNNTUxNDk5MTIzNDU2NxUCABIYFjNBMEE";
 
 beforeEach(() => {
   fakeDb.reset();
+  fakeDb.col("establishments/est/conversations").set("conv", {
+    id: "conv", establishmentId: "est", contactPhone: "5511", contactName: null,
+    status: "bot", lastMessageAt: 0, createdAt: 0,
+  });
 });
 
-describe("CRÍTICO 2 — aquisição atômica do messageId", () => {
-  it("primeira execução adquire (false = processa)", async () => {
+const enqueue = (id: string) => enqueueWhatsAppInboundJob({
+  waMessageId: id, establishmentId: "est", conversationId: "conv",
+  whatsappPhoneNumberId: "pn",
+  value: {}, message: { id }, now: 1,
+});
+
+describe("CRÍTICO 2 — dedupe separa recebimento de conclusão", () => {
+  it("mensagem nova ainda não está concluída", async () => {
     expect(await alreadyProcessed(MSG)).toBe(false);
   });
 
-  it("segunda execução sequencial não adquire", async () => {
+  it("receber duas vezes mantém um job; só conclusão marca processado", async () => {
     expect(await alreadyProcessed(MSG)).toBe(false);
+    await enqueue(MSG);
+    await enqueue(MSG);
+    const [job] = await listWhatsAppInboundJobs("est", "conv");
+    expect(await listWhatsAppInboundJobs("est", "conv")).toHaveLength(1);
+    expect(await alreadyProcessed(MSG)).toBe(false);
+    await tryAcquireConversationProcessingLease("est", "conv", { now: 1, leaseId: "owner" });
+    await completeWhatsAppInboundJob(job!, "owner", { now: 2 });
     expect(await alreadyProcessed(MSG)).toBe(true);
   });
 
-  it("CONCORRÊNCIA: entre N execuções simultâneas, exatamente uma adquire", async () => {
-    const resultados = await Promise.all(
-      Array.from({ length: 8 }, () => alreadyProcessed(MSG)),
-    );
-    const adquiriram = resultados.filter((r) => r === false);
-    expect(adquiriram).toHaveLength(1);
-    expect(resultados.filter((r) => r === true)).toHaveLength(7);
+  it("CONCORRÊNCIA: entre N recebimentos simultâneos existe exatamente um job", async () => {
+    await Promise.all(Array.from({ length: 8 }, () => enqueue(MSG)));
+    expect(await listWhatsAppInboundJobs("est", "conv")).toHaveLength(1);
   });
 
-  it("CONCORRÊNCIA: quantas mensagens distintas, tantos processamentos", async () => {
+  it("CONCORRÊNCIA: quantas mensagens distintas, tantos jobs", async () => {
     const ids = ["wamid.A", "wamid.B", "wamid.C"];
-    const resultados = await Promise.all(
-      [...ids, ...ids].map((id) => alreadyProcessed(id)),
-    );
-    expect(resultados.filter((r) => r === false)).toHaveLength(3);
+    await Promise.all([...ids, ...ids].map(enqueue));
+    expect(await listWhatsAppInboundJobs("est", "conv")).toHaveLength(3);
   });
 
   it("mensagens diferentes nunca colidem entre si", async () => {
@@ -53,25 +64,16 @@ describe("CRÍTICO 2 — aquisição atômica do messageId", () => {
     expect(await alreadyProcessed("wamid.Y")).toBe(false);
   });
 
-  it("falha DEPOIS da aquisição mantém a trava: a reentrega da Meta é descartada", async () => {
-    // Execução 1 adquire e depois quebra no processamento (ex.: sendText
-    // lança). O id continua gravado de propósito — a mensagem pode já ter
-    // sido enviada ao cliente, e reprocessar duplicaria a resposta.
+  it("falha depois do recebimento não transforma o job em processado", async () => {
+    await enqueue(MSG);
     expect(await alreadyProcessed(MSG)).toBe(false);
-    try {
-      throw new Error("falha simulada no processamento");
-    } catch {
-      /* o webhook loga e devolve 200 */
-    }
-    expect(await alreadyProcessed(MSG)).toBe(true);
+    expect(await listWhatsAppInboundJobs("est", "conv")).toHaveLength(1);
   });
 
   it("erro de infraestrutura não é confundido com duplicado", async () => {
-    const ref = fakeDb.collection("_processed_wa_messages").doc("wamid.ERR");
-    const original = ref.create.bind(ref);
     vi.spyOn(fakeDb, "collection").mockReturnValueOnce({
       doc: () => ({
-        create: async () => {
+        get: async () => {
           throw new Error("14 UNAVAILABLE: connection reset");
         },
       }),
@@ -79,6 +81,5 @@ describe("CRÍTICO 2 — aquisição atômica do messageId", () => {
 
     await expect(alreadyProcessed("wamid.ERR")).rejects.toThrow("UNAVAILABLE");
     vi.restoreAllMocks();
-    void original;
   });
 });

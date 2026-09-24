@@ -28,13 +28,18 @@ import type {
   MarketingImportResult,
   ConversationTask,
   IntentType,
+  WhatsAppInboundJob,
+  AutomationFence,
   PendingTask,
   PendingTaskType,
   KnowledgeCorrection,
   CorrectionCategory,
   CampaignRecipient,
   CampaignRecipientStatus,
+  ProspectingSession,
+  ProspectingStatus,
 } from "@/types";
+import { assertAutomationFence } from "@/lib/automationFence";
 
 const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -873,22 +878,24 @@ export async function upsertPendingTask(
   conversationId: string,
   contactPhone: string,
   draft: { type: PendingTaskType; waitingFor: string; dueAt?: number },
+  automationFence?: AutomationFence,
 ): Promise<void> {
   const ref = sub(establishmentId, "pendingTasks").doc(conversationId);
   const now = Date.now();
-  const snap = await ref.get();
-
-  if (snap.exists) {
-    await ref.update({
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
+    const snap = await tx.get(ref);
+    if (snap.exists) {
+      tx.update(ref, {
       type: draft.type,
       waitingFor: draft.waitingFor,
       status: "open",
       updatedAt: now,
       resolvedAt: null,
       dueAt: draft.dueAt ?? null,
-    });
-    return;
-  }
+      });
+      return;
+    }
 
   const task: PendingTask = {
     id: conversationId,
@@ -903,19 +910,24 @@ export async function upsertPendingTask(
     resolvedAt: null,
     dueAt: draft.dueAt ?? null,
   };
-  await ref.set(task);
+    tx.set(ref, task);
+  });
 }
 
 // Best-effort: só escreve se havia mesmo uma pendência aberta pra essa
 // conversa — evita uma escrita no caminho comum (a maioria das mensagens
 // não tem nenhuma pendência aberta pra resolver).
-export async function resolvePendingTask(establishmentId: string, conversationId: string): Promise<void> {
+export async function resolvePendingTask(establishmentId: string, conversationId: string, automationFence?: AutomationFence): Promise<void> {
   const ref = sub(establishmentId, "pendingTasks").doc(conversationId);
-  const snap = await ref.get();
-  if (!snap.exists) return;
-  const existing = snap.data() as PendingTask;
-  if (existing.status === "resolved") return;
-  await ref.update({ status: "resolved", resolvedAt: Date.now(), updatedAt: Date.now() });
+  const now = Date.now();
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const existing = snap.data() as PendingTask;
+    if (existing.status === "resolved") return;
+    tx.update(ref, { status: "resolved", resolvedAt: now, updatedAt: now });
+  });
 }
 
 // Pendência (aberta ou já resolvida) de UMA conversa específica — usado na
@@ -983,44 +995,39 @@ export async function upsertCustomerProfile(
       "name" | "preferredProfessional" | "preferredTime" | "frequentAddress" | "lastService" | "lastIntent"
     >
   >,
+  automationFence?: AutomationFence,
 ): Promise<void> {
   const id = normalizePhone(phone);
   const ref = sub(establishmentId, "customers").doc(id);
   const now = Date.now();
-  const snap = await ref.get();
-
   const fields: Record<string, unknown> = { lastInteractionAt: now, updatedAt: now };
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) fields[key] = value;
   }
 
-  if (snap.exists) {
-    // Telefone é o identificador único do cliente: uma vez que o nome já
-    // está cadastrado, uma variação vinda de uma mensagem/conversa nova
-    // (ex.: "niltinho" numa sessão, "Nilton" noutra) nunca pode substituí-lo.
-    // Só grava `name` aqui quando o cadastro existente ainda não tem nome —
-    // completar um dado ausente é diferente de sobrescrever um já existente.
-    const existingName = (snap.data() as CustomerProfile).name;
-    if (existingName) delete fields.name;
-    await ref.update(fields);
-    return;
-  }
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
+    const snap = await tx.get(ref);
+    if (snap.exists) {
+      // Telefone é o identificador único do cliente: uma vez que o nome já
+      // está cadastrado, uma variação vinda de uma mensagem/conversa nova
+      // nunca pode substituí-lo.
+      const existingName = (snap.data() as CustomerProfile).name;
+      if (existingName) delete fields.name;
+      tx.update(ref, fields);
+      return;
+    }
 
-  const profile: CustomerProfile = {
-    phone: id,
-    establishmentId,
-    name: patch.name ?? null,
-    preferredProfessional: patch.preferredProfessional ?? null,
-    preferredTime: patch.preferredTime ?? null,
-    frequentAddress: patch.frequentAddress ?? null,
-    lastService: patch.lastService ?? null,
-    lastIntent: patch.lastIntent ?? null,
-    notes: null,
-    lastInteractionAt: now,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await ref.set(profile);
+    const profile: CustomerProfile = {
+      phone: id, establishmentId, name: patch.name ?? null,
+      preferredProfessional: patch.preferredProfessional ?? null,
+      preferredTime: patch.preferredTime ?? null,
+      frequentAddress: patch.frequentAddress ?? null,
+      lastService: patch.lastService ?? null, lastIntent: patch.lastIntent ?? null,
+      notes: null, lastInteractionAt: now, createdAt: now, updatedAt: now,
+    };
+    tx.set(ref, profile);
+  });
 }
 
 // Lista de perfis pra tela de CRM (Passo 10) — mais recentes primeiro. Só
@@ -1933,7 +1940,18 @@ export async function appendMessage(
   metadata?: Pick<Message, "kind" | "phoneNumberId" | "media" | "attachment" | "transcription">,
 ): Promise<{ id: string; at: number }> {
   const convRef = sub(establishmentId, "conversations").doc(conversationId);
-  const msgRef = convRef.collection("messages").doc();
+  // Para inbound, o wamid é também a chave persistente. Um job recuperado
+  // após crash pode repetir esta etapa sem duplicar a mensagem no histórico.
+  const msgRef = waMessageId
+    ? convRef.collection("messages").doc(waMessageId)
+    : convRef.collection("messages").doc();
+  if (waMessageId) {
+    const existing = await msgRef.get();
+    if (existing.exists) {
+      const message = existing.data() as Message;
+      return { id: message.id, at: message.at };
+    }
+  }
   const msg: Message = {
     id: msgRef.id,
     role,
@@ -1959,9 +1977,49 @@ export async function setConversationStatus(
   conversationId: string,
   status: Conversation["status"],
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ status });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    // Handoff/human revogam o token do turno no mesmo commit da mudança de
+    // estado. Voltar a "bot" depois não revive o lease antigo.
+    tx.update(ref, {
+      status,
+      ...(status === "human" || status === "handoff" ? { aiProcessingLease: null } : {}),
+    });
+  });
+}
+
+// Transição iniciada pela automação: compara estado e lease no mesmo commit.
+// O lease é preservado inclusive ao entrar em handoff para que o owner consiga
+// concluir o inbound; um takeover humano posterior o revoga normalmente.
+export async function transitionConversationStatusWithLease(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+  expectedStatus: Conversation["status"],
+  nextStatus: Conversation["status"],
+  options: { now?: number; closedReason?: Conversation["closedReason"] } = {},
+): Promise<boolean> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  const now = options.now ?? Date.now();
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const conversation = snap.data() as Conversation;
+    const lease = conversation.aiProcessingLease;
+    if (
+      conversation.status !== expectedStatus ||
+      !lease ||
+      lease.leaseId !== leaseId ||
+      lease.expiresAt <= now
+    ) return false;
+    tx.update(ref, {
+      status: nextStatus,
+      ...(options.closedReason ? { closedReason: options.closedReason } : {}),
+    });
+    return true;
+  });
 }
 
 // Persiste apenas o contexto de uma OFERTA de atendimento humano. A mudança
@@ -1971,10 +2029,13 @@ export async function setAwaitingHumanOfferConfirmation(
   establishmentId: string,
   conversationId: string,
   awaiting: boolean,
+  automationFence?: AutomationFence,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ awaitingHumanOfferConfirmation: awaiting });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence);
+    tx.update(ref, { awaitingHumanOfferConfirmation: awaiting });
+  });
 }
 
 // Fecha uma conversa por um motivo não concorrente (despedida social).
@@ -1983,9 +2044,12 @@ export async function closeConversation(
   conversationId: string,
   reason: NonNullable<Conversation["closedReason"]>,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ status: "closed", closedReason: reason });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || (snap.data() as Conversation).status !== "bot") return;
+    tx.update(ref, { status: "closed", closedReason: reason, aiProcessingLease: null });
+  });
 }
 
 // Compara e fecha no mesmo commit do Firestore. Só quem muda bot -> closed
@@ -2017,9 +2081,12 @@ export async function reopenConversation(
   establishmentId: string,
   conversationId: string,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ status: "bot", closedReason: FieldValue.delete() });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || (snap.data() as Conversation).status !== "closed") return;
+    tx.update(ref, { status: "bot", closedReason: FieldValue.delete() });
+  });
 }
 
 // Grava a intenção detectada (determinística, ver lib/ai/intent.ts) na
@@ -2030,6 +2097,7 @@ export async function setConversationIntent(
   establishmentId: string,
   conversationId: string,
   intent: IntentType,
+  automationFence?: AutomationFence,
 ): Promise<void> {
   const patch: Record<string, unknown> = { lastIntent: intent };
   // Carimba a evidência DURÁVEL de intenção de agendamento. `lastIntent`
@@ -2040,7 +2108,11 @@ export async function setConversationIntent(
   if (intent === "schedule_appointment" || intent === "reschedule_appointment") {
     patch.lastScheduleIntentAt = Date.now();
   }
-  await sub(establishmentId, "conversations").doc(conversationId).update(patch);
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence);
+    tx.update(ref, patch);
+  });
 }
 
 // Estado da tarefa em andamento (Fase 4) — `task: null` limpa o campo
@@ -2049,10 +2121,13 @@ export async function setConversationTask(
   establishmentId: string,
   conversationId: string,
   task: ConversationTask | null,
+  automationFence?: AutomationFence,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ task: task ?? FieldValue.delete() });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence);
+    tx.update(ref, { task: task ?? FieldValue.delete() });
+  });
 }
 
 // Resumo estruturado (Fase 2) — só chamado nos gatilhos definidos (handoff,
@@ -2061,10 +2136,14 @@ export async function setConversationSummary(
   establishmentId: string,
   conversationId: string,
   summary: string,
+  automationFence?: AutomationFence,
 ): Promise<void> {
-  await sub(establishmentId, "conversations")
-    .doc(conversationId)
-    .update({ summary, summaryUpdatedAt: Date.now() });
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  const now = Date.now();
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence, now);
+    tx.update(ref, { summary, summaryUpdatedAt: now });
+  });
 }
 
 // Lista as conversas do estabelecimento pra tela /painel/conversas — mais
@@ -2165,49 +2244,607 @@ export async function clearConversations(
       deletedMessages += chunk.length;
     }
     await convDoc.ref.delete();
+    // Jobs inbound vivem numa coleção global. Sem esta quarentena, apagar a
+    // conversa deixaria órfãos eternos ocupando a janela do recovery.
+    await quarantineOrphanWhatsAppInboundJobs(establishmentId, convDoc.id);
     deletedConversations++;
   }
 
   return { deletedConversations, deletedMessages };
 }
 
-// Dedupe: a Meta reenvia webhooks. Guardamos os IDs já processados por
-// alguns minutos pra não responder duas vezes à mesma mensagem.
-// Aquisição ATÔMICA do id da mensagem. O par get()+set() anterior não era
-// atômico: a Meta reentrega rápido e o Vercel roda as invocações em
-// paralelo, então as duas liam "não existe" e as duas processavam —
-// resposta duplicada e, no pior caso, ferramenta de escrita executada duas
-// vezes.
-//
-// `create()` falha com ALREADY_EXISTS (código gRPC 6) quando o documento já
-// existe; a checagem e a escrita acontecem numa única operação no servidor,
-// então duas chamadas concorrentes nunca adquirem o mesmo id.
-//
-// Falha DEPOIS da aquisição: o id permanece gravado e a reentrega da Meta é
-// descartada. É de propósito — a mensagem já pode ter sido enviada ao
-// cliente antes do erro, e liberar a trava reprocessaria (resposta dobrada,
-// possível agendamento duplicado). Mantém o mesmo comportamento de antes
-// desta correção (at-most-once) em vez de trocá-lo por um pior.
+// "Recebida" e "processada" são estados diferentes. Este guard só responde
+// true depois que o job foi concluído; mensagens recebidas vivem no inbox
+// durável abaixo e continuam recuperáveis após crash.
 export async function alreadyProcessed(waMessageId: string): Promise<boolean> {
-  const ref = db.collection("_processed_wa_messages").doc(waMessageId);
-  try {
-    await ref.create({ at: Date.now() });
-    return false; // adquirido agora por ESTA execução
-  } catch (err) {
-    if (isAlreadyExists(err)) return true; // outra execução já adquiriu
-    throw err; // erro real de infraestrutura — não engolir
-  }
+  return (await db.collection("_processed_wa_messages").doc(waMessageId).get()).exists;
 }
 
-// ALREADY_EXISTS do Firestore: código gRPC 6. Checa também a mensagem porque
-// o emulador/algumas versões do SDK só trazem o texto.
-function isAlreadyExists(err: unknown): boolean {
-  const e = err as { code?: unknown; message?: unknown } | null;
-  if (!e) return false;
-  if (e.code === 6 || e.code === "already-exists") return true;
-  return typeof e.message === "string" && e.message.includes("ALREADY_EXISTS");
+const inboundJobRef = (waMessageId: string) => db.collection("_wa_inbound_jobs").doc(waMessageId);
+const conversationKey = (establishmentId: string, conversationId: string) => `${establishmentId}:${conversationId}`;
+
+export async function enqueueWhatsAppInboundJob(input: {
+  waMessageId: string;
+  establishmentId: string;
+  conversationId: string;
+  whatsappPhoneNumberId: string;
+  value: Record<string, unknown>;
+  message: Record<string, unknown>;
+  now?: number;
+}): Promise<{ queued: boolean; sequence: number | null }> {
+  const jobRef = inboundJobRef(input.waMessageId);
+  const processedRef = db.collection("_processed_wa_messages").doc(input.waMessageId);
+  const convRef = sub(input.establishmentId, "conversations").doc(input.conversationId);
+  return db.runTransaction(async (tx) => {
+    const [processed, existing, conversation] = await Promise.all([
+      tx.get(processedRef), tx.get(jobRef), tx.get(convRef),
+    ]);
+    if (processed.exists) return { queued: false, sequence: null };
+    if (existing.exists) return { queued: false, sequence: Number((existing.data() as WhatsAppInboundJob).sequence) };
+    if (!conversation.exists) { console.error("CONV NOT FOUND", convRef); throw new Error("conversation_not_found"); }
+    const current = conversation.data() as Conversation;
+    const sequence = Number(current.inboundSequence ?? 0) + 1;
+    const job: WhatsAppInboundJob = {
+      id: input.waMessageId,
+      establishmentId: input.establishmentId,
+      conversationId: input.conversationId,
+      conversationKey: conversationKey(input.establishmentId, input.conversationId),
+      sequence,
+      receivedAt: input.now ?? Date.now(),
+      whatsappPhoneNumberId: input.whatsappPhoneNumberId,
+      attempts: 0,
+      nextAttemptAt: input.now ?? Date.now(),
+      lastErrorCode: null,
+      lastAttemptAt: null,
+      value: input.value,
+      message: input.message,
+    };
+    tx.create(jobRef, job);
+    tx.update(convRef, { inboundSequence: sequence });
+    return { queued: true, sequence };
+  });
+}
+
+export async function listWhatsAppInboundJobs(
+  establishmentId: string,
+  conversationId: string,
+): Promise<WhatsAppInboundJob[]> {
+  const snap = await db.collection("_wa_inbound_jobs")
+    .where("conversationKey", "==", conversationKey(establishmentId, conversationId))
+    .get();
+  return snap.docs
+    .map((doc) => doc.data() as WhatsAppInboundJob)
+    .sort((a, b) => a.sequence - b.sequence || a.receivedAt - b.receivedAt);
+}
+
+export async function listRecoverableWhatsAppInboundJobs(limitCount = 50, now = Date.now()): Promise<WhatsAppInboundJob[]> {
+  const snap = await db.collection("_wa_inbound_jobs")
+    .where("nextAttemptAt", "<", now + 1)
+    .orderBy("nextAttemptAt", "asc")
+    .limit(limitCount)
+    .get();
+  return snap.docs.map((doc) => doc.data() as WhatsAppInboundJob);
+}
+
+const PROCESSED_MARKER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const INBOUND_MAX_ATTEMPTS = 5;
+const INBOUND_RETRY_BASE_MS = 60_000;
+
+function inboundRetryDelay(attempt: number): number {
+  return Math.min(60 * 60 * 1000, INBOUND_RETRY_BASE_MS * (2 ** Math.max(0, attempt - 1)));
+}
+
+export async function completeWhatsAppInboundJob(
+  job: WhatsAppInboundJob,
+  leaseId: string,
+  options: { now?: number; outcome?: "completed" | "outbound_reconciliation_required" } = {},
+): Promise<boolean> {
+  const jobRef = inboundJobRef(job.id);
+  const processedRef = db.collection("_processed_wa_messages").doc(job.id);
+  const convRef = sub(job.establishmentId, "conversations").doc(job.conversationId);
+  const now = options.now ?? Date.now();
+  return db.runTransaction(async (tx) => {
+    const [pending, conversation] = await Promise.all([tx.get(jobRef), tx.get(convRef)]);
+    if (!pending.exists) return true;
+    if (!conversation.exists) return false;
+
+    // Conclusão também é uma mutação protegida pelo lease. Sem isto, um
+    // owner que expirou durante IA/download/envio ainda poderia apagar o job
+    // já retomado por outra invocação.
+    const current = conversation.data() as Conversation;
+    const active = current.aiProcessingLease;
+    if (!active || active.leaseId !== leaseId || active.expiresAt <= now) return false;
+
+    // O watermark só é seguro se continuar contíguo. O drain entrega em
+    // ordem; rejeitar um salto impede que processedInboundSequence esconda
+    // um job anterior ainda pendente.
+    const processed = Number(current.processedInboundSequence ?? 0);
+    if (job.sequence !== processed + 1) return false;
+
+    tx.set(processedRef, {
+      at: now,
+      expiresAt: now + PROCESSED_MARKER_RETENTION_MS,
+      establishmentId: job.establishmentId,
+      conversationId: job.conversationId,
+      outcome: options.outcome ?? "completed",
+    });
+    tx.delete(jobRef);
+    tx.update(convRef, { processedInboundSequence: job.sequence });
+    return true;
+  });
+}
+
+export async function failWhatsAppInboundJob(
+  job: WhatsAppInboundJob,
+  leaseId: string,
+  errorCode: string,
+  options: { now?: number; terminal?: boolean; maxAttempts?: number } = {},
+): Promise<"retry_scheduled" | "dead_letter" | "lease_lost"> {
+  const now = options.now ?? Date.now();
+  const jobRef = inboundJobRef(job.id);
+  const processedRef = db.collection("_processed_wa_messages").doc(job.id);
+  const deadRef = db.collection("_wa_inbound_dead_letters").doc(job.id);
+  const convRef = sub(job.establishmentId, "conversations").doc(job.conversationId);
+  return db.runTransaction(async (tx) => {
+    const [pending, conversation] = await Promise.all([tx.get(jobRef), tx.get(convRef)]);
+    if (!pending.exists) return "dead_letter";
+    if (!conversation.exists) return "lease_lost";
+    const current = conversation.data() as Conversation;
+    const lease = current.aiProcessingLease;
+    if (!lease || lease.leaseId !== leaseId || lease.expiresAt <= now) return "lease_lost";
+
+    const latest = pending.data() as WhatsAppInboundJob;
+    const attempts = Number(latest.attempts ?? 0) + 1;
+    const terminal = Boolean(options.terminal) || attempts >= (options.maxAttempts ?? INBOUND_MAX_ATTEMPTS);
+    if (!terminal) {
+      tx.update(jobRef, {
+        attempts,
+        lastAttemptAt: now,
+        lastErrorCode: errorCode,
+        nextAttemptAt: now + inboundRetryDelay(attempts),
+      });
+      return "retry_scheduled";
+    }
+
+    const processed = Number(current.processedInboundSequence ?? 0);
+    if (latest.sequence !== processed + 1) return "lease_lost";
+    tx.set(deadRef, {
+      ...latest,
+      attempts,
+      failedAt: now,
+      terminalReason: errorCode,
+    });
+    tx.set(processedRef, {
+      at: now,
+      expiresAt: now + PROCESSED_MARKER_RETENTION_MS,
+      establishmentId: latest.establishmentId,
+      conversationId: latest.conversationId,
+      outcome: "dead_letter",
+      errorCode,
+    });
+    tx.delete(jobRef);
+    tx.update(convRef, { processedInboundSequence: latest.sequence });
+    return "dead_letter";
+  });
+}
+
+export async function quarantineOrphanWhatsAppInboundJobs(
+  establishmentId: string,
+  conversationId: string,
+  now = Date.now(),
+): Promise<number> {
+  const conv = await sub(establishmentId, "conversations").doc(conversationId).get();
+  if (conv.exists) return 0;
+  const jobs = await listWhatsAppInboundJobs(establishmentId, conversationId);
+  for (const job of jobs) {
+    const jobRef = inboundJobRef(job.id);
+    await db.runTransaction(async (tx) => {
+      const current = await tx.get(jobRef);
+      if (!current.exists) return;
+      const latest = current.data() as WhatsAppInboundJob;
+      tx.set(db.collection("_wa_inbound_dead_letters").doc(job.id), {
+        ...latest,
+        failedAt: now,
+        terminalReason: "conversation_orphaned",
+      });
+      tx.set(db.collection("_processed_wa_messages").doc(job.id), {
+        at: now,
+        expiresAt: now + PROCESSED_MARKER_RETENTION_MS,
+        establishmentId,
+        conversationId,
+        outcome: "dead_letter",
+        errorCode: "conversation_orphaned",
+      });
+      tx.delete(jobRef);
+    });
+  }
+  return jobs.length;
+}
+
+export async function quarantineWhatsAppInboundSequenceGap(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const convRef = sub(establishmentId, "conversations").doc(conversationId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(convRef);
+    if (!snap.exists) return true;
+    const conversation = snap.data() as Conversation;
+    const lease = conversation.aiProcessingLease;
+    if (!lease || lease.leaseId !== leaseId) return true;
+    const processed = Number(conversation.processedInboundSequence ?? 0);
+    const inbound = Number(conversation.inboundSequence ?? 0);
+    if (processed >= inbound) {
+      tx.update(convRef, { aiProcessingLease: null });
+      return true;
+    }
+    const gapId = `${establishmentId}:${conversationId}:gap:${processed + 1}-${inbound}`;
+    tx.set(db.collection("_wa_inbound_dead_letters").doc(gapId), {
+      id: gapId,
+      establishmentId,
+      conversationId,
+      failedAt: now,
+      terminalReason: "inbound_sequence_gap",
+      fromSequence: processed + 1,
+      toSequence: inbound,
+    });
+    tx.update(convRef, { processedInboundSequence: inbound, aiProcessingLease: null });
+    return true;
+  });
+}
+
+export async function deleteExpiredWhatsAppProcessedMarkers(now = Date.now(), limitCount = 100): Promise<number> {
+  const collection = db.collection("_processed_wa_messages");
+  const snap = await collection.where("at", "<", now - PROCESSED_MARKER_RETENTION_MS).limit(limitCount).get();
+  await Promise.all(snap.docs.map((doc) => collection.doc(doc.id).delete()));
+  return snap.docs.length;
+}
+
+// Serializa o processamento automático por conversa entre instâncias. O
+// vencimento é obrigatório: uma invocação interrompida não pode silenciar o
+// cliente para sempre. O dono renova o lease nas bordas externas (IA/tools/
+// envio), onde pode haver espera relevante.
+const CONVERSATION_PROCESSING_LEASE_MS = 2 * 60 * 1000;
+
+export async function tryAcquireConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  options: { now?: number; leaseId?: string; ttlMs?: number } = {},
+): Promise<string | null> {
+  const now = options.now ?? Date.now();
+  const leaseId = options.leaseId ?? randomUUID();
+  const ttlMs = options.ttlMs ?? CONVERSATION_PROCESSING_LEASE_MS;
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const active = (snap.data() as Conversation).aiProcessingLease;
+    if (active && active.expiresAt > now) return null;
+    tx.update(ref, { aiProcessingLease: { leaseId, acquiredAt: now, expiresAt: now + ttlMs } });
+    return leaseId;
+  });
+}
+
+// Renova somente o lease ainda pertencente a esta execução e, ao mesmo tempo,
+// faz a leitura autoritativa do handoff. Isso impede que um processamento que
+// já perdeu a conversa para um humano siga para nova IA/tool ou entrega.
+export async function renewConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+  options: { now?: number; ttlMs?: number; allowNonAutomatedStatus?: boolean } = {},
+): Promise<boolean> {
+  const now = options.now ?? Date.now();
+  const ttlMs = options.ttlMs ?? CONVERSATION_PROCESSING_LEASE_MS;
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const conversation = snap.data() as Conversation;
+    const active = conversation.aiProcessingLease;
+    if (!active || active.leaseId !== leaseId || active.expiresAt <= now) return false;
+    // O drain ainda precisa persistir mensagens destinadas ao atendente e
+    // atualizar a pending task. Só as bordas de AUTOMAÇÃO rejeitam esses
+    // estados; a renovação estrutural do owner pode autorizá-los.
+    if (!options.allowNonAutomatedStatus && (conversation.status === "human" || conversation.status === "handoff")) return false;
+    tx.update(ref, { "aiProcessingLease.expiresAt": now + ttlMs });
+    return true;
+  });
+}
+
+export async function releaseConversationProcessingLease(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+): Promise<void> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const active = (snap.data() as Conversation).aiProcessingLease;
+    if (active?.leaseId === leaseId) tx.update(ref, { aiProcessingLease: null });
+  });
+}
+
+// Libera somente quando nenhum recebimento ficou atrás do owner. Enqueue e
+// release escrevem o mesmo documento, então a transação é reexecutada se uma
+// mensagem chegar exatamente na fronteira de esvaziamento.
+export async function releaseConversationProcessingLeaseIfDrained(
+  establishmentId: string,
+  conversationId: string,
+  leaseId: string,
+): Promise<boolean> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return true;
+    const conversation = snap.data() as Conversation;
+    const active = conversation.aiProcessingLease;
+    if (!active || active.leaseId !== leaseId) return true;
+    if (Number(conversation.processedInboundSequence ?? 0) < Number(conversation.inboundSequence ?? 0)) return false;
+    tx.update(ref, { aiProcessingLease: null });
+    return true;
+  });
 }
 
 export async function markDailyOwnerSummarySent(id: string, localDate: string): Promise<void> {
   await establishmentRef(id).update({ "dailyOwnerSummary.lastSentDate": localDate });
+}
+
+// ---- Prospecção Assistida pela Lívia ----
+
+/**
+ * Cria ou recria de forma idempotente uma sessão de prospecção.
+ * Se já existir uma sessão com o mesmo leadId, garante que o telefone seja o mesmo.
+ * Se já existir uma sessão ativa para o telefone, ou se estiver OPTED_OUT, recusa (lança erro).
+ * Se a sessão atual estiver EXPIRED ou CLOSED, permite recriar sobrescrevendo (resetando o estado).
+ */
+export async function upsertProspectingSession(
+  establishmentId: string,
+  input: {
+    leadId: string;
+    phone: string;
+    businessName: string;
+    segment: string;
+    initialManualMessage: string;
+    now?: number;
+  }
+): Promise<ProspectingSession> {
+  const normalizedPhone = normalizePhone(input.phone);
+  const now = input.now ?? Date.now();
+  const ref = sub(establishmentId, "prospectingSessions").doc(normalizedPhone);
+
+  return db.runTransaction(async (tx) => {
+    // 1. Verificar unicidade do leadId no tenant
+    const leadIdSnap = await tx.get(
+      sub(establishmentId, "prospectingSessions").where("leadId", "==", input.leadId).limit(1)
+    );
+    if (!leadIdSnap.empty) {
+      const existingDoc = leadIdSnap.docs[0];
+      if (existingDoc && existingDoc.id !== normalizedPhone) {
+        throw new Error("conflict_lead_id_different_phone");
+      }
+    }
+
+    // 2. Verificar o documento pelo telefone
+    const snap = await tx.get(ref);
+    if (snap.exists) {
+      const existing = snap.data() as ProspectingSession;
+      
+      if (existing.status === "OPTED_OUT") {
+        throw new Error("opted_out");
+      }
+      
+      const isTerminal = 
+        existing.status === "NOT_INTERESTED" ||
+        existing.status === "HUMAN" ||
+        existing.status === "CLOSED" ||
+        existing.status === "EXPIRED";
+        
+      if (!isTerminal) {
+        // Se a sessão já existe, está ativa e pertence ao mesmo leadId, é idempotente se a mensagem for igual.
+        // Opcionalmente podemos lançar conflito. A V1 conservadora lança erro se tentar recriar ativa.
+        // "criação repetida/idempotente não duplica" -> Se for o mesmo leadId e estiver em PREPARED, podemos só retornar a existente.
+        if (existing.leadId === input.leadId && existing.status === "PREPARED") {
+          if (existing.initialManualMessage !== input.initialManualMessage) {
+            throw new Error("conflict_active_session"); // Mensagem imutável
+          }
+          return existing; // Idempotente
+        }
+        throw new Error("conflict_active_session");
+      }
+    }
+
+    // 3. Criar ou sobrescrever (no caso de CLOSED/EXPIRED)
+    const session: ProspectingSession = {
+      id: normalizedPhone,
+      establishmentId,
+      leadId: input.leadId,
+      normalizedPhone,
+      businessName: input.businessName,
+      segment: input.segment,
+      initialManualMessage: input.initialManualMessage,
+      preRevealReplyCount: 0,
+      status: "PREPARED",
+      preparedAt: now,
+      manualSendConfirmedAt: null,
+      firstReplyAt: null,
+      revealedAt: null,
+      completedAt: null,
+      expiresAt: now + 48 * 60 * 60 * 1000, // 48h
+      outcome: null,
+      createdAt: snap.exists ? (snap.data() as ProspectingSession).createdAt : now,
+      updatedAt: now,
+    };
+
+    tx.set(ref, session);
+    return session;
+  });
+}
+
+export async function getProspectingSessionByPhone(
+  establishmentId: string,
+  phone: string
+): Promise<ProspectingSession | null> {
+  const normalizedPhone = normalizePhone(phone);
+  const doc = await sub(establishmentId, "prospectingSessions").doc(normalizedPhone).get();
+  if (!doc.exists) return null;
+  const data = doc.data() as ProspectingSession;
+  data.preRevealReplyCount = data.preRevealReplyCount ?? 0;
+  return data;
+}
+
+export async function getProspectingSessionByLeadId(
+  establishmentId: string,
+  leadId: string
+): Promise<ProspectingSession | null> {
+  const snap = await sub(establishmentId, "prospectingSessions").where("leadId", "==", leadId).limit(1).get();
+  if (snap.empty) return null;
+  const data = snap.docs[0]?.data() as ProspectingSession;
+  if (data) data.preRevealReplyCount = data.preRevealReplyCount ?? 0;
+  return data;
+}
+
+export type ProspectingSessionTransition =
+  | { action: "confirm_manual_send" }
+  | { action: "abort" }
+  | { action: "receive_reply" }
+  | { action: "reveal" }
+  | { action: "set_outcome"; status: "INTERESTED" | "NOT_INTERESTED" | "HUMAN" }
+  | { action: "opt_out" }
+  | { action: "expire" };
+
+/**
+ * Transiciona o status da ProspectingSession de forma segura, garantindo invariantes de estado.
+ */
+export async function transitionProspectingSession(
+  establishmentId: string,
+  phone: string,
+  transition: ProspectingSessionTransition,
+  now = Date.now()
+): Promise<ProspectingSession | null> {
+  const normalizedPhone = normalizePhone(phone);
+  const ref = sub(establishmentId, "prospectingSessions").doc(normalizedPhone);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    
+    const session = snap.data() as ProspectingSession;
+    
+    // Regra: Estados terminais não regressam
+    const isTerminal = 
+        session.status === "NOT_INTERESTED" ||
+        session.status === "HUMAN" ||
+        session.status === "CLOSED" ||
+        session.status === "EXPIRED" ||
+        session.status === "OPTED_OUT";
+
+    // O webhook pode chamar expire em sessões ativas
+    if (transition.action === "expire") {
+      if (isTerminal) return session; // idempotente ou sem efeito
+      const update = {
+        status: "EXPIRED" as const,
+        completedAt: now,
+        outcome: "expired" as const,
+        updatedAt: now
+      };
+      tx.update(ref, update);
+      return { ...session, ...update };
+    }
+
+    if (isTerminal) {
+      // Se a transição for a mesma que gerou o terminal, pode ser considerado idempotente se desejado,
+      // mas na V1 simplesmente evitamos alterar estados terminais.
+      throw new Error("invalid_transition_terminal_state");
+    }
+
+    const patch: Partial<ProspectingSession> = { updatedAt: now };
+
+    switch (transition.action) {
+      case "confirm_manual_send":
+        if (session.status !== "PREPARED" && session.status !== "WAITING_REPLY") {
+          // Se já passou de WAITING_REPLY (ex: LIVIA_ACTIVE), a confirmação do RE chega atrasada.
+          // Aceitamos gravar o timestamp sem alterar o status da sessão (mantém LIVIA_ACTIVE).
+          if (!session.manualSendConfirmedAt) patch.manualSendConfirmedAt = now;
+        } else {
+          patch.status = "WAITING_REPLY";
+          patch.manualSendConfirmedAt = now;
+        }
+        break;
+
+      case "abort":
+        patch.status = "CLOSED";
+        patch.completedAt = now;
+        patch.outcome = "closed";
+        break;
+
+      case "receive_reply":
+        if (session.status === "PREPARED" || session.status === "WAITING_REPLY") {
+          patch.status = "LIVIA_ACTIVE";
+          patch.firstReplyAt = now;
+        } else if (session.status === "LIVIA_ACTIVE" || session.status === "REVEALED" || session.status === "INTERESTED") {
+          // Idempotente para replies subsequentes
+        } else {
+          throw new Error("invalid_transition_receive_reply");
+        }
+        break;
+
+      case "reveal":
+        if (session.status === "LIVIA_ACTIVE") {
+          patch.status = "REVEALED";
+          patch.revealedAt = now;
+        } else if (session.status === "REVEALED" || session.status === "INTERESTED") {
+          // Idempotente
+        } else {
+          throw new Error("invalid_transition_reveal");
+        }
+        break;
+
+      case "set_outcome":
+        if (transition.status === "INTERESTED") {
+          patch.status = "INTERESTED";
+        } else {
+          patch.status = transition.status;
+          patch.completedAt = now;
+          if (transition.status === "HUMAN") patch.outcome = "human";
+          if (transition.status === "NOT_INTERESTED") patch.outcome = "not_interested";
+        }
+        break;
+
+      case "opt_out":
+        patch.status = "OPTED_OUT";
+        patch.completedAt = now;
+        patch.outcome = "opt_out";
+        break;
+    }
+
+    tx.update(ref, patch);
+    return { ...session, ...patch };
+  });
+}
+
+export async function incrementProspectingPreRevealCount(
+  establishmentId: string,
+  phone: string,
+  jobId: string
+): Promise<void> {
+  const ref = sub(establishmentId, "prospectingSessions").doc(normalizePhone(phone));
+  await db.runTransaction(async (t) => {
+    const doc = await t.get(ref);
+    if (!doc.exists) return;
+    const data = doc.data() as ProspectingSession;
+    if (data.status !== "LIVIA_ACTIVE") return;
+    if (data.lastPreRevealJobId === jobId) return; // Idempotente
+    if ((data.preRevealReplyCount ?? 0) >= 1) return; // Limite teto
+    t.update(ref, {
+      preRevealReplyCount: 1,
+      lastPreRevealJobId: jobId,
+      updatedAt: Date.now()
+    });
+  });
 }

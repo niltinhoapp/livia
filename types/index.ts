@@ -395,6 +395,71 @@ export interface Conversation {
   // atendimento humano e a continuidade numa próxima conversa.
   summary?: string;
   summaryUpdatedAt?: number;
+  // Lease distribuída do processamento automático. Não é estado de negócio:
+  // vence sozinha para que uma função interrompida nunca deixe a conversa
+  // travada. Só o dono do lease pode renová-la ou liberá-la.
+  aiProcessingLease?: {
+    leaseId: string;
+    acquiredAt: number;
+    expiresAt: number;
+  } | null;
+  // Sequência durável do inbox inbound. Receber e concluir são fatos
+  // distintos: um crash pode deixar inbound > processed para recuperação.
+  inboundSequence?: number;
+  processedInboundSequence?: number;
+}
+
+// Token de fencing de um turno automático. Toda mutação comercial iniciada
+// pela IA valida este token dentro da mesma transação que grava o efeito.
+// Assim, lease expirado/substituído ou handoff invalidam o turno antigo.
+export interface AutomationFence {
+  conversationId: string;
+  leaseId: string;
+}
+
+export interface WhatsAppInboundJob {
+  id: string; // = waMessageId
+  establishmentId: string;
+  conversationId: string;
+  conversationKey: string;
+  sequence: number;
+  receivedAt: number;
+  // Geração do canal que recebeu a mensagem. Recovery só pode responder pela
+  // mesma conexão/número; reconectar outro número nunca reaproveita o job.
+  whatsappPhoneNumberId: string;
+  attempts: number;
+  nextAttemptAt: number;
+  lastErrorCode?: string | null;
+  lastAttemptAt?: number | null;
+  value: Record<string, unknown>;
+  message: Record<string, unknown>;
+}
+
+export type WhatsAppOutboundState =
+  | "pending"
+  | "sending"
+  | "confirmed"
+  | "reconciliation_required";
+
+export interface WhatsAppOutboundIntent {
+  id: string; // = inbound job id; no máximo uma resposta final por inbound
+  inboundJobId: string;
+  establishmentId: string;
+  conversationId: string;
+  toPhone: string;
+  whatsappPhoneNumberId: string;
+  text: string;
+  preferVoice: boolean;
+  prospectingAction?: any;
+  state: WhatsAppOutboundState;
+  attempts: number;
+  nextAttemptAt: number;
+  claimId?: string | null;
+  claimExpiresAt?: number | null;
+  waMessageId?: string | null;
+  lastErrorCode?: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 // ---- Agenda ----
@@ -419,6 +484,10 @@ export interface Appointment {
   createdAt: number;
   confirmedAt: number | null;
   reminderSentAt: number | null;
+  // Chaves estáveis derivadas do inbound, usadas para tornar create/update
+  // idempotentes mesmo quando o modelo muda a ordem das tool calls no replay.
+  operationId?: string;
+  appliedOperationIds?: string[];
   // Quando o status virou "cancelled" (lib/scheduling.ts: setStatus).
   // Ausente em documentos criados antes deste campo existir — tratado como
   // "não sabemos quando" em qualquer métrica que dependa disso (nunca
@@ -831,3 +900,56 @@ export interface Message {
   attachment?: MessageAttachment;
   transcription?: MessageTranscription;
 }
+
+
+// ---- Prospecção Assistida pela Lívia (Revenue Engine) ----
+export type ProspectingStatus =
+  | "PREPARED"
+  | "WAITING_REPLY"
+  | "LIVIA_ACTIVE"
+  | "REVEALED"
+  | "INTERESTED"
+  | "NOT_INTERESTED"
+  | "HUMAN"
+  | "EXPIRED"
+  | "CLOSED"
+  | "OPTED_OUT";
+
+export interface ProspectingContext {
+  leadId: string;
+  normalizedPhone: string;
+  businessName: string;
+  segment: string;
+  initialManualMessage: string;
+  status: ProspectingStatus;
+  preRevealReplyCount: number;
+  lastPreRevealJobId?: string;
+  preparedAt: number;
+  manualSendConfirmedAt: number | null;
+  firstReplyAt: number | null;
+  revealedAt: number | null;
+  expiresAt: number;
+}
+
+export interface ProspectingSession {
+  id: string; // = normalizedPhone
+  establishmentId: string;
+  leadId: string;
+  normalizedPhone: string;
+  businessName: string;
+  segment: string;
+  initialManualMessage: string;
+  status: ProspectingStatus;
+  preRevealReplyCount: number;
+  lastPreRevealJobId?: string;
+  preparedAt: number;
+  manualSendConfirmedAt: number | null;
+  firstReplyAt: number | null;
+  revealedAt: number | null;
+  completedAt: number | null;
+  expiresAt: number;
+  outcome: "interested" | "not_interested" | "human" | "opt_out" | "expired" | "closed" | null;
+  createdAt: number;
+  updatedAt: number;
+}
+

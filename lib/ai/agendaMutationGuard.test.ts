@@ -468,6 +468,26 @@ describe("uma mutação de agenda bem-sucedida por turno", () => {
   });
 });
 
+describe("handoff autoritativo durante o loop", () => {
+  it("não chama modelo nem ferramenta quando a conversa perde autorização antes do turno", async () => {
+    const result = await think({
+      est,
+      kb: null,
+      history: [{ id: "customer", role: "customer", text: "Quero agendar", at: AGORA }],
+      contactPhone: "5514990000000",
+      contactName: "Carla",
+      customerProfile: null,
+      task: null,
+      intent,
+      canContinueAutomation: async () => false,
+    });
+
+    expect(result.abortedForHandoff).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    expect(runTool).not.toHaveBeenCalled();
+  });
+});
+
 describe("correções explícitas de data e horário", () => {
   it.each([
     ["quis dizer 10h", "10:00", "2026-09-09T13:00:00.000Z"],
