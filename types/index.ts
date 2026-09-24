@@ -899,6 +899,11 @@ export interface Message {
   media?: MessageMedia;
   attachment?: MessageAttachment;
   transcription?: MessageTranscription;
+  // Metadados técnicos mínimos de mensagens Meta sem suporte de conteúdo.
+  // O payload original nunca é persistido.
+  metaType?: string;
+  unsupportedType?: string;
+  metaErrorCode?: number | string;
 }
 
 

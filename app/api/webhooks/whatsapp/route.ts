@@ -794,13 +794,18 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     ...(persistedMedia ? { media: persistedMedia } : {}),
     ...(attachment ? { attachment } : {}),
     ...(transcription ? { transcription } : {}),
+    ...(inbound.kind === "unsupported" && inbound.metaType ? { metaType: inbound.metaType } : {}),
+    ...(inbound.kind === "unsupported" && inbound.unsupportedType ? { unsupportedType: inbound.unsupportedType } : {}),
+    ...(inbound.kind === "unsupported" && (typeof inbound.metaErrorCode === "number" || typeof inbound.metaErrorCode === "string")
+      ? { metaErrorCode: inbound.metaErrorCode }
+      : {}),
   });
 
   // Imagem/documento e demais tipos continuam apenas reconhecidos e
   // persistidos. Não há visão, OCR, parser de documento nem conteúdo
   // inventado. Áudio transcrito segue abaixo exatamente como texto.
   if (inbound.kind !== "text" && inbound.kind !== "audio") {
-    logStage("non-text message persisted without AI", { msgId: msg.id, type: inbound.kind });
+    logStage("non-text message persisted without AI", { msgId: msg.id, type: msg.type, kind: inbound.kind });
     return;
   }
 

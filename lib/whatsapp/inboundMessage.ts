@@ -16,6 +16,8 @@ export interface MetaInboundMessage {
     button_reply?: { id?: string; title?: string };
     list_reply?: { id?: string; title?: string; description?: string };
   };
+  unsupported?: { type?: string };
+  errors?: Array<{ code?: number | string }>;
 }
 
 interface MetaMedia {
@@ -33,6 +35,9 @@ export interface InboundMessage {
   kind: MessageKind;
   text: string;
   media?: MessageMedia;
+  metaType?: string;
+  unsupportedType?: string;
+  metaErrorCode?: number | string;
 }
 
 const PLACEHOLDER: Record<Exclude<MessageKind, "text">, string> = {
@@ -74,6 +79,20 @@ function withMedia(
   };
 }
 
+function unsupportedFrom(message: MetaInboundMessage): InboundMessage {
+  return {
+    waMessageId: message.id,
+    from: message.from ?? "",
+    kind: "unsupported",
+    text: PLACEHOLDER.unsupported,
+    ...(message.type ? { metaType: message.type } : {}),
+    ...(message.unsupported?.type ? { unsupportedType: message.unsupported.type } : {}),
+    ...(typeof message.errors?.[0]?.code === "number" || typeof message.errors?.[0]?.code === "string"
+      ? { metaErrorCode: message.errors[0].code }
+      : {}),
+  };
+}
+
 // Fronteira controlada entre o payload heterogêneo da Meta e o contrato
 // interno. Não faz download nem mantém URLs temporárias/autenticadas.
 export function parseInboundMessage(message: MetaInboundMessage): InboundMessage {
@@ -81,7 +100,7 @@ export function parseInboundMessage(message: MetaInboundMessage): InboundMessage
     case "text":
       return typeof message.text?.body === "string" && message.text.body.length > 0
         ? { waMessageId: message.id, from: message.from ?? "", kind: "text", text: message.text.body }
-        : { waMessageId: message.id, from: message.from ?? "", kind: "unsupported", text: PLACEHOLDER.unsupported };
+        : unsupportedFrom(message);
     case "audio":
       return withMedia(message, "audio", message.audio);
     case "image":
@@ -104,6 +123,6 @@ export function parseInboundMessage(message: MetaInboundMessage): InboundMessage
       };
     }
     default:
-      return { waMessageId: message.id, from: message.from ?? "", kind: "unsupported", text: PLACEHOLDER.unsupported };
+      return unsupportedFrom(message);
   }
 }
