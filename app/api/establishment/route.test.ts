@@ -63,4 +63,44 @@ describe("/api/establishment", () => {
     expect(response.status).toBe(200);
     expectSafeWhatsapp(body);
   });
+
+  it("persiste sendTime e preserva o estado técnico do resumo diário", async () => {
+    getEstablishment.mockResolvedValueOnce({
+      ...establishment,
+      dailyOwnerSummary: {
+        enabled: true, ownerPhone: "5514999999999", templateName: "resumo_diario",
+        templateLang: "pt_BR", sendTime: "18:00", lastSentDate: "2026-09-24",
+      },
+    });
+
+    await PUT(new NextRequest("https://example.test/api/establishment", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dailyOwnerSummary: {
+        enabled: true, ownerPhone: "(14) 99999-9999", sendTime: "09:30",
+        templateName: "não-substituir", templateLang: "en_US",
+      } }),
+    }));
+
+    expect(upsertEstablishmentConfig).toHaveBeenCalledWith("est_1", expect.objectContaining({
+      dailyOwnerSummary: {
+        enabled: true, ownerPhone: "14999999999", templateName: "resumo_diario",
+        templateLang: "pt_BR", sendTime: "09:30", lastSentDate: "2026-09-24",
+      },
+    }));
+  });
+
+  it("normaliza horário inválido e usa o fallback de idioma quando ainda não há resumo", async () => {
+    getEstablishment.mockResolvedValueOnce(establishment);
+
+    await PUT(new NextRequest("https://example.test/api/establishment", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dailyOwnerSummary: {
+        enabled: true, ownerPhone: "5514999999999", sendTime: "25:99", templateName: "resumo_diario", templateLang: "",
+      } }),
+    }));
+
+    expect(upsertEstablishmentConfig).toHaveBeenCalledWith("est_1", expect.objectContaining({
+      dailyOwnerSummary: expect.objectContaining({ templateName: "resumo_diario", templateLang: "pt_BR", sendTime: "18:00" }),
+    }));
+  });
 });

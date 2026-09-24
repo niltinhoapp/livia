@@ -73,11 +73,11 @@ export async function PUT(req: NextRequest) {
   const existing = await getEstablishment(id);
   const previousSummary = existing?.dailyOwnerSummary;
   const requestedTime = String(raw.dailyOwnerSummary?.sendTime ?? previousSummary?.sendTime ?? "18:00").trim();
-  const sendTime = /^(?:[01]\\d|2[0-3]):[0-5]\\d$/.test(requestedTime) ? requestedTime : "18:00";
+  const sendTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(requestedTime) ? requestedTime : "18:00";
   const dailyOwnerSummary: DailyOwnerSummaryConfig | undefined = raw.dailyOwnerSummary
     ? {
         enabled: Boolean(raw.dailyOwnerSummary.enabled),
-        ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\\D/g, "").slice(0, 15),
+        ownerPhone: String(raw.dailyOwnerSummary.ownerPhone ?? "").replace(/\D/g, "").slice(0, 15),
         // Template/idioma são configuração técnica: a tela não os expõe.
         // Preserva os valores já provisionados no tenant.
         templateName: previousSummary?.templateName ?? String(raw.dailyOwnerSummary.templateName ?? "").trim().slice(0, 128),
