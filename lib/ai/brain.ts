@@ -171,6 +171,38 @@ function taskToText(task: ConversationTask | null): string | null {
   return lines.join("\n");
 }
 
+function prospectingCommercialGuidance(
+  prospectingContext: ProspectingContext,
+  bot: Establishment["bot"],
+  phase: "revelation" | "continuation",
+): string[] {
+  const configuredCapabilities = [
+    "atender mensagens pelo WhatsApp e responder com base nas informações que o estabelecimento configurar",
+    ...(bot.bookingEnabled ? ["ajudar com agendamentos quando essa função estiver configurada"] : []),
+    ...(bot.ordersEnabled ? ["ajudar com pedidos quando essa função estiver configurada"] : []),
+  ];
+
+  const shared = [
+    `O estabelecimento prospectado é "${prospectingContext.businessName}" e o segmento informado é "${prospectingContext.segment}". Use esses dados para adaptar a conversa; não use roteiro fixo por segmento.`,
+    "Relacione o benefício ao segmento e ao contexto da conversa, escolhendo UMA situação plausível como hipótese (por exemplo, enquanto a equipe atende alguém, quando chega uma mensagem ou fora do horário). Nunca afirme que eles demoram para responder, perdem clientes, estão sobrecarregados ou têm qualquer problema sem que tenham dito isso.",
+    `Capacidades reais que você pode apresentar, sem despejar lista: ${configuredCapabilities.join("; ")}. Só mencione agenda ou pedidos de forma condicional e somente se a capacidade correspondente estiver disponível acima.`,
+    "Não invente recursos, integrações, preços, descontos, condições, contratação ou promessas comerciais.",
+  ];
+
+  if (phase === "revelation") {
+    return [
+      ...shared,
+      "A resposta desta revelação TAMBÉM é a primeira apresentação comercial. Depois de chamar update_prospecting_status com REVEALED, deixe claro de forma natural: quem você é (Lívia, assistente de IA da ConectWeb), que a ConectWeb está apresentando esta solução para o estabelecimento, e que a conversa anterior foi uma demonstração prática.",
+      "Venda primeiro UM benefício concreto e plausível para esse tipo de negócio antes de citar capacidades. Termine com UMA pergunta curta que permita mostrar como a solução funcionaria naquele estabelecimento. Seja breve, natural e adequada ao WhatsApp.",
+    ];
+  }
+
+  return [
+    ...shared,
+    "Você continua como agente comercial da solução Lívia da ConectWeb. Não repita a apresentação inteira: se houver interesse, descubra como o estabelecimento atende hoje ou qual necessidade quer resolver, fazendo UMA pergunta por vez. Relacione a resposta às capacidades reais acima e avance naturalmente para o próximo passo.",
+  ];
+}
+
 function buildSystemPrompt(
   est: Establishment,
   kb: KnowledgeBase | null,
@@ -225,7 +257,8 @@ function buildSystemPrompt(
           : "Regra 2: Se a primeira resposta for apenas uma saudação genérica (ex: 'Olá', 'Bom dia', 'Pois não?'), envie no máximo UMA interação curta simulando o cliente (relacionada à mensagem inicial). Na resposta seguinte, REVELE IMEDIATAMENTE com a ferramenta update_prospecting_status.",
         "Regra 3: ANTES de revelar, NUNCA invente nome falso, não invente dados pessoais, não marque nada. Se pedirem dados pessoais ou confirmação para prosseguir, REVELE imediatamente em vez de inventar.",
         "Regra 4: A revelação deve ser natural e transparente. Identifique-se claramente como Lívia, agente de IA da ConectWeb, e explique que o contato era uma demonstração. NÃO use tom acusatório. NÃO diga que foi uma auditoria. Reconheça se responderam rápido ou bem.",
-        "IMPORTANTE: Você SÓ muda de assunto para a venda/prospecção APÓS usar a ferramenta update_prospecting_status com REVEALED."
+        "IMPORTANTE: Você SÓ muda de assunto para a venda/prospecção APÓS usar a ferramenta update_prospecting_status com REVEALED.",
+        ...prospectingCommercialGuidance(prospectingContext, bot, "revelation"),
       );
     } else if (prospectingContext.status === "REVEALED" || prospectingContext.status === "INTERESTED") {
       rules.push(
@@ -237,7 +270,8 @@ function buildSystemPrompt(
         "Se a pessoa demonstrar interesse claro, use a ferramenta update_prospecting_status com INTERESTED e continue respondendo dúvidas permitidas.",
         "Se a pessoa disser que não tem interesse ou agradecer encerrando, responda educadamente, despeça-se e use update_prospecting_status com NOT_INTERESTED.",
         "Se a pessoa pedir expressamente para parar de mandar mensagens, use update_prospecting_status com OPTED_OUT.",
-        "Se houver pedido explícito de humano, negociação de preço, ou dúvidas complexas comerciais que você não saiba responder, use request_human_handoff."
+        "Se houver pedido explícito de humano, negociação de preço, desconto, condição especial, contratação/fechamento, ou dúvidas comerciais que você não saiba responder, use request_human_handoff.",
+        ...prospectingCommercialGuidance(prospectingContext, bot, "continuation"),
       );
     }
   }
