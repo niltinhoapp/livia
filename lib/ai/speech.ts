@@ -27,7 +27,7 @@ export async function synthesizeSpeech(text: string): Promise<{ bytes: Uint8Arra
   const voice = process.env.LIVIA_TTS_VOICE?.trim() || DEFAULT_SPEECH_VOICE;
   const instructions = process.env.LIVIA_TTS_INSTRUCTIONS?.trim() || DEFAULT_SPEECH_INSTRUCTIONS;
   try {
-    const response = await new OpenAI({ apiKey }).audio.speech.create({ model, voice, input, instructions, response_format: "opus" }, { timeout: 30_000, maxRetries: 0 });
+    const response = await new OpenAI({ apiKey }).audio.speech.create({ model, voice, input, instructions, response_format: "opus", speed: 1.21 } as any, { timeout: 30_000, maxRetries: 0 });
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length || bytes.length > MAX_TTS_AUDIO_BYTES || bytes[0] !== 0x4f || bytes[1] !== 0x67 || bytes[2] !== 0x67 || bytes[3] !== 0x53) throw new SpeechError("invalid_audio");
     return { bytes, mimeType: "audio/ogg", provider: SPEECH_PROVIDER, model, voice };
