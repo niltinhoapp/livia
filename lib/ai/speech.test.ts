@@ -10,13 +10,13 @@ describe("synthesizeSpeech", () => {
   it("usa voz nova e envia instructions por padrão", async () => {
     await synthesizeSpeech("Olá!");
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ voice: "nova", instructions: DEFAULT_SPEECH_INSTRUCTIONS }),
+      expect.objectContaining({ voice: "marin", instructions: DEFAULT_SPEECH_INSTRUCTIONS }),
       expect.anything(),
     );
   });
 
   it("converte exatamente o texto final para Ogg/Opus com modelo correto", async () => {
-    await expect(synthesizeSpeech("Resposta final")).resolves.toMatchObject({ mimeType: "audio/ogg", model: "gpt-4o-mini-tts", voice: "nova" });
+    await expect(synthesizeSpeech("Resposta final")).resolves.toMatchObject({ mimeType: "audio/ogg", model: "gpt-4o-mini-tts", voice: "marin" });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ input: "Resposta final", response_format: "opus" }), expect.anything());
   });
 

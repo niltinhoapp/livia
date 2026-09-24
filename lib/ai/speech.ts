@@ -2,7 +2,7 @@ import OpenAI from "openai";
 
 export const SPEECH_PROVIDER = "openai";
 export const DEFAULT_SPEECH_MODEL = "gpt-4o-mini-tts";
-export const DEFAULT_SPEECH_VOICE = "nova";
+export const DEFAULT_SPEECH_VOICE = "marin";
 export const MAX_TTS_CHARS = 1_200;
 export const MAX_TTS_AUDIO_BYTES = 8 * 1024 * 1024;
 
