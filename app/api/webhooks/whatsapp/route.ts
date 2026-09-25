@@ -90,6 +90,8 @@ import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
 import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription";
 import { synthesizeSpeech, SpeechError } from "@/lib/ai/speech";
+import { isLegacyBusinessInquiry, LEGACY_DEMO_CHANNEL_REPLY } from "@/lib/demoSafety";
+import { authorizeDemo, type DemoAuthorization } from "@/lib/demoAuthorization";
 import type {
   Establishment,
   EstablishmentWhatsapp,
@@ -102,6 +104,20 @@ import type {
 } from "@/types";
 
 const AUDIO_FAILURE_REPLY = "Não consegui entender esse áudio. Pode enviar novamente ou escrever a mensagem?";
+const PROSPECT_REVEAL_REPLY = `Eu sou a Lívia, assistente virtual com IA da ConectWeb.
+
+Esse atendimento que você acabou de fazer é justamente onde eu posso entrar: enquanto você cuida dos seus clientes, eu posso atender o WhatsApp, responder dúvidas e cuidar dos agendamentos automaticamente.
+
+Assim, você não precisa interromper seu trabalho e nenhum cliente fica esperando.
+
+Se fizer sentido, me dê um OK e eu te mostro como funciona.
+
+E se estiver ocupado(a), pode me mandar um áudio. Eu também posso te responder por áudio.`;
+
+function textRequestsVoice(text: string): boolean {
+  const value = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR");
+  return /\b(manda(\s+um)? audio|me responde (em )?audio|quero ouvir|pode explicar por audio)\b/.test(value);
+}
 
 class WhatsAppChannelGenerationError extends Error {
   constructor() {
@@ -549,6 +565,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   const { conversation, history } = await loadConversation(est.id, contactPhone, contactName);
 
   let prospectingContext: import("@/types").ProspectingContext | undefined;
+  let prospectingSession: import("@/types").ProspectingSession | null = null;
   {
     const normalizedContactPhone = normalizePhone(contactPhone);
     if (normalizedContactPhone) {
@@ -571,6 +588,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
               const updated = await import("@/lib/repo").then(m => m.transitionProspectingSession(est.id, normalizedContactPhone, { action: "receive_reply" }, now));
               if (updated) activeSession = updated;
             }
+            prospectingSession = activeSession;
             prospectingContext = {
               leadId: activeSession.leadId,
               normalizedPhone: activeSession.normalizedPhone,
@@ -806,6 +824,22 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // inventado. Áudio transcrito segue abaixo exatamente como texto.
   if (inbound.kind !== "text" && inbound.kind !== "audio") {
     logStage("non-text message persisted without AI", { msgId: msg.id, type: msg.type, kind: inbound.kind });
+    return;
+  }
+
+  // Guarda anterior à IA e às ferramentas: aliases são dados configuráveis do
+  // tenant demo, não termos fixos no código. Não altera sessão nem operação.
+  if (await isLegacyBusinessInquiry(est.id, customerText)) {
+    await replyAndLog(wa, est, conversation.id, contactPhone, LEGACY_DEMO_CHANNEL_REPLY, shouldReplyWithVoice(inbound.kind, est, customerText), msg.id, outboundContext());
+    return;
+  }
+
+  // A primeira resposta depois da abordagem manual é propositalmente
+  // determinística: não volta à simulação, não repete saudação nem qualifica.
+  if (prospectingContext?.status === "LIVIA_ACTIVE" && prospectingContext.preRevealReplyCount === 0) {
+    const sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, PROSPECT_REVEAL_REPLY, shouldReplyWithVoice(inbound.kind, est, customerText), msg.id, outboundContext(["bot"], { action: "reveal" }));
+    if (sent) await appendMessage(est.id, conversation.id, "bot", sent.text, sent.waMessageId);
+    if (sent) await import("@/lib/repo").then((m) => m.transitionProspectingSession(est.id, contactPhone, { action: "reveal" }));
     return;
   }
 
@@ -1102,6 +1136,13 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   const orderAwaitingConfirmation = activeOrder?.status === "awaiting_confirmation"
     ? { orderId: activeOrder.id, version: activeOrder.version }
     : null;
+  const demoAuthorization: DemoAuthorization = authorizeDemo({
+    establishment: est,
+    internalDemoProspectingEstablishmentId: process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID,
+    session: prospectingSession,
+    phone: normalizePhone(contactPhone),
+    leadId: prospectingContext?.leadId ?? "",
+  });
   let brainResult: Awaited<ReturnType<typeof think>>;
   try {
     brainResult = await think({
@@ -1112,6 +1153,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       contactName,
       customerProfile,
       prospectingContext,
+      demoAuthorization,
       task: existingTask,
       intent: detectedIntent,
       hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
@@ -1199,7 +1241,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   try {
     // A resposta textual ja e definitiva; a entrega so escolhe o canal e
     // nunca volta a chamar IA, ferramentas ou mutacoes.
-    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est), msg.id, outboundContext(["bot"], prospectingAction));
+    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est, customerText), msg.id, outboundContext(["bot"], prospectingAction));
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar
@@ -1340,8 +1382,8 @@ async function replyAndLog(
   await appendMessage(establishment.id, conversationId, "bot", sent.text, sent.waMessageId);
 }
 
-function shouldReplyWithVoice(kind: string, establishment: Establishment): boolean {
-  return kind === "audio" && Boolean(establishment.bot.voiceRepliesEnabled);
+function shouldReplyWithVoice(kind: string, establishment: Establishment, text = ""): boolean {
+  return Boolean(establishment.bot.voiceRepliesEnabled) && (kind === "audio" || textRequestsVoice(text));
 }
 
 function voiceDeliveryErrorCode(error: unknown): string {

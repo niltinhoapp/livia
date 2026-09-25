@@ -45,6 +45,7 @@ function assertTransition(from: PaymentStatus, to: PaymentStatus) {
 
 function requireConfirmedOrder(order: FoodOrder, establishmentId: string) {
   if (order.establishmentId !== establishmentId) throw new PaymentDomainError("tenant_mismatch");
+  if (order.mode === "demo") throw new PaymentDomainError("invalid_transition");
   // Snapshot confirmado continua válido após accepted/preparing/entrega e
   // completed. Cancelled/rejected não originam uma nova obrigação financeira.
   if (!new Set(["confirmed", "accepted", "preparing", "ready_for_pickup", "out_for_delivery", "completed"]).has(order.status) || !order.snapshot) throw new PaymentDomainError("order_not_confirmed");

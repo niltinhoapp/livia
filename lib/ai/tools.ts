@@ -8,6 +8,7 @@
 // lógica de negócio mora aqui, reaproveitando os motores existentes
 // (lib/scheduling.ts, lib/repo.ts) — nada é reimplementado.
 import type OpenAI from "openai";
+import type { DemoAuthorization } from "@/lib/demoAuthorization";
 import type { Appointment, Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile, OrderPaymentMethod, FoodOrder, AutomationFence } from "@/types";
 import {
   listAppointments,
@@ -46,7 +47,21 @@ export interface ToolContext {
   orderConfirmation?: { orderId: string; version: number; explicitlyConfirmed: boolean } | null;
   automationFence?: AutomationFence;
   prospectingContext?: import("@/types").ProspectingContext;
+  // Apenas transporte nesta etapa; nenhuma tool muda seu comportamento ainda.
+  demoAuthorization?: DemoAuthorization;
 }
+
+const isAuthorizedDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
+const matchingMode = (a: Appointment, ctx: ToolContext) => {
+  const authorization = ctx.demoAuthorization;
+  return authorization?.authorized === true
+    ? a.mode === "demo" && a.prospectingLeadId === authorization.prospectingLeadId
+    : a.mode !== "demo";
+};
+const demoAppointmentScope = (ctx: ToolContext) => {
+  const authorization = ctx.demoAuthorization;
+  return authorization?.authorized === true ? { mode: "demo" as const, prospectingLeadId: authorization.prospectingLeadId } : {};
+};
 
 export interface ToolResult {
   ok: boolean;
@@ -241,7 +256,7 @@ const findAvailableAppointments: ToolDefinition = {
 // ---- createAppointment ----
 const createAppointmentTool: ToolDefinition = {
   name: "create_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && !ctx.prospectingContext,
+  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn("create_appointment", "Cria o agendamento após o cliente escolher e confirmar um horário.", {
     type: "object",
     properties: {
@@ -272,6 +287,7 @@ const createAppointmentTool: ToolDefinition = {
         durationMin: duration,
         source: "bot" as const,
         operationId: operationIdFor(args),
+        ...demoAppointmentScope(ctx),
       };
       if (ctx.automationFence) await bookAppointment(ctx.est.id, config, input, Date.now(), ctx.automationFence);
       else await bookAppointment(ctx.est.id, config, input);
@@ -319,7 +335,7 @@ const getCustomerAppointments: ToolDefinition = {
 
     // listActiveCustomerAppointments já pagina e filtra: cancelamentos não
     // consomem o limite nem escondem um agendamento ativo.
-    const active = await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), from);
+    const active = (await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), from)).filter((a) => matchingMode(a, ctx));
 
     if (active.length === 0) {
       return {
@@ -386,9 +402,9 @@ const confirmAppointment: ToolDefinition = {
       const found = await getAppointment(ctx.est.id, args.appointmentId);
       // Trava de segurança: só confirma agendamento DESTE contato — um id
       // vindo do modelo nunca pode alcançar o agendamento de outra pessoa.
-      if (found && normalizePhone(found.contactPhone) === phone) target = found;
+      if (found && matchingMode(found, ctx) && normalizePhone(found.contactPhone) === phone) target = found;
     } else {
-      const ativos = await listActiveCustomerAppointments(ctx.est.id, phone, Date.now());
+      const ativos = (await listActiveCustomerAppointments(ctx.est.id, phone, Date.now())).filter((a) => matchingMode(a, ctx));
       if (ativos.length > 1) {
         return {
           ok: false,
@@ -449,7 +465,7 @@ const confirmAppointment: ToolDefinition = {
 // para que a pessoa diga qual — escolher sozinha é justamente o erro.
 const rescheduleAppointment: ToolDefinition = {
   name: "reschedule_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && !ctx.prospectingContext,
+  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn(
     "reschedule_appointment",
     "Remarca um agendamento do cliente para um novo horário. Se ele tiver mais de um agendamento ativo, informe appointmentId (vindo de get_customer_appointments) — nunca escolha por conta própria. Use find_available_appointments antes para confirmar que o novo horário está livre.",
@@ -467,7 +483,7 @@ const rescheduleAppointment: ToolDefinition = {
     const diaErrado = assertSameDay(ctx, args.newStartAt);
     if (diaErrado) return diaErrado;
 
-    const ativos = await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), Date.now());
+    const ativos = (await listActiveCustomerAppointments(ctx.est.id, normalizePhone(ctx.contactPhone), Date.now())).filter((a) => matchingMode(a, ctx));
     if (ativos.length === 0) return { ok: false, error: "nenhum agendamento ativo encontrado para remarcar" };
 
     const pedido = typeof args.appointmentId === "string" ? args.appointmentId : undefined;
@@ -511,7 +527,7 @@ const rescheduleAppointment: ToolDefinition = {
 // ---- cancelAppointment ----
 const cancelAppointment: ToolDefinition = {
   name: "cancel_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && !ctx.prospectingContext,
+  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn(
     "cancel_appointment",
     "Cancela UM agendamento específico do cliente, identificado pelo id. Só use depois que a pessoa tiver confirmado explicitamente que quer cancelar aquele horário.",
@@ -536,7 +552,7 @@ const cancelAppointment: ToolDefinition = {
     const appt = await getAppointment(ctx.est.id, args.appointmentId);
     // Trava de posse: um id vindo do modelo nunca pode alcançar o
     // agendamento de outra pessoa.
-    if (!appt || normalizePhone(appt.contactPhone) !== normalizePhone(ctx.contactPhone)) {
+    if (!appt || !matchingMode(appt, ctx) || normalizePhone(appt.contactPhone) !== normalizePhone(ctx.contactPhone)) {
       return { ok: false, error: "agendamento não encontrado para este cliente" };
     }
     if (!isActive(appt)) {
@@ -586,6 +602,8 @@ async function pixInstructionsFor(ctx: ToolContext, order: FoodOrder | null): Pr
 const orderConversationId = (ctx: ToolContext) => normalizePhone(ctx.contactPhone);
 const automationFenceArg = (ctx: ToolContext): [] | [AutomationFence] =>
   ctx.automationFence ? [ctx.automationFence] : [];
+const addOrderDemoArg = (ctx: ToolContext): [AutomationFence | undefined, Extract<DemoAuthorization, { authorized: true }> | undefined] =>
+  [ctx.automationFence, ctx.prospectingContext && ctx.demoAuthorization?.authorized ? ctx.demoAuthorization : undefined];
 // __operationId é metadado injetado pelo loop de tool calls em brain.ts.
 // Não integra o schema público e, portanto, não pode ser escolhido pelo modelo.
 const operationIdFor = (args: Record<string, unknown>) =>
@@ -608,14 +626,14 @@ const MAX_MENU_PRODUCTS = 60;
 const listMenuTool: ToolDefinition = { name: "list_menu", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("list_menu", "Lista o cardápio completo, agrupado por categoria. Use quando o cliente pedir o cardápio ou perguntar o que tem, sem citar um item específico.", { type: "object", properties: {} }), async execute(ctx) { const menu = await (await orderService()).listAvailableMenu(ctx.est.id); let remaining = MAX_MENU_PRODUCTS; const categories = []; for (const category of menu) { if (remaining <= 0) break; const products = category.products.slice(0, remaining); remaining -= products.length; categories.push({ name: category.name, products: products.map((p) => ({ id: p.id, name: p.name, description: p.description ? p.description.slice(0, 80) : null, basePriceCents: p.basePriceCents, hasVariants: p.variants.some((v) => v.active), hasModifiers: p.modifierGroups.length > 0 })) }); } const total = menu.reduce((sum, c) => sum + c.products.length, 0); return { ok: true, data: { categories, truncated: total > MAX_MENU_PRODUCTS } }; } };
 const listMenuCategoryTool: ToolDefinition = { name: "list_menu_category", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("list_menu_category", "Lista produtos disponíveis de UMA categoria do cardápio (ex.: pizzas, bebidas, lanches). Use quando o cliente pedir uma categoria específica; não invente itens ou preços.", { type: "object", properties: { category: { type: "string" } }, required: ["category"] }), async execute(ctx, args) { const raw = typeof args.category === "string" ? args.category.trim() : ""; const normalize = (v: string) => v.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR").replace(/s$/, ""); const query = normalize(raw); if (!query) return { ok: false, error: "categoria obrigatória" }; const matches = (await (await orderService()).listAvailableMenu(ctx.est.id)).filter((item) => item.id === raw || normalize(item.name) === query); if (matches.length !== 1) return { ok: false, error: matches.length ? "categoria ambígua" : "categoria não encontrada" }; const category = matches[0]!; return { ok: true, data: { id: category.id, name: category.name, products: category.products.map((p) => ({ id: p.id, name: p.name, description: p.description, basePriceCents: p.basePriceCents, variants: p.variants.filter((v) => v.active), modifierGroups: p.modifierGroups.map((g) => ({ id: g.id, name: g.name, required: g.required, minSelections: g.minSelections, maxSelections: g.maxSelections, options: g.options.filter((o) => o.active) })) })) } }; } };
 const getOrderDraftTool: ToolDefinition = { name: "get_order_draft", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("get_order_draft", "Retorna o resumo canônico do pedido atual, incluindo total calculado pelo backend. Use antes de apresentar total ou pedir confirmação.", { type: "object", properties: {} }), async execute(ctx) { const order = await (await orderService()).getActiveOrder(ctx.est.id, orderConversationId(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } };
-const addOrderItemTool: ToolDefinition = { name: "add_order_item", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("add_order_item", "Adiciona produto ao pedido usando IDs de search_menu/get_menu_product. O backend valida disponibilidade, variação, adicionais e preço.", { type: "object", properties: { productId: { type: "string" }, variantId: { type: "string" }, modifierOptionIds: { type: "array", items: { type: "string" } }, quantity: { type: "number" }, notes: { type: "string" } }, required: ["productId", "quantity"] }), async execute(ctx, args) { try { const order = await (await orderService()).addOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.productId ?? ""), typeof args.variantId === "string" ? args.variantId : null, Array.isArray(args.modifierOptionIds) ? args.modifierOptionIds.filter((v): v is string => typeof v === "string") : [], Number(args.quantity), typeof args.notes === "string" ? args.notes : null, operationIdFor(args), Boolean(args.__allowDraftCreation), ...automationFenceArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return orderMutationFailure(e); } } };
-const updateOrderItemTool: ToolDefinition = { name: "update_order_item", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("update_order_item", "Altera um item que já está no pedido: quantidade, observação, tamanho/variação ou adicionais. Use o itemId do resumo e os IDs reais de variação/adicional do produto. O backend recalcula o preço; nunca informe valor.", { type: "object", properties: { itemId: { type: "string" }, quantity: { type: "number" }, notes: { type: "string" }, variantId: { type: ["string", "null"], description: "id da variação; null remove a variação atual" }, modifierOptionIds: { type: "array", items: { type: "string" }, description: "lista COMPLETA de adicionais que o item deve ficar, não só os novos" } }, required: ["itemId"] }), async execute(ctx, args) { try { const order = await (await orderService()).updateOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.itemId ?? ""), { quantity: typeof args.quantity === "number" ? args.quantity : undefined, notes: typeof args.notes === "string" ? args.notes : undefined, variantId: args.variantId === null ? null : typeof args.variantId === "string" ? args.variantId : undefined, modifierOptionIds: Array.isArray(args.modifierOptionIds) ? args.modifierOptionIds.filter((v): v is string => typeof v === "string") : undefined }, operationIdFor(args), ...automationFenceArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return orderMutationFailure(e); } } };
-const removeOrderItemTool: ToolDefinition = { name: "remove_order_item", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("remove_order_item", "Remove um item identificado pelo itemId do resumo atual.", { type: "object", properties: { itemId: { type: "string" } }, required: ["itemId"] }), async execute(ctx, args) { try { return { ok: true, data: orderSummary(await (await orderService()).removeOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.itemId ?? ""), operationIdFor(args), ...automationFenceArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
-const setOrderFulfillmentTool: ToolDefinition = { name: "set_order_fulfillment", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_fulfillment", "Define retirada ou entrega. Nunca estime taxa: o backend calcula.", { type: "object", properties: { fulfillment: { type: "string", enum: ["pickup", "delivery"] } }, required: ["fulfillment"] }), async execute(ctx, args) { try { const fulfillment = args.fulfillment === "pickup" || args.fulfillment === "delivery" ? args.fulfillment : null; if (!fulfillment) throw new Error("modalidade inválida"); return { ok: true, data: orderSummary(await (await orderService()).setOrderFulfillment(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, fulfillment, operationIdFor(args), ...automationFenceArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
-const setOrderAddressTool: ToolDefinition = { name: "set_order_address", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_address", "Registra o endereço informado pelo cliente para entrega. Pergunte bairro se houver taxa por bairro e não invente dados.", { type: "object", properties: { raw: { type: "string" }, neighborhood: { type: "string" }, reference: { type: "string" } }, required: ["raw"] }), async execute(ctx, args) { try { return { ok: true, data: orderSummary(await (await orderService()).setOrderAddress(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.raw ?? ""), typeof args.neighborhood === "string" ? args.neighborhood : null, typeof args.reference === "string" ? args.reference : null, operationIdFor(args), ...automationFenceArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
-const setOrderPaymentTool: ToolDefinition = { name: "set_order_payment", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_payment", "Define a forma de pagamento aceita pelo estabelecimento. Não processa pagamento nem usa billing SaaS.", { type: "object", properties: { method: { type: "string", enum: ["pix", "cash", "credit_card", "debit_card"] }, changeForCents: { type: "number" } }, required: ["method"] }), async execute(ctx, args) { try { const method = args.method as OrderPaymentMethod; if (!["pix", "cash", "credit_card", "debit_card"].includes(method)) throw new Error("forma inválida"); const order = await (await orderService()).setOrderPayment(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, method, typeof args.changeForCents === "number" ? args.changeForCents : null, operationIdFor(args), ...automationFenceArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return orderMutationFailure(e); } } };
-const prepareOrderConfirmationTool: ToolDefinition = { name: "prepare_order_confirmation", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("prepare_order_confirmation", "Gera o resumo canônico e coloca o pedido em aguardando confirmação. Use somente quando todos os itens, retirada/entrega, endereço e pagamento já estiverem definidos.", { type: "object", properties: {} }), async execute(ctx, args) { try { const order = await (await orderService()).prepareOrderConfirmation(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, operationIdFor(args), ...automationFenceArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return { ok: false, error: String(e) }; } } };
-const confirmOrderTool: ToolDefinition = { name: "confirm_order", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("confirm_order", "Fecha o pedido somente quando a mensagem atual do cliente for uma confirmação explícita do resumo canônico pendente.", { type: "object", properties: {} }), async execute(ctx, args) { try { const confirmation = ctx.orderConfirmation; if (!confirmation?.explicitlyConfirmed) throw new Error("Ainda preciso de uma confirmação explícita do resumo para fechar o pedido."); const order = await (await orderService()).confirmOrder(ctx.est.id, confirmation.orderId, confirmation.version, ctx.contactPhone, operationIdFor(args), ...automationFenceArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return { ok: false, error: String(e) }; } } };
+const addOrderItemTool: ToolDefinition = { name: "add_order_item", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("add_order_item", "Adiciona produto ao pedido usando IDs de search_menu/get_menu_product. O backend valida disponibilidade, variação, adicionais e preço.", { type: "object", properties: { productId: { type: "string" }, variantId: { type: "string" }, modifierOptionIds: { type: "array", items: { type: "string" } }, quantity: { type: "number" }, notes: { type: "string" } }, required: ["productId", "quantity"] }), async execute(ctx, args) { try { const order = await (await orderService()).addOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.productId ?? ""), typeof args.variantId === "string" ? args.variantId : null, Array.isArray(args.modifierOptionIds) ? args.modifierOptionIds.filter((v): v is string => typeof v === "string") : [], Number(args.quantity), typeof args.notes === "string" ? args.notes : null, operationIdFor(args), Boolean(args.__allowDraftCreation), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return orderMutationFailure(e); } } };
+const updateOrderItemTool: ToolDefinition = { name: "update_order_item", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled) && !ctx.prospectingContext, schema: fn("update_order_item", "Altera um item que já está no pedido: quantidade, observação, tamanho/variação ou adicionais. Use o itemId do resumo e os IDs reais de variação/adicional do produto. O backend recalcula o preço; nunca informe valor.", { type: "object", properties: { itemId: { type: "string" }, quantity: { type: "number" }, notes: { type: "string" }, variantId: { type: ["string", "null"], description: "id da variação; null remove a variação atual" }, modifierOptionIds: { type: "array", items: { type: "string" }, description: "lista COMPLETA de adicionais que o item deve ficar, não só os novos" } }, required: ["itemId"] }), async execute(ctx, args) { try { const order = await (await orderService()).updateOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.itemId ?? ""), { quantity: typeof args.quantity === "number" ? args.quantity : undefined, notes: typeof args.notes === "string" ? args.notes : undefined, variantId: args.variantId === null ? null : typeof args.variantId === "string" ? args.variantId : undefined, modifierOptionIds: Array.isArray(args.modifierOptionIds) ? args.modifierOptionIds.filter((v): v is string => typeof v === "string") : undefined }, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return orderMutationFailure(e); } } };
+const removeOrderItemTool: ToolDefinition = { name: "remove_order_item", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("remove_order_item", "Remove um item identificado pelo itemId do resumo atual.", { type: "object", properties: { itemId: { type: "string" } }, required: ["itemId"] }), async execute(ctx, args) { try { return { ok: true, data: orderSummary(await (await orderService()).removeOrderItem(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.itemId ?? ""), operationIdFor(args), ...addOrderDemoArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
+const setOrderFulfillmentTool: ToolDefinition = { name: "set_order_fulfillment", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_fulfillment", "Define retirada ou entrega. Nunca estime taxa: o backend calcula.", { type: "object", properties: { fulfillment: { type: "string", enum: ["pickup", "delivery"] } }, required: ["fulfillment"] }), async execute(ctx, args) { try { const fulfillment = args.fulfillment === "pickup" || args.fulfillment === "delivery" ? args.fulfillment : null; if (!fulfillment) throw new Error("modalidade inválida"); return { ok: true, data: orderSummary(await (await orderService()).setOrderFulfillment(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, fulfillment, operationIdFor(args), ...addOrderDemoArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
+const setOrderAddressTool: ToolDefinition = { name: "set_order_address", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_address", "Registra o endereço informado pelo cliente para entrega. Pergunte bairro se houver taxa por bairro e não invente dados.", { type: "object", properties: { raw: { type: "string" }, neighborhood: { type: "string" }, reference: { type: "string" } }, required: ["raw"] }), async execute(ctx, args) { try { return { ok: true, data: orderSummary(await (await orderService()).setOrderAddress(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, String(args.raw ?? ""), typeof args.neighborhood === "string" ? args.neighborhood : null, typeof args.reference === "string" ? args.reference : null, operationIdFor(args), ...addOrderDemoArg(ctx))) }; } catch (e) { return orderMutationFailure(e); } } };
+const setOrderPaymentTool: ToolDefinition = { name: "set_order_payment", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_payment", "Define a forma de pagamento aceita pelo estabelecimento. Não processa pagamento nem usa billing SaaS.", { type: "object", properties: { method: { type: "string", enum: ["pix", "cash", "credit_card", "debit_card"] }, changeForCents: { type: "number" } }, required: ["method"] }), async execute(ctx, args) { try { const method = args.method as OrderPaymentMethod; if (!["pix", "cash", "credit_card", "debit_card"].includes(method)) throw new Error("forma inválida"); const order = await (await orderService()).setOrderPayment(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, method, typeof args.changeForCents === "number" ? args.changeForCents : null, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return orderMutationFailure(e); } } };
+const prepareOrderConfirmationTool: ToolDefinition = { name: "prepare_order_confirmation", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("prepare_order_confirmation", "Gera o resumo canônico e coloca o pedido em aguardando confirmação. Use somente quando todos os itens, retirada/entrega, endereço e pagamento já estiverem definidos.", { type: "object", properties: {} }), async execute(ctx, args) { try { const order = await (await orderService()).prepareOrderConfirmation(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return { ok: false, error: String(e) }; } } };
+const confirmOrderTool: ToolDefinition = { name: "confirm_order", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("confirm_order", "Fecha o pedido somente quando a mensagem atual do cliente for uma confirmação explícita do resumo canônico pendente.", { type: "object", properties: {} }), async execute(ctx, args) { try { const confirmation = ctx.orderConfirmation; if (!confirmation?.explicitlyConfirmed) throw new Error("Ainda preciso de uma confirmação explícita do resumo para fechar o pedido."); const order = await (await orderService()).confirmOrder(ctx.est.id, confirmation.orderId, confirmation.version, ctx.contactPhone, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return { ok: false, error: String(e) }; } } };
 const getOrderStatusTool: ToolDefinition = { name: "get_order_status", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("get_order_status", "Consulta o estado real de um pedido do próprio cliente.", { type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] }), async execute(ctx, args) { const order = await (await orderService()).getOrder(ctx.est.id, String(args.orderId ?? "")); return order && normalizePhone(order.contactPhone) === normalizePhone(ctx.contactPhone) ? { ok: true, data: orderSummary(order) } : { ok: false, error: "pedido não encontrado para este cliente" }; } };
 
 // ---- requestHumanHandoff ----
@@ -673,15 +691,22 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   requestHumanHandoff, updateProspectingStatus,
 ];
 
+const DEMO_ORDER_MUTATION_TOOLS = new Set([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment",
+  "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
+]);
+const hasAuthorizedProspectDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
+
 export function toolsFor(ctx: ToolContext): OpenAI.Chat.ChatCompletionTool[] {
-  return TOOL_REGISTRY.filter((t) => t.enabled(ctx)).map((t) => t.schema);
+  return TOOL_REGISTRY.filter((t) => t.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(t.name))).map((t) => t.schema);
 }
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const tool = TOOL_REGISTRY.find((t) => t.name === name && t.enabled(ctx));
+  const tool = TOOL_REGISTRY.find((t) => t.name === name && (t.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(name))));
   if (!tool) return { ok: false, error: `ferramenta desconhecida ou indisponível: ${name}` };
   try {
-    return await tool.execute(ctx, args);
+    const result = await tool.execute(ctx, args);
+    return result;
   } catch (err) {
     return { ok: false, error: String(err) };
   }

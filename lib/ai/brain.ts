@@ -12,6 +12,7 @@ import { readConfirmation } from "@/lib/ai/confirmation";
 import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
 import type { ProspectingContext } from "@/types";
+import type { DemoAuthorization } from "@/lib/demoAuthorization";
 import { toolsFor, runTool, type ToolContext, type ToolResult } from "@/lib/ai/tools";
 import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
@@ -187,6 +188,7 @@ function prospectingCommercialGuidance(
     "Relacione o benefício ao segmento e ao contexto da conversa, escolhendo UMA situação plausível como hipótese (por exemplo, enquanto a equipe atende alguém, quando chega uma mensagem ou fora do horário). Nunca afirme que eles demoram para responder, perdem clientes, estão sobrecarregados ou têm qualquer problema sem que tenham dito isso.",
     `Capacidades reais que você pode apresentar, sem despejar lista: ${configuredCapabilities.join("; ")}. Só mencione agenda ou pedidos de forma condicional e somente se a capacidade correspondente estiver disponível acima.`,
     "Não invente recursos, integrações, preços, descontos, condições, contratação ou promessas comerciais.",
+    "Quando a sessão estiver REVEALED ou INTERESTED, você pode demonstrar agenda e pedidos usando as ferramentas reais. Todo resultado é DEMONSTRAÇÃO: diga explicitamente que agendamento é fictício e pedido não será preparado, entregue, cobrado ou enviado à operação.",
   ];
 
   if (phase === "revelation") {
@@ -265,7 +267,7 @@ function buildSystemPrompt(
         "--- MODO PROSPECÇÃO COMERCIAL ---",
         "A fase de simulação acabou. Você já se revelou como a Lívia, recepcionista com IA da ConectWeb.",
         "NÃO finja ser cliente e NUNCA retorne à simulação.",
-        "Agora você está em uma conversa COMERCIAL com o estabelecimento. Explique o que é a Lívia, seus benefícios, como ela automatiza o WhatsApp e ajuda na retenção, baseado APENAS nos seus conhecimentos.",
+        "Agora você está em uma conversa COMERCIAL com o estabelecimento. Explique o que é a Lívia, seus benefícios, como ela automatiza o WhatsApp e ajuda na retenção, baseado APENAS nos seus conhecimentos. Se a pessoa responder positivamente (OK, sim, quero saber, pode explicar, áudio ou equivalente), prossiga com a demonstração prática, sem exigir uma palavra específica.",
         "NÃO invente preços, descontos, integrações inexistentes ou promessas de vendas.",
         "Se a pessoa demonstrar interesse claro, use a ferramenta update_prospecting_status com INTERESTED e continue respondendo dúvidas permitidas.",
         "Se a pessoa disser que não tem interesse ou agradecer encerrando, responda educadamente, despeça-se e use update_prospecting_status com NOT_INTERESTED.",
@@ -942,6 +944,7 @@ export interface BrainInput {
   // outro tool_call id.
   operationIdScope?: string;
   prospectingContext?: ProspectingContext;
+  demoAuthorization?: DemoAuthorization;
 }
 
 export interface BrainResult {
@@ -1073,7 +1076,7 @@ function blockedAgendaMutationContinuation(completed: AgendaMutation, blocked: T
   return "";
 }
 
-function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null = null): string {
+function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null = null, demo = false): string {
   let reply: string;
   if (mutation.kind === "created") {
     if (mutation.when && mutation.serviceName) {
@@ -1103,7 +1106,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
   } else {
     reply = "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
   }
-  return reply + blockedAgendaMutationContinuation(mutation, blocked);
+  return reply + (demo ? " Este agendamento foi registrado no sistema apenas para demonstração e não representa uma reserva em estabelecimento real." : "") + blockedAgendaMutationContinuation(mutation, blocked);
 }
 
 export async function think(input: BrainInput): Promise<BrainResult> {
@@ -1149,7 +1152,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const discussedDate =
     statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
   const tools = toolsFor(toolCtx);
 
   let booked = false;
@@ -1251,13 +1254,24 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const pendingCancelAppointmentId =
     cancelOutcome?.kind === "needs_confirmation" ? cancelOutcome.appointmentId : null;
 
+  // No canal de demonstração, pedidos amplos de cardápio precisam consultar a
+  // fonte real antes da resposta textual. Isso impede afirmar que não há
+  // produtos por inferência do modelo quando o catálogo está cadastrado.
+  const latestProspectText = [...history].reverse().find((message) => message.role === "customer")?.text ?? "";
+  const prospectMenuRequest = /\b(card[áa]pio|lanche(?:s)?|bebida(?:s)?|pizza(?:s)?|produto(?:s)?)\b/i.test(latestProspectText);
+  const prospectMenu = input.demoAuthorization?.authorized && prospectMenuRequest
+    ? await runTool("list_menu", {}, toolCtx)
+    : null;
+  if (prospectMenu) toolCalls.push({ name: "list_menu", args: {} });
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
         buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext) +
         bookingOutcomeSection(bookingOutcome) +
-        cancelOutcomeSection(cancelOutcome),
+        cancelOutcomeSection(cancelOutcome) +
+        (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : ""),
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
@@ -1407,6 +1421,21 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         const reply = composeOrderConfirmationRequest(canonicalConfirmationSummary) ?? "Seu pedido está pronto para confirmação. Responda “confirmo” para fechar.";
         return { reply, handoff: false, booked, rescheduled, cancelled, agendaMutationCompleted: false, toolCalls, pendingCancelAppointmentId, statedDate, statedService, prospectingStatusTransition };
       }
+      if (orderConfirmedThisTurn && input.demoAuthorization?.authorized) {
+        return {
+          reply: "Prontinho! Pedido registrado no sistema. Foi exatamente assim que eu receberia e organizaria um pedido no seu estabelecimento. Só lembrando: este pedido é demonstrativo, então não será preparado nem entregue.",
+          handoff: false,
+          booked,
+          rescheduled,
+          cancelled,
+          agendaMutationCompleted: false,
+          toolCalls,
+          pendingCancelAppointmentId,
+          statedDate,
+          statedService,
+          prospectingStatusTransition,
+        };
+      }
       continue; // volta ao modelo com os resultados
     }
 
@@ -1426,7 +1455,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // Handoff pedido explicitamente por tool/token continua preservado.
     if (agendaMutation) {
       return {
-        reply: agendaMutationReply(agendaMutation, blockedAgendaMutation),
+        reply: agendaMutationReply(agendaMutation, blockedAgendaMutation, Boolean(input.demoAuthorization?.authorized)),
         handoff,
         booked,
         rescheduled,
@@ -1705,7 +1734,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   if (agendaMutation) {
     return {
       ...base,
-      reply: agendaMutationReply(agendaMutation, blockedAgendaMutation),
+      reply: agendaMutationReply(agendaMutation, blockedAgendaMutation, Boolean(input.demoAuthorization?.authorized)),
       handoff: handoffRequested && !clienteRecusouHumano,
     };
   }

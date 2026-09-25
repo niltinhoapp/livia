@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { transitionProspectingSession } from "@/lib/repo";
+import { parseProspectingChannel, prospectingEstablishmentId } from "@/lib/prospectingChannel";
 
 export const dynamic = "force-dynamic";
 
@@ -19,21 +20,12 @@ function authenticate(req: NextRequest): boolean {
   return bufToken.length === bufSecret.length && timingSafeEqual(bufToken, bufSecret);
 }
 
-function getEstablishmentId(): string | null {
-  return process.env.INTERNAL_PROSPECTING_ESTABLISHMENT_ID || null;
-}
-
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ phone: string }> }
 ) {
   if (!authenticate(req)) {
     return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
-  }
-
-  const establishmentId = getEstablishmentId();
-  if (!establishmentId) {
-    return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
   }
 
   const { phone: rawPhone } = await params;
@@ -53,7 +45,11 @@ export async function PATCH(
     return NextResponse.json({ error: "INVALID_PAYLOAD" }, { status: 400 });
   }
 
-  const { action } = body as Record<string, unknown>;
+  const { action, channel: rawChannel } = body as Record<string, unknown>;
+  const channel = parseProspectingChannel(rawChannel);
+  if (!channel) return NextResponse.json({ error: "INVALID_CHANNEL" }, { status: 400 });
+  const establishmentId = prospectingEstablishmentId(channel);
+  if (!establishmentId) return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
 
   if (action !== "confirm_manual_send" && action !== "abort") {
     return NextResponse.json({ error: "INVALID_ACTION" }, { status: 400 });

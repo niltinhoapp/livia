@@ -120,6 +120,23 @@ describe("matriz canônica de eventos", () => {
   });
 });
 
+describe("pedidos demonstrativos", () => {
+  it("dispatcher ignora notificação persistida indevidamente para pedido demo", async () => {
+    const demo = { ...order("demo", "confirmed", "pickup"), mode: "demo" as const, prospectingLeadId: "lead-demo" };
+    seedOrder(demo);
+    const id = orderNotificationId(demo.id, "accepted", demo.version + 1);
+    fakeDb.col(`establishments/${A}/orderNotifications`).set(id, {
+      id, establishmentId: A, orderId: demo.id, orderVersion: demo.version + 1,
+      event: "accepted", orderStatus: "accepted", fulfillment: "pickup", status: "pending",
+      sendType: null, attemptCount: 0, content: "Pedido demonstrativo", createdAt: NOW, updatedAt: NOW,
+    });
+
+    await expect(dispatchOrderStatusNotification(A, id)).resolves.toMatchObject({ status: "skipped", errorCode: "demo_order" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendTemplate).not.toHaveBeenCalled();
+  });
+});
+
 describe("envio, janela e templates", () => {
   it("dentro da janela usa texto de sessão determinístico e persiste wamid", async () => {
     const current = order("session123", "confirmed", "pickup"); seedOrder(current);

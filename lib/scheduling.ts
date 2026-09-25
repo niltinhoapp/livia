@@ -14,6 +14,7 @@ import type {
   KnowledgeService,
   AutomationFence,
 } from "@/types";
+
 import { assertAutomationFence } from "@/lib/automationFence";
 
 // ---- Config padrão (Seg-Sex 9-18 com almoço 12-13, Sáb 9-13) ----
@@ -178,6 +179,8 @@ export async function createAppointment(
     source: "bot" | "manual";
     note?: string | null;
     operationId?: string;
+    mode?: "demo";
+    prospectingLeadId?: string | null;
   },
 ): Promise<Appointment> {
   const ref = sub(establishmentId, "appointments").doc();
@@ -206,6 +209,7 @@ export async function createAppointment(
     createdAt: Date.now(),
     confirmedAt: null,
     reminderSentAt: null,
+    ...(data.mode === "demo" ? { mode: "demo" as const, prospectingLeadId: data.prospectingLeadId ?? null } : {}),
     ...(data.operationId ? { operationId: data.operationId, appliedOperationIds: [data.operationId] } : {}),
   };
   await ref.set(appt);
@@ -240,6 +244,7 @@ function newAppointment(establishmentId: string, id: string, data: AppointmentIn
     id, establishmentId, contactPhone: normalizePhone(data.contactPhone), contactName: data.contactName,
     serviceName: data.serviceName, startAt: data.startAt, durationMin: data.durationMin,
     status: "pending", source: data.source, note: data.note ?? null, createdAt: Date.now(), confirmedAt: null, reminderSentAt: null,
+    ...(data.mode === "demo" ? { mode: "demo" as const, prospectingLeadId: data.prospectingLeadId ?? null } : {}),
     ...(data.operationId ? { operationId: data.operationId, appliedOperationIds: [data.operationId] } : {}),
   };
 }

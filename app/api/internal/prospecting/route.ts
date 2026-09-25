@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { upsertProspectingSession, getProspectingSessionByLeadId } from "@/lib/repo";
+import { parseProspectingChannel, prospectingEstablishmentId } from "@/lib/prospectingChannel";
 
 export const dynamic = "force-dynamic";
 
@@ -19,18 +20,9 @@ function authenticate(req: NextRequest): boolean {
   return bufToken.length === bufSecret.length && timingSafeEqual(bufToken, bufSecret);
 }
 
-function getEstablishmentId(): string | null {
-  return process.env.INTERNAL_PROSPECTING_ESTABLISHMENT_ID || null;
-}
-
 export async function POST(req: NextRequest) {
   if (!authenticate(req)) {
     return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
-  }
-
-  const establishmentId = getEstablishmentId();
-  if (!establishmentId) {
-    return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
   }
 
   let body;
@@ -44,7 +36,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "INVALID_PAYLOAD" }, { status: 400 });
   }
 
-  const { leadId, phone, businessName, segment, initialManualMessage } = body as Record<string, unknown>;
+  const { leadId, phone, businessName, segment, initialManualMessage, channel: rawChannel } = body as Record<string, unknown>;
+  const channel = parseProspectingChannel(rawChannel);
+  if (!channel) return NextResponse.json({ error: "INVALID_CHANNEL" }, { status: 400 });
+  const establishmentId = prospectingEstablishmentId(channel);
+  if (!establishmentId) return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
 
   if (typeof leadId !== "string" || !leadId.trim() || leadId.length > 128) {
     return NextResponse.json({ error: "INVALID_PAYLOAD", details: "leadId must be a string up to 128 chars" }, { status: 400 });
@@ -100,10 +96,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
   }
 
-  const establishmentId = getEstablishmentId();
-  if (!establishmentId) {
-    return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
-  }
+  const channel = parseProspectingChannel(req.nextUrl.searchParams.get("channel"));
+  if (!channel) return NextResponse.json({ error: "INVALID_CHANNEL" }, { status: 400 });
+  const establishmentId = prospectingEstablishmentId(channel);
+  if (!establishmentId) return NextResponse.json({ error: "INTERNAL_CONFIGURATION_ERROR" }, { status: 500 });
 
   const leadId = req.nextUrl.searchParams.get("leadId");
   if (!leadId || typeof leadId !== "string" || leadId.trim().length === 0 || leadId.length > 128) {

@@ -42,6 +42,9 @@ export interface Establishment {
   // lib/billing/stateMachine.ts: canUseService). Fundação apenas — nada
   // aqui ainda é lido ou escrito por nenhuma rota (OT-05B).
   billing?: EstablishmentBilling;
+  // Opt-in explícito: somente o tenant oficial de demonstração pode liberar
+  // mutações Prospect, ainda sujeito à sessão válida e ao env interno.
+  demoChannel?: { enabled: boolean };
   // Configuração do bot (persona + regras).
   bot: BotConfig;
   // Resumo operacional enviado ao proprietário no fim do expediente.
@@ -228,7 +231,7 @@ export interface OrderStatusHistoryEntry {
 // Valores e composição congelados no instante do fechamento. O histórico não
 // consulta o cardápio atual para reconstruir um pedido já confirmado.
 export interface FoodOrderSnapshot { items: OrderItem[]; subtotalCents: number; discountCents: number; deliveryFeeCents: number; totalCents: number; fulfillment: "pickup" | "delivery"; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; payment: { method: OrderPaymentMethod; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; createdAt: number; }
-export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; operationalHistory?: OrderStatusHistoryEntry[]; createdAt: number; updatedAt: number; confirmedAt: number | null; }
+export interface FoodOrder { id: string; establishmentId: string; conversationId: string; contactPhone: string; contactName: string | null; status: OrderStatus; fulfillment: "pickup" | "delivery" | null; deliveryAddress: { raw: string; neighborhood: string | null; reference: string | null } | null; deliveryFeeCents: number; discountCents: number; payment: { method: OrderPaymentMethod | null; status: "unpaid" | "pending" | "paid"; changeForCents: number | null }; items: OrderItem[]; subtotalCents: number; totalCents: number; version: number; appliedOperationIds?: string[]; confirmationRequestedAt: number | null; snapshot: FoodOrderSnapshot | null; operationalHistory?: OrderStatusHistoryEntry[]; createdAt: number; updatedAt: number; confirmedAt: number | null; mode?: "demo"; prospectingLeadId?: string | null; }
 
 // Payments é deliberadamente separado de FoodOrder e de Establishment.billing.
 // O pedido conserva a intenção operacional; esta entidade é a verdade
@@ -484,6 +487,10 @@ export interface Appointment {
   createdAt: number;
   confirmedAt: number | null;
   reminderSentAt: number | null;
+  // Ausente em documentos antigos = produção. Registros demo nunca entram
+  // na agenda comercial nem em seus lembretes.
+  mode?: "demo";
+  prospectingLeadId?: string | null;
   // Chaves estáveis derivadas do inbound, usadas para tornar create/update
   // idempotentes mesmo quando o modelo muda a ordem das tool calls no replay.
   operationId?: string;

@@ -14,11 +14,13 @@ import { transitionProspectingSession } from "@/lib/repo";
 
 const SECRET = "secret-token";
 const EST_ID = "est-conectweb";
+const DEMO_EST_ID = "est-demo";
 
 beforeEach(() => {
   fakeDb.reset();
   process.env.INTERNAL_PROSPECTING_SECRET = SECRET;
   process.env.INTERNAL_PROSPECTING_ESTABLISHMENT_ID = EST_ID;
+  process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID = DEMO_EST_ID;
   vi.clearAllMocks();
 });
 
@@ -170,6 +172,31 @@ describe("Prospecção Assistida API", () => {
     const res = await POST(req);
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe("INTERNAL_CONFIGURATION_ERROR");
+  });
+
+  it("mantém Revenue como padrão e aceita channel=revenue explicitamente", async () => {
+    await expect(POST(createReq("POST", "/", validPayload, `Bearer ${SECRET}`))).resolves.toMatchObject({ status: 201 });
+    await expect(POST(createReq("POST", "/", { ...validPayload, leadId: "lead-2", phone: "5511888888888", channel: "revenue" }, `Bearer ${SECRET}`))).resolves.toMatchObject({ status: 201 });
+    expect(fakeDb.col(`establishments/${EST_ID}/prospectingSessions`).size).toBe(2);
+    expect(fakeDb.col(`establishments/${DEMO_EST_ID}/prospectingSessions`).size).toBe(0);
+  });
+
+  it("channel=demo cria, consulta e confirma a mesma sessão no tenant Demo", async () => {
+    const create = await POST(createReq("POST", "/", { ...validPayload, channel: "demo" }, `Bearer ${SECRET}`));
+    expect(create.status).toBe(201);
+    expect(fakeDb.col(`establishments/${DEMO_EST_ID}/prospectingSessions`).get(validPayload.phone)).toMatchObject({ establishmentId: DEMO_EST_ID });
+    expect((await GET(createReq("GET", "/?leadId=lead-1&channel=demo", null, `Bearer ${SECRET}`))).status).toBe(200);
+    const patch = await PATCH(createReq("PATCH", "/", { action: "confirm_manual_send", channel: "demo" }, `Bearer ${SECRET}`), { params: Promise.resolve({ phone: validPayload.phone }) });
+    expect(patch.status).toBe(200);
+    expect((await patch.json()).session).toMatchObject({ establishmentId: DEMO_EST_ID, status: "WAITING_REPLY" });
+    expect((await GET(createReq("GET", "/?leadId=lead-1", null, `Bearer ${SECRET}`))).status).toBe(404);
+  });
+
+  it("rejeita channel inválido e nunca aceita tenant arbitrário", async () => {
+    const invalid = await POST(createReq("POST", "/", { ...validPayload, channel: "other", establishmentId: "hacker" }, `Bearer ${SECRET}`));
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error).toBe("INVALID_CHANNEL");
+    expect(fakeDb.col("establishments/hacker/prospectingSessions").size).toBe(0);
   });
 });
 

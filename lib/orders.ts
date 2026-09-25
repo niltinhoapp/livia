@@ -7,6 +7,7 @@ import { getScheduleConfig } from "@/lib/scheduling";
 import { getEstablishment } from "@/lib/repo";
 import { normalizeOrderHours, orderHoursAvailability, type LocalOpening } from "@/lib/orderHours";
 import { ACTIVE_ORDER_STATUSES, CLOSED_ORDER_STATUSES, allowedOrderTransitions, isOperationalOrder } from "@/lib/orderLifecycle";
+import type { DemoAuthorization as CanonicalDemoAuthorization } from "@/lib/demoAuthorization";
 export { allowedOrderTransitions, isOperationalOrder } from "@/lib/orderLifecycle";
 
 const ACTIVE_DRAFT = new Set<OrderStatus>(["draft", "awaiting_confirmation"]);
@@ -22,6 +23,20 @@ export const defaultOrderSettings = (): OrderSettings => ({ pickupEnabled: true,
 const cents = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
 const text = (value: unknown, max = 160) => typeof value === "string" ? value.trim().slice(0, max) : "";
 const orderRef = (establishmentId: string, orderId: string) => sub(establishmentId, "orders").doc(orderId);
+
+// Construída somente na borda (webhook/brain) após validar tenant, canal,
+// sessão e lead. O domínio apenas aplica a variante autorizada canônica.
+type AuthorizedDemoAuthorization = Extract<CanonicalDemoAuthorization, { authorized: true }>;
+
+function assertDraftScope(order: FoodOrder, demo?: AuthorizedDemoAuthorization): void {
+  if (demo) {
+    if (order.mode !== "demo" || order.prospectingLeadId !== demo.prospectingLeadId) {
+      throw new Error("draft_scope_mismatch");
+    }
+    return;
+  }
+  if (order.mode === "demo") throw new Error("draft_scope_mismatch");
+}
 
 export function normalizeOrderSettings(input: Partial<OrderSettings>): OrderSettings {
   const validMethods: OrderPaymentMethod[] = ["pix", "cash", "credit_card", "debit_card"];
@@ -212,13 +227,13 @@ function recalculate(order: FoodOrder, settings: OrderSettings): FoodOrder {
   const discountCents = Math.max(0, order.discountCents ?? 0);
   return { ...order, subtotalCents, discountCents, deliveryFeeCents, totalCents: subtotalCents + deliveryFeeCents - discountCents };
 }
-async function draftFor(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId?: string, allowCreateAfterConfirmation = false, automationFence?: AutomationFence): Promise<FoodOrder> {
+async function draftFor(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId?: string, allowCreateAfterConfirmation = false, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization): Promise<FoodOrder> {
   const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
   const intake = await getOrderIntakeStatus(establishmentId);
   return db.runTransaction(async (tx) => {
     await assertAutomationFence(tx, establishmentId, automationFence);
     const conversation = await tx.get(conversationRef); const state = conversation.exists ? (conversation.data() as { activeOrderId?: string; lastConfirmedOrderId?: string }) : {}; const activeOrderId = state.activeOrderId;
-    if (activeOrderId) { const active = await tx.get(orderRef(establishmentId, activeOrderId)); if (active.exists && ACTIVE_DRAFT.has((active.data() as FoodOrder).status)) return active.data() as FoodOrder; }
+    if (activeOrderId) { const active = await tx.get(orderRef(establishmentId, activeOrderId)); if (active.exists && ACTIVE_DRAFT.has((active.data() as FoodOrder).status)) { const order = active.data() as FoodOrder; assertDraftScope(order, demo); return order; } }
     if (state.lastConfirmedOrderId) {
       const confirmed = await tx.get(orderRef(establishmentId, state.lastConfirmedOrderId));
       if (confirmed.exists && operationId && (confirmed.data() as FoodOrder).appliedOperationIds?.includes(operationId)) return confirmed.data() as FoodOrder;
@@ -226,19 +241,19 @@ async function draftFor(establishmentId: string, conversationId: string, contact
     }
     if (!intake.open) throw new NewOrderBlockedError(intake);
     const ref = sub(establishmentId, "orders").doc(); const now = Date.now();
-    const order: FoodOrder = { id: ref.id, establishmentId, conversationId, contactPhone: normalizePhone(contactPhone), contactName, status: "draft", fulfillment: null, deliveryAddress: null, deliveryFeeCents: 0, discountCents: 0, payment: { method: null, status: "unpaid", changeForCents: null }, items: [], subtotalCents: 0, totalCents: 0, version: 1, confirmationRequestedAt: null, snapshot: null, createdAt: now, updatedAt: now, confirmedAt: null };
+    const order: FoodOrder = { id: ref.id, establishmentId, conversationId, contactPhone: normalizePhone(contactPhone), contactName, status: "draft", fulfillment: null, deliveryAddress: null, deliveryFeeCents: 0, discountCents: 0, payment: { method: null, status: "unpaid", changeForCents: null }, items: [], subtotalCents: 0, totalCents: 0, version: 1, confirmationRequestedAt: null, snapshot: null, createdAt: now, updatedAt: now, confirmedAt: null, ...(demo ? { mode: "demo" as const, prospectingLeadId: demo.prospectingLeadId } : {}) };
     tx.set(ref, order); tx.set(conversationRef, { activeOrderId: ref.id }, { merge: true }); return order;
   });
 }
-async function mutateDraft(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId: string | undefined, mutation: (order: FoodOrder, settings: OrderSettings) => Promise<FoodOrder> | FoodOrder, allowCreateAfterConfirmation = false, automationFence?: AutomationFence): Promise<FoodOrder> {
-  const draft = await draftFor(establishmentId, conversationId, contactPhone, contactName, operationId, allowCreateAfterConfirmation, automationFence); const ref = orderRef(establishmentId, draft.id); const settings = await getOrderSettings(establishmentId);
-  return db.runTransaction(async (tx) => { await assertAutomationFence(tx, establishmentId, automationFence); const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const current = snap.data() as FoodOrder; if (operationId && current.appliedOperationIds?.includes(operationId)) return current; if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser alterado."); const changed = await mutation(current, settings); const updated = { ...recalculate(changed, settings), status: "draft" as const, confirmationRequestedAt: null, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: Date.now() }; tx.set(ref, updated); return updated; });
+async function mutateDraft(establishmentId: string, conversationId: string, contactPhone: string, contactName: string | null, operationId: string | undefined, mutation: (order: FoodOrder, settings: OrderSettings) => Promise<FoodOrder> | FoodOrder, allowCreateAfterConfirmation = false, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization): Promise<FoodOrder> {
+  const draft = await draftFor(establishmentId, conversationId, contactPhone, contactName, operationId, allowCreateAfterConfirmation, automationFence, demo); const ref = orderRef(establishmentId, draft.id); const settings = await getOrderSettings(establishmentId);
+  return db.runTransaction(async (tx) => { await assertAutomationFence(tx, establishmentId, automationFence); const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const current = snap.data() as FoodOrder; assertDraftScope(current, demo); if (operationId && current.appliedOperationIds?.includes(operationId)) return current; if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser alterado."); const changed = await mutation(current, settings); const updated = { ...recalculate(changed, settings), status: "draft" as const, confirmationRequestedAt: null, version: current.version + 1, appliedOperationIds: operationId ? [...(current.appliedOperationIds ?? []).slice(-49), operationId] : current.appliedOperationIds, updatedAt: Date.now() }; tx.set(ref, updated); return updated; });
 }
-export async function addOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, productId: string, variantId: string | null, modifierOptionIds: string[], quantity: number, notes?: string | null, operationId?: string, allowCreateAfterConfirmation = false, automationFence?: AutomationFence) {
+export async function addOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, productId: string, variantId: string | null, modifierOptionIds: string[], quantity: number, notes?: string | null, operationId?: string, allowCreateAfterConfirmation = false, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) {
   const product = await getMenuProduct(establishmentId, productId); if (!product) throw new Error("Produto não encontrado.");
   if (categoryBlocksSale(await getMenuCategory(establishmentId, product.categoryId))) throw new Error("Produto indisponível.");
   const item = calculateItem(product, variantId, modifierOptionIds, quantity, notes); item.id = sub(establishmentId, "orders").doc().id;
-  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => ({ ...order, items: [...order.items, item] }), allowCreateAfterConfirmation, automationFence);
+  return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => ({ ...order, items: [...order.items, item] }), allowCreateAfterConfirmation, automationFence, demo);
 }
 // Trocar tamanho ou adicional de um item que já está no carrinho.
 //
@@ -255,7 +270,7 @@ export interface UpdateOrderItemInput {
   variantId?: string | null;
   modifierOptionIds?: string[];
 }
-export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: UpdateOrderItemInput, operationId?: string, automationFence?: AutomationFence) {
+export async function updateOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, input: UpdateOrderItemInput, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) {
   const changesComposition = input.variantId !== undefined || input.modifierOptionIds !== undefined;
   let recomposed: OrderItem | null = null;
   if (changesComposition) {
@@ -284,12 +299,12 @@ export async function updateOrderItem(establishmentId: string, conversationId: s
       return { ...order, items: order.items.map((i) => i.id === itemId ? recomposed! : i) };
     }
     const quantity = input.quantity ?? item.quantity; if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("Quantidade inválida."); const next = { ...item, quantity, notes: input.notes === undefined ? item.notes : text(input.notes, 300) || null, lineTotalCents: item.unitPriceCents * quantity }; return { ...order, items: order.items.map((i) => i.id === itemId ? next : i) };
-  }, false, automationFence);
+  }, false, automationFence, demo);
 }
-export async function removeOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, operationId?: string, automationFence?: AutomationFence) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => order.items.some((i) => i.id === itemId) ? { ...order, items: order.items.filter((i) => i.id !== itemId) } : (() => { throw new Error("Item não encontrado."); })(), false, automationFence); }
-export async function setOrderFulfillment(establishmentId: string, conversationId: string, phone: string, name: string | null, fulfillment: "pickup" | "delivery", operationId?: string, automationFence?: AutomationFence) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (fulfillment === "pickup" && !settings.pickupEnabled) throw new Error("Retirada não está disponível."); if (fulfillment === "delivery" && !settings.deliveryEnabled) throw new Error("Entrega não está disponível."); return { ...order, fulfillment, deliveryAddress: fulfillment === "pickup" ? null : order.deliveryAddress }; }, false, automationFence); }
-export async function setOrderAddress(establishmentId: string, conversationId: string, phone: string, name: string | null, raw: string, neighborhood?: string | null, reference?: string | null, operationId?: string, automationFence?: AutomationFence) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => { if (order.fulfillment !== "delivery") throw new Error("Escolha entrega antes de informar o endereço."); if (!text(raw, 500)) throw new Error("Endereço é obrigatório."); return { ...order, deliveryAddress: { raw: text(raw, 500), neighborhood: text(neighborhood, 80) || null, reference: text(reference, 160) || null } }; }, false, automationFence); }
-export async function setOrderPayment(establishmentId: string, conversationId: string, phone: string, name: string | null, method: OrderPaymentMethod, changeForCents?: number | null, operationId?: string, automationFence?: AutomationFence) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (!settings.acceptedPaymentMethods.includes(method)) throw new Error("Forma de pagamento não aceita."); const change = changeForCents == null ? null : cents(changeForCents); if (changeForCents != null && change === null) throw new Error("Troco inválido."); return { ...order, payment: { method, status: method === "pix" ? "pending" : "unpaid", changeForCents: change } }; }, false, automationFence); }
+export async function removeOrderItem(establishmentId: string, conversationId: string, phone: string, name: string | null, itemId: string, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => order.items.some((i) => i.id === itemId) ? { ...order, items: order.items.filter((i) => i.id !== itemId) } : (() => { throw new Error("Item não encontrado."); })(), false, automationFence, demo); }
+export async function setOrderFulfillment(establishmentId: string, conversationId: string, phone: string, name: string | null, fulfillment: "pickup" | "delivery", operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (fulfillment === "pickup" && !settings.pickupEnabled) throw new Error("Retirada não está disponível."); if (fulfillment === "delivery" && !settings.deliveryEnabled) throw new Error("Entrega não está disponível."); return { ...order, fulfillment, deliveryAddress: fulfillment === "pickup" ? null : order.deliveryAddress }; }, false, automationFence, demo); }
+export async function setOrderAddress(establishmentId: string, conversationId: string, phone: string, name: string | null, raw: string, neighborhood?: string | null, reference?: string | null, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order) => { if (order.fulfillment !== "delivery") throw new Error("Escolha entrega antes de informar o endereço."); if (!text(raw, 500)) throw new Error("Endereço é obrigatório."); return { ...order, deliveryAddress: { raw: text(raw, 500), neighborhood: text(neighborhood, 80) || null, reference: text(reference, 160) || null } }; }, false, automationFence, demo); }
+export async function setOrderPayment(establishmentId: string, conversationId: string, phone: string, name: string | null, method: OrderPaymentMethod, changeForCents?: number | null, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization) { return mutateDraft(establishmentId, conversationId, phone, name, operationId, (order, settings) => { if (!settings.acceptedPaymentMethods.includes(method)) throw new Error("Forma de pagamento não aceita."); const change = changeForCents == null ? null : cents(changeForCents); if (changeForCents != null && change === null) throw new Error("Troco inválido."); return { ...order, payment: { method, status: method === "pix" ? "pending" : "unpaid", changeForCents: change } }; }, false, automationFence, demo); }
 export async function getOrder(establishmentId: string, orderId: string) { const snap = await orderRef(establishmentId, orderId).get(); return snap.exists ? snap.data() as FoodOrder : null; }
 export async function getActiveOrder(establishmentId: string, conversationId: string) { const conv = await sub(establishmentId, "conversations").doc(conversationId).get(); const id = conv.exists ? (conv.data() as { activeOrderId?: string }).activeOrderId : undefined; return id ? getOrder(establishmentId, id) : null; }
 async function refreshOrderForConfirmation(tx: FirebaseFirestore.Transaction, establishmentId: string, order: FoodOrder, settings: OrderSettings): Promise<FoodOrder> {
@@ -317,7 +332,7 @@ async function refreshOrderForConfirmation(tx: FirebaseFirestore.Transaction, es
 // Produz o único resumo que pode ser confirmado. A mudança de estado e a
 // versão são persistidas: qualquer alteração posterior volta o pedido a draft
 // e obriga uma nova apresentação antes de fechar.
-export async function prepareOrderConfirmation(establishmentId: string, conversationId: string, phone: string, operationId?: string, automationFence?: AutomationFence): Promise<FoodOrder> {
+export async function prepareOrderConfirmation(establishmentId: string, conversationId: string, phone: string, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization): Promise<FoodOrder> {
   const settings = await getOrderSettings(establishmentId);
   const conversationRef = sub(establishmentId, "conversations").doc(conversationId);
   return db.runTransaction(async (tx) => {
@@ -327,7 +342,7 @@ export async function prepareOrderConfirmation(establishmentId: string, conversa
     if (!orderId) throw new Error("Não há pedido em aberto para resumir.");
     const ref = orderRef(establishmentId, orderId); const snap = await tx.get(ref);
     if (!snap.exists) throw new Error("Pedido não encontrado.");
-    const current = snap.data() as FoodOrder;
+    const current = snap.data() as FoodOrder; assertDraftScope(current, demo);
     if (normalizePhone(current.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente.");
     if (operationId && current.appliedOperationIds?.includes(operationId)) return current;
     if (!ACTIVE_DRAFT.has(current.status)) throw new Error("Este pedido não pode mais ser confirmado.");
@@ -339,9 +354,9 @@ export async function prepareOrderConfirmation(establishmentId: string, conversa
   });
 }
 
-export async function confirmOrder(establishmentId: string, orderId: string, expectedVersion: number, phone: string, operationId?: string, automationFence?: AutomationFence): Promise<FoodOrder> {
+export async function confirmOrder(establishmentId: string, orderId: string, expectedVersion: number, phone: string, operationId?: string, automationFence?: AutomationFence, demo?: AuthorizedDemoAuthorization): Promise<FoodOrder> {
   const ref = orderRef(establishmentId, orderId); const settings = await getOrderSettings(establishmentId);
-  return db.runTransaction(async (tx) => { await assertAutomationFence(tx, establishmentId, automationFence); const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; if (normalizePhone(order.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente."); if (order.status === "confirmed") return order; if (order.status !== "awaiting_confirmation" || order.version !== expectedVersion) throw new Error("O pedido mudou; confira o resumo atualizado antes de confirmar.");
+  return db.runTransaction(async (tx) => { await assertAutomationFence(tx, establishmentId, automationFence); const snap = await tx.get(ref); if (!snap.exists) throw new Error("Pedido não encontrado."); const order = snap.data() as FoodOrder; assertDraftScope(order, demo); if (normalizePhone(order.contactPhone) !== normalizePhone(phone)) throw new Error("Pedido não pertence a este cliente."); if (order.status === "confirmed") return order; if (order.status !== "awaiting_confirmation" || order.version !== expectedVersion) throw new Error("O pedido mudou; confira o resumo atualizado antes de confirmar.");
     const refreshed = await refreshOrderForConfirmation(tx, establishmentId, order, settings);
     for (let index = 0; index < order.items.length; index++) {
       const before = order.items[index]; const current = refreshed.items[index];
@@ -363,6 +378,7 @@ export async function transitionOrder(establishmentId: string, orderId: string, 
     const snap = await tx.get(ref);
     if (!snap.exists) throw new OrderOperationError("not_found", "Pedido não encontrado.");
     const order = snap.data() as FoodOrder;
+    if (order.mode === "demo") throw new OrderOperationError("invalid_transition", "Pedido demonstrativo não entra em produção, entrega ou operação.");
     // Retry técnico da mesma intenção: a primeira chamada já venceu. Não cria
     // histórico nem incrementa versão novamente.
     if (order.status === status) {
@@ -410,6 +426,7 @@ export async function listOrders(establishmentId: string): Promise<FoodOrder[]> 
   }));
   return snapshots
     .flatMap((snap) => snap.docs.map((d) => d.data() as FoodOrder))
+    .filter((order) => order.mode !== "demo")
     .sort((a, b) => {
       const aPriority = ACTIVE_OPERATION_PRIORITY[a.status]; const bPriority = ACTIVE_OPERATION_PRIORITY[b.status];
       if (aPriority !== undefined && bPriority === undefined) return -1;

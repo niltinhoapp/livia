@@ -100,6 +100,9 @@ export async function dispatchOrderStatusNotification(establishmentId: string, n
   if (!order || order.establishmentId !== establishmentId || !establishment) {
     return skipNotification(establishmentId, notificationId, "order_or_establishment_not_found");
   }
+  if (order.mode === "demo") {
+    return skipNotification(establishmentId, notificationId, "demo_order");
+  }
   if (!establishment.whatsapp || establishment.whatsapp.status !== "connected") {
     return skipNotification(establishmentId, notificationId, "whatsapp_not_connected");
   }
