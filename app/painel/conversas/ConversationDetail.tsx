@@ -40,9 +40,9 @@ export function ConversationDetail({
   const shouldAutoScroll = useRef(true);
   const prevConversationId = useRef(conversation.id);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "instant") => {
+  const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+    if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
   const loadMessages = useCallback(() => {
