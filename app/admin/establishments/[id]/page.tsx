@@ -2,6 +2,7 @@ import { getAdminEstablishmentDetail } from "@/lib/repo.admin";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Building2, CreditCard, MessageCircle, BarChart3 } from "lucide-react";
+import AdminEstablishmentActions from "./AdminEstablishmentActions";
 
 export default async function AdminEstablishmentDetailPage({
   params,
@@ -133,10 +134,15 @@ export default async function AdminEstablishmentDetailPage({
         </div>
       </div>
       
+      <AdminEstablishmentActions 
+        establishmentId={est.id} 
+        whatsappStatus={est.whatsappStatus} 
+      />
+
       <div className="mt-8 p-4 bg-amber-50 border border-amber-200 rounded-lg w-full">
         <p className="text-sm text-amber-800">
           <strong>Segurança Admin:</strong> Credenciais nativas (Meta/Asaas) não são expostas nesta interface.
-          Ações destrutivas (excluir estabelecimento, cancelar assinatura) estão desabilitadas para esta versão de visualização.
+          As ações executam em servidor validando seus privilégios administrativos rigorosamente.
         </p>
       </div>
     </div>
