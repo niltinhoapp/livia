@@ -26,7 +26,25 @@ export function Sidebar({ data }: { data?: ShellData | null }) {
           </div>
         ))}
       </nav>
-      <div className="border-t border-white/10 bg-black/10 p-3"><div className="flex items-center gap-3 rounded-control px-2 py-2"><Avatar name={data?.name} size="sm" /><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{data?.name || "Seu negócio"}</p>{data && <p className="truncate text-xs text-primary-200">{ESTABLISHMENT_TYPE_LABELS[data.type]}</p>}</div></div></div>
+      <div className="border-t border-white/10 bg-black/10 p-3">
+        <div className="flex items-center gap-3 rounded-control px-2 py-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden">
+            {data?.user?.photo ? (
+              <img src={data.user.photo} alt="" referrerPolicy="no-referrer" className="h-full w-full rounded-full object-cover" />
+            ) : (
+              <Avatar name={data?.user?.name || data?.name} size="sm" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-white">{data?.user?.name || data?.name || "Seu negócio"}</p>
+            {data?.user?.email ? (
+              <p className="truncate text-xs text-primary-200">{data.user.email}</p>
+            ) : data ? (
+              <p className="truncate text-xs text-primary-200">{ESTABLISHMENT_TYPE_LABELS[data.type]}</p>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </aside>
   );
 }

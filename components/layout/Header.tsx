@@ -7,7 +7,7 @@ import { Moon, Sun } from "lucide-react";
 import { NAV_ITEMS } from "./nav";
 import { ESTABLISHMENT_TYPE_LABELS } from "@/components/lib/labels";
 import type { ShellData } from "@/components/hooks/useShellData";
-import LogoutButton from "@/app/painel/LogoutButton";
+import { UserMenu } from "./UserMenu";
 
 export function Header({ data }: { data: ShellData | null }) {
   const pathname = usePathname();
@@ -68,7 +68,7 @@ export function Header({ data }: { data: ShellData | null }) {
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
 
-        <LogoutButton />
+        <UserMenu user={data?.user} />
       </div>
     </header>
   );

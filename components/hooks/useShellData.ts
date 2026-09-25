@@ -7,6 +7,12 @@ import { useEffect, useState } from "react";
 import type { EstablishmentType } from "@/types";
 import { canUseService } from "@/lib/billing/stateMachine";
 
+export interface ShellUser {
+  name: string | null;
+  email: string | null;
+  photo: string | null;
+}
+
 export interface ShellData {
   name: string;
   type: EstablishmentType;
@@ -22,6 +28,7 @@ export interface ShellData {
   // vencido). NUNCA pausa o atendimento WhatsApp — só usado pelo redirect de
   // painel em AppShell.tsx.
   billingRestricted: boolean;
+  user: ShellUser | null;
 }
 
 // `refetchKey` (normalmente o pathname atual) força uma nova busca sempre
@@ -39,8 +46,9 @@ export function useShellData(refetchKey?: string) {
     Promise.all([
       fetch("/api/establishment").then((r) => r.json()),
       fetch("/api/whatsapp/connect").then((r) => r.json()),
+      fetch("/api/auth/me").then((r) => (r.ok ? r.json() : { user: null })).catch(() => ({ user: null })),
     ])
-      .then(([est, wa]) => {
+      .then(([est, wa, me]) => {
         if (cancelled) return;
         setData({
           name: est.establishment?.name ?? "",
@@ -49,6 +57,7 @@ export function useShellData(refetchKey?: string) {
           whatsappConnected: Boolean(wa.connected),
           serviceActive: est.establishment?.status !== "suspended",
           billingRestricted: !canUseService({ billing: est.establishment?.billing }, Date.now()),
+          user: me.user ?? null,
         });
       })
       .catch(() => {
