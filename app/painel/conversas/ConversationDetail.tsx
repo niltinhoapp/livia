@@ -3,7 +3,7 @@
 // especiais nomeados em page.tsx; adicionar `export function
 // ConversationDetail` lá quebrava `tsc --noEmit` via .next/types). Nenhuma
 // mudança de comportamento nesta extração, só de arquivo.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, GraduationCap, UserCheck, AlertCircle, Bot, FileText } from "lucide-react";
 import type { Conversation, Message, MessageAttachment } from "@/types";
 import { Button } from "@/components/ui/Button";
@@ -36,6 +36,14 @@ export function ConversationDetail({
   const [teachDefaultQuestion, setTeachDefaultQuestion] = useState<string | null>(null);
   const [teachOpen, setTeachOpen] = useState(false);
   const [teachSaved, setTeachSaved] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScroll = useRef(true);
+  const prevConversationId = useRef(conversation.id);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
 
   const loadMessages = useCallback(() => {
     fetch(`/api/conversations/${conversation.id}`)
@@ -65,8 +73,20 @@ export function ConversationDetail({
   // de atraso é o mesmo intervalo de 15s do poll da LISTA — só deixamos de
   // pagar a leitura cara quando ela não traria nada de novo.
   useEffect(() => {
+    if (prevConversationId.current !== conversation.id) {
+      shouldAutoScroll.current = true;
+      prevConversationId.current = conversation.id;
+    }
     loadMessages();
-  }, [loadMessages, conversation.lastMessageAt]);
+  }, [loadMessages, conversation.lastMessageAt, conversation.id]);
+
+  useEffect(() => {
+    if (messages && messages.length > 0) {
+      if (shouldAutoScroll.current) {
+        requestAnimationFrame(() => scrollToBottom());
+      }
+    }
+  }, [messages, scrollToBottom]);
 
   async function act(action: "assume" | "return") {
     setBusy(true);
@@ -84,6 +104,7 @@ export function ConversationDetail({
       // esperar o próximo poll da lista mudar lastMessageAt. Mesmo mecanismo
       // que uma futura funcionalidade de enviar mensagem pelo painel usaria.
       loadMessages();
+      shouldAutoScroll.current = true;
     }
     setBusy(false);
   }
@@ -117,7 +138,14 @@ export function ConversationDetail({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-ink-50/40 p-4 sm:p-5">
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          const el = scrollRef.current;
+          if (el) shouldAutoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+        }}
+        className="flex-1 overflow-y-auto bg-ink-50/40 p-4 sm:p-5"
+      >
         {messages === null ? (
           <LoadingState />
         ) : messages.length === 0 ? (
