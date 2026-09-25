@@ -38,7 +38,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {children}
         </main>
       </div>
-      <MobileTabBar />
+      <MobileTabBar user={data?.user} />
     </div>
   );
 }

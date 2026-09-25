@@ -2,16 +2,20 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Menu, X } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { LogOut, Menu, X } from "lucide-react";
+import { signOut } from "firebase/auth";
+import { clientAuth } from "@/lib/firebase/client";
 import { NAV_ITEMS, NAV_GROUPS } from "./nav";
+import type { ShellUser } from "@/components/hooks/useShellData";
 
 const LEFT_ROUTES = ["/painel", "/painel/agenda"];
 const RIGHT_ROUTES = ["/painel/pedidos", "/painel/conversas"];
 const PRIMARY_MOBILE_ROUTES = [...LEFT_ROUTES, ...RIGHT_ROUTES];
 
-export function MobileTabBar() {
+export function MobileTabBar({ user }: { user?: ShellUser | null }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const primaryItems = PRIMARY_MOBILE_ROUTES.map((href) =>
     NAV_ITEMS.find((item) => item.href === href),
@@ -116,6 +120,39 @@ export function MobileTabBar() {
                 );
               })}
             </div>
+
+            {user && (
+              <div className="border-t border-line pt-3 dark:border-ink-700">
+                <div className="flex items-center gap-3 px-1 pb-2">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden">
+                    {user.photo ? (
+                      <img src={user.photo} alt="" referrerPolicy="no-referrer" className="h-full w-full rounded-full object-cover" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center rounded-full bg-primary-light text-xs font-semibold text-primary">
+                        {user.name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || "?"}
+                      </span>
+                    )}
+                  </span>
+                  <div className="min-w-0">
+                    {user.name && <p className="truncate text-sm font-semibold text-ink-900 dark:text-ink-100">{user.name}</p>}
+                    {user.email && <p className="truncate text-xs text-ink-400">{user.email}</p>}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetch("/api/auth/session", { method: "DELETE" });
+                    await signOut(clientAuth).catch(() => {});
+                    router.push("/login");
+                    router.refresh();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-control px-1 py-2 text-sm font-medium text-ink-600 transition-colors hover:bg-ink-50 hover:text-ink-900 dark:text-ink-300 dark:hover:bg-ink-800"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sair
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
