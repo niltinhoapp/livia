@@ -8,7 +8,6 @@ export interface AdminDashboardMetrics {
   whatsappConnected: number;
 }
 
-// DTO seguro: nunca retorna tokens, pins ou chaves privadas.
 export interface AdminEstablishmentDTO {
   id: string;
   name: string;
@@ -20,6 +19,14 @@ export interface AdminEstablishmentDTO {
   trialEndsAt?: number;
   whatsappStatus?: "connecting" | "connected" | "disconnected";
   whatsappConnectedAt?: number;
+}
+
+export interface AdminEstablishmentDetailDTO extends AdminEstablishmentDTO {
+  whatsappPhoneNumberId?: string;
+  metrics: {
+    conversations: number;
+    campaigns: number;
+  };
 }
 
 export async function getAdminDashboardMetrics(): Promise<AdminDashboardMetrics> {
@@ -59,4 +66,34 @@ export async function listAdminEstablishments(): Promise<AdminEstablishmentDTO[]
       whatsappConnectedAt: data.whatsapp?.connectedAt,
     };
   });
+}
+
+export async function getAdminEstablishmentDetail(id: string): Promise<AdminEstablishmentDetailDTO | null> {
+  const doc = await db.collection("establishments").doc(id).get();
+  if (!doc.exists) return null;
+
+  const data = doc.data() as Establishment;
+
+  const [convSnap, campSnap] = await Promise.all([
+    doc.ref.collection("conversations").count().get(),
+    db.collection("campaigns").where("establishmentId", "==", id).count().get()
+  ]);
+
+  return {
+    id: data.id,
+    name: data.name,
+    type: data.type,
+    ownerUid: data.ownerUid,
+    status: data.status,
+    createdAt: data.createdAt,
+    billingStatus: data.billing?.billingStatus,
+    trialEndsAt: data.billing?.trialEndsAt,
+    whatsappStatus: data.whatsapp?.status,
+    whatsappConnectedAt: data.whatsapp?.connectedAt,
+    whatsappPhoneNumberId: data.whatsapp?.phoneNumberId,
+    metrics: {
+      conversations: convSnap.data().count,
+      campaigns: campSnap.data().count,
+    }
+  };
 }
