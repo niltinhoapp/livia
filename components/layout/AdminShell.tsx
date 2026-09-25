@@ -18,7 +18,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <LayoutDashboard className="h-5 w-5 text-sky-400" />
             Dashboard
           </Link>
-          {/* Outros links de navegação virão depois (Estabelecimentos, etc) */}
+          <Link
+            href="/admin/establishments"
+            className="flex items-center gap-3 px-4 py-2.5 rounded-md text-slate-300 font-medium hover:bg-slate-800 hover:text-white transition-colors"
+          >
+            Estabelecimentos
+          </Link>
         </nav>
       </aside>
       <main className="flex-1 overflow-auto p-8">
