@@ -97,3 +97,37 @@ export async function getAdminEstablishmentDetail(id: string): Promise<AdminEsta
     }
   };
 }
+
+export async function extendAdminEstablishmentTrial(id: string, additionalDays: number): Promise<void> {
+  const ref = db.collection("establishments").doc(id);
+  const doc = await ref.get();
+  
+  if (!doc.exists) throw new Error("Establishment not found");
+
+  const data = doc.data() as Establishment;
+  const now = Date.now();
+  
+  let newTrialEndsAt = now + additionalDays * 24 * 60 * 60 * 1000;
+  
+  if (data.billing?.trialEndsAt && data.billing.trialEndsAt > now) {
+    newTrialEndsAt = data.billing.trialEndsAt + additionalDays * 24 * 60 * 60 * 1000;
+  }
+
+  if (!data.billing) {
+    await ref.update({
+      billing: {
+        billingStatus: "trial",
+        trialStartAt: now,
+        trialEndsAt: newTrialEndsAt
+      },
+      status: "active"
+    });
+    return;
+  }
+
+  await ref.update({
+    "billing.trialEndsAt": newTrialEndsAt,
+    "billing.billingStatus": "trial",
+    status: "active"
+  });
+}
