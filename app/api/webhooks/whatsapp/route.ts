@@ -1241,7 +1241,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   try {
     // A resposta textual ja e definitiva; a entrega so escolhe o canal e
     // nunca volta a chamar IA, ferramentas ou mutacoes.
-    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est, customerText), msg.id, outboundContext(["bot"], prospectingAction));
+    sent = await deliverFinalReply(wa, est, conversation.id, contactPhone, replyToSend, shouldReplyWithVoice(inbound.kind, est, customerText, toolCalls), msg.id, outboundContext(["bot"], prospectingAction));
   } catch (err) {
     // A resposta foi gerada mas não chegou ao cliente — a falha mais grave
     // possível aqui, e a que este log existe especificamente para não deixar
@@ -1382,8 +1382,16 @@ async function replyAndLog(
   await appendMessage(establishment.id, conversationId, "bot", sent.text, sent.waMessageId);
 }
 
-function shouldReplyWithVoice(kind: string, establishment: Establishment, text = ""): boolean {
-  return Boolean(establishment.bot.voiceRepliesEnabled) && (kind === "audio" || textRequestsVoice(text));
+const STRUCTURED_CONTENT_TOOLS: ReadonlySet<string> = new Set([
+  "list_menu", "list_menu_category", "search_menu", "get_menu_product",
+  "find_available_appointments", "get_business_hours",
+  "get_order_draft", "prepare_order_confirmation", "get_order_status",
+]);
+
+function shouldReplyWithVoice(kind: string, establishment: Establishment, text = "", toolCalls: { name: string }[] = []): boolean {
+  if (!establishment.bot.voiceRepliesEnabled) return false;
+  if (toolCalls.some((t) => STRUCTURED_CONTENT_TOOLS.has(t.name))) return false;
+  return kind === "audio" || textRequestsVoice(text);
 }
 
 function voiceDeliveryErrorCode(error: unknown): string {

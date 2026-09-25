@@ -890,6 +890,57 @@ describe("2 — mensagem sem texto (áudio/imagem/sem corpo)", () => {
     expect(sendAudio).toHaveBeenCalledTimes(1); expect(sendText).not.toHaveBeenCalled();
   });
 
+  it("áudio com voz habilitada e resposta de cardápio/lista envia texto (não áudio)", async () => {
+    enableVoiceReplies();
+    think.mockResolvedValueOnce({
+      reply: "Aqui está o cardápio:\n🍔 X-Burger R$ 25\n🍟 Porção R$ 18",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [{ name: "list_menu", args: {} }],
+    });
+    await enviarPayload(payloadAudio("wamid.voice.menu"));
+    expect(synthesizeSpeech).not.toHaveBeenCalled();
+    expect(sendAudio).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith(expect.anything(), "est_odonto", PHONE, expect.stringContaining("cardápio"));
+  });
+
+  it("áudio com voz habilitada e conversa normal (sem tool estruturada) responde em áudio", async () => {
+    enableVoiceReplies();
+    think.mockResolvedValueOnce({
+      reply: "Boa tarde! Tudo bem?",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+    const res = await enviarPayload(payloadAudio("wamid.voice.normal"));
+    expect(res.status).toBe(200);
+    expect(synthesizeSpeech).toHaveBeenCalledWith("Boa tarde! Tudo bem?");
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("áudio com horários disponíveis (find_available_appointments) envia texto", async () => {
+    enableVoiceReplies();
+    think.mockResolvedValueOnce({
+      reply: "Horários disponíveis:\n• 09:00\n• 10:30\n• 14:00",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [{ name: "find_available_appointments", args: {} }],
+    });
+    await enviarPayload(payloadAudio("wamid.voice.slots"));
+    expect(synthesizeSpeech).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("tool não-estruturada (search_knowledge_base) permite resposta em áudio normalmente", async () => {
+    enableVoiceReplies();
+    think.mockResolvedValueOnce({
+      reply: "Nosso endereço é Rua das Flores, 123.",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [{ name: "search_knowledge_base", args: {} }],
+    });
+    await enviarPayload(payloadAudio("wamid.voice.kb"));
+    expect(synthesizeSpeech).toHaveBeenCalledTimes(1);
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+  });
+
   it("transcript de agenda preserva o contrato de agenda e CRM", async () => {
     detectIntent.mockReturnValue({ type: "schedule_appointment", confidence: 0.9, entities: {} } as never);
     think.mockResolvedValueOnce({
