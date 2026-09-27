@@ -1,149 +1,60 @@
-# Estado atual da vertical alimentação — auditoria
+# Estado atual da vertical Alimentação
 
-Anexo da [fonte de verdade da V2](./README.md). Auditoria de leitura pura
-do que o Codex já construiu, feita em `main` `28a730a` (2026-09-19).
-Serve de referência para as fases F1 a F4 e F9.
+> Atualizado em 26/09/2026. Este arquivo substitui a auditoria de 19/09 que ainda listava F5–F8 e notificações como ausentes.
 
-Regra que orientou a auditoria: **aproveitar o que existe.** Nada aqui
-recomenda recriar algo que já funciona.
+## Entregue
 
----
+- cardápio estruturado;
+- preço validado no backend;
+- categorias e disponibilidade;
+- carrinho persistido;
+- quantidade, variação e adicionais;
+- edição de item;
+- cálculo de subtotal/taxa/total;
+- entrega/retirada;
+- métodos de pagamento e instruções PIX;
+- consulta de cardápio pela IA;
+- resumo canônico;
+- confirmação explícita;
+- dedupe/idempotência;
+- máquina de estados operacional;
+- histórico append-only;
+- notificações automáticas;
+- janela de 24h para notificações;
+- horários de pedidos;
+- overnight;
+- bloqueio de novos drafts fora do horário;
+- painel operacional.
 
-## 1. Pronto — reutilizar integralmente
+## Fases
 
-| Capacidade | Onde | Situação |
-|---|---|---|
-| Cardápio estruturado (categoria, produto, variação de tamanho, grupo de adicionais com min/máx) | `types/index.ts`, `app/api/menu/*` | Completo e validado |
-| Preço obrigatório e validado no cadastro | `lib/orders.ts` (`normalizeProduct`) | Completo |
-| Carrinho persistido por telefone, sobrevive entre mensagens | `lib/orders.ts` (`draftFor`/`mutateDraft`) | Completo, transação Firestore real |
-| Vários itens, quantidade, variação, adicionais, observação por item | `lib/ai/tools.ts` (`add_order_item`) | Completo |
-| Cálculo de subtotal/taxa/total sempre no backend | `lib/orders.ts` (`calculateItem`, `recalculate`) | Completo |
-| Revalidação do catálogo dentro da transação de confirmação | `lib/orders.ts` (`confirmOrder`) | Completo — rejeita se preço/produto mudou |
-| Produto indisponível bloqueado na montagem e na confirmação | `lib/orders.ts`, `lib/ai/tools.ts` | Completo (categoria inativa não — ver seção 2) |
-| Idempotência por `operationId` do tool call | `lib/orders.ts`, `lib/ai/orderOperationId.test.ts` | Completo, testado sob concorrência |
-| Dedupe de mensagem repetida do WhatsApp (`wamid`) | `app/api/webhooks/whatsapp/route.ts`, `lib/repo.dedupe.test.ts` | Completo, atômico |
-| Isolamento entre estabelecimentos e entre conversas | `lib/orders.concurrency.test.ts` | Completo, testado |
-| Trava de posse por telefone (`confirm_order`, `get_order_status`) | `lib/ai/tools.ts` | Completo |
-| Teto de mutações de pedido por turno (8) | `lib/ai/brain.ts` | Completo |
-| Painel: fila, itens, total, transições de status, cancelar | `app/painel/pedidos/page.tsx`, `app/api/orders/*` | Completo e responsivo |
-| Handoff humano | `lib/ai/tools.ts`, `lib/ai/humanRequest.ts` | Completo (genérico, serve à vertical) |
-| Recebimento e armazenamento de imagem/documento do WhatsApp | `lib/whatsapp/inboundMessage.ts`, `lib/attachments/storage.ts` | Completo — reutilizável na F9 |
-| Multimodalidade já existente: transcrição de áudio | `lib/ai/transcription.ts` | Completo — precedente para visão |
-| Ponto único de chamada ao modelo | `lib/ai/gateway.ts` | Completo — onde visão e medição se encaixam |
-| Compatibilidade com GPT-5.6 Terra | `lib/ai/openaiCompatibility.ts` | Completo |
-| Cliente Asaas + webhook atômico/idempotente + state machine | `lib/billing/*`, `app/api/webhooks/asaas/route.ts` | Completo — **mas é assinatura do SaaS, não do pedido** |
-| Criptografia de token de terceiros | `lib/whatsapp/tokenCrypto.ts` | Completo — reutilizável na F5 |
-
-## 2. Parcialmente pronto — completar, não recriar
-
-| Item | O que existe | O que falta | Fase |
-|---|---|---|---|
-| ~~Configuração de pedido (entrega, taxa, métodos, PIX)~~ | Resolvido na F2: `OrderSettingsEditor` na seção Operação da tela de Pedidos | — | ✅ F2 |
-| ~~`pixInstructions`~~ | Resolvido na F3: volta no resumo do pedido quando a forma é pix | — | ✅ F3 |
-| ~~Disponibilidade por categoria~~ | Resolvido na F1: `categoryBlocksSale` + visão filtrada do catálogo para a IA | — | ✅ F1 |
-| ~~Taxa de entrega por bairro~~ | Resolvido na F1: `neighborhoodKey` normaliza acento, espaço e caixa | — | ✅ F1 |
-| ~~Consulta ao cardápio pela IA~~ | Resolvido na F3: ferramenta `list_menu`, agrupada por categoria e com teto | — | ✅ F3 |
-| ~~Edição de item já no carrinho~~ | Resolvido na F4: `update_order_item` aceita variação e adicionais, recalculados pelo backend | — | ✅ F4 |
-| ~~Estouro do tool loop (4 iterações)~~ | Resolvido na F4: fallback responde com o pedido real (`lib/ai/orderReply.ts`) | — | ✅ F4 |
-| Estados do pedido | Enum completo | `awaiting_confirmation` morto; nenhum estado de pagamento | F7 |
-| ~~Naturalidade da conversa de pedido~~ | Resolvido na F3: orientação de tom e regra de perguntar em item ambíguo | — | ✅ F3 |
-| ~~Política de confiança em preço (`evaluateTrust`)~~ | Resolvido na F1: com `ordersEnabled`, o cardápio é a fonte de preço | — | ✅ F1 |
-| ~~Acesso ao painel de pedidos~~ | Resolvido na F1: rotas de gestão e configuração desacopladas de `bot.ordersEnabled` | — | ✅ F1 |
-
-## 3. Falta por completo
-
-| Item | Fase |
+| Fase | Estado |
 |---|---|
-| Pagamento do pedido (provedor, credenciais, cobrança, webhook, conciliação, estados). Confirmado por histórico: só 5 commits tocaram `lib/orders.ts` em toda a história do repo, nenhum sobre pagamento | F5–F8, F12 |
-| Importação de cardápio por foto/PDF (upload, visão, parser, revisão) | F9 |
-| Notificação proativa de status ao cliente | F11 |
-| Cancelamento do pedido pelo cliente no WhatsApp | F11 |
-| Onboarding da vertical alimentação | F10 |
-| Medição de consumo de IA / créditos | F13 |
+| F1 | concluída |
+| F2 | concluída |
+| F3 | concluída |
+| F4 | concluída |
+| F5 | concluída |
+| F6 | concluída |
+| F7 | concluída |
+| F8 | concluída |
 
----
+## Ainda não tratar como entregue
 
-## 4. Referência técnica para a F9 (importação por visão)
+- pagamento online do pedido do cliente final com conciliação completa;
+- importação de cardápio por foto/PDF com revisão;
+- onboarding vertical totalmente automatizado;
+- telemetria/custeio completo de IA por finalidade.
 
-### Situação verificada
+## Regras de segurança
 
-- Modelo: chamada única centralizada em `lib/ai/gateway.ts`, com
-  `LIVIA_MODEL` (padrão `gpt-4o-mini`), e compatibilidade já resolvida
-  para GPT-5.6 Terra (`max_completion_tokens`, `reasoning_effort:
-  "none"`). Trocar ou rotear modelo é barato.
-- Multimodalidade existente: **áudio** (`lib/ai/transcription.ts`).
-  **Visão não existe** — imagem do cliente vira o texto "[Imagem
-  recebida]" e é arquivada.
-- Armazenamento de arquivo: existe e aceita `image/jpeg`, `image/png`,
-  `application/pdf` (`lib/attachments/storage.ts`).
+- backend calcula valores;
+- IA não inventa preço;
+- IA não confirma pagamento sem fonte confiável;
+- pedido Demo não gera efeito operacional real;
+- concorrência/idempotência devem ser preservadas;
+- mudança de horário deve ser revalidada no backend.
 
-Isso sustenta a premissa 9: visão entra como capacidade separada de
-importação; o atendimento diário segue texto + áudio.
+## Fonte de verdade
 
-### Custo (tabela oficial de 2026-09-19)
-
-Imagens são cobradas como tokens de entrada. Foto de celular em detalhe
-alto fica na ordem de 1.000–1.500 tokens; em detalhe baixo, ~260. Com
-prompt de extração e JSON de saída de um cardápio real, cada foto fica
-perto de 2k tokens de entrada e 2k de saída.
-
-| Fotos | GPT-5.6 Luna ($0,20 / $1,20 por 1M) | GPT-5.6 Terra ($2 / $12 por 1M) |
-|---|---|---|
-| 1 | ~US$ 0,003 | ~US$ 0,03 |
-| 5 | ~US$ 0,01 | ~US$ 0,09 |
-| 10 | ~US$ 0,015 | ~US$ 0,15 |
-
-O custo é irrelevante nos dois casos — centavos de dólar por
-estabelecimento, uma vez na vida. Pela premissa 10, a escolha é por
-acerto no preço lido: **Terra para importação**, medindo os dois com
-cardápios reais antes de fixar. O modelo do atendimento não muda.
-
-### Schema estruturado de saída
-
-JSON fechado, validado antes de qualquer gravação:
-
-```
-categorias[]
-  nome
-  produtos[]
-    nome
-    descricao?
-    precoCentavos | null
-    confianca: "alta" | "media" | "baixa"
-    variacoes[]?  { nome, precoCentavos | delta, confianca }
-    adicionais[]? { grupo, nome, precoCentavos, confianca }
-    origem: { arquivo, pagina? }
-```
-
-Validação determinística do nosso lado, nunca do modelo: preço nulo ou
-de confiança baixa **nunca** é publicado — vai para a revisão marcado
-como pendente; preço fora de faixa plausível é sinalizado; produto sem
-categoria cai em "Sem categoria"; a publicação passa pela mesma
-`normalizeProduct` do cadastro manual, para que produto importado e
-produto digitado obedeçam às mesmas regras.
-
-Casos cobertos por desenho: várias fotos numa sessão; produto repetido em
-fotos diferentes (dedupe por nome normalizado dentro do rascunho);
-imagem ruim ou ilegível (item marcado, nunca descartado em silêncio);
-preço duvidoso; produto sem preço; reprocessamento da mesma imagem (hash
-do arquivo, não duplica o rascunho).
-
-### Correspondência com produto existente
-
-Nunca alterar nem duplicar automaticamente (premissa 11). Ao encontrar
-nome equivalente (comparação normalizada, sem acento nem caixa), a
-revisão mostra **produto atual × produto detectado**, com diferenças de
-preço e composição destacadas, e três ações explícitas: **Atualizar**,
-**Manter os dois**, **Ignorar**. Sem ação escolhida, nada acontece.
-
-Botão em **Pedidos → Cardápio**.
-
-### Medição de consumo (base da F13)
-
-Não existe contabilização hoje. Como toda chamada ao modelo já passa por
-`lib/ai/gateway.ts`, é lá que se registra por chamada: estabelecimento,
-finalidade (`reception`, `summary` e o novo `menu_import`), modelo,
-tokens de entrada/saída e custo calculado. O `AiPurpose` já existe no
-gateway como "fundação para telemetria futura" — basta passar a gravar.
-Créditos de IA vira depois uma leitura desse registro, não uma
-refatoração.
+Para o estado funcional atual, usar este arquivo e `docs/v2-alimentacao/README.md`. Registros datados anteriores são históricos.

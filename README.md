@@ -1,318 +1,268 @@
 # Lívia — Estado Oficial do Projeto
 
-## Direção atual
+> Atualizado em 26/09/2026. Este README descreve o que existe hoje em produção e separa claramente produto entregue de roadmap.
 
-A Lívia entrou em uma fase de operação real e evolução controlada.
+## 1. Visão atual
 
-A prioridade imediata continua sendo:
+A Lívia é uma assistente virtual com IA para WhatsApp, operada pela Conect Web. O produto já está em produção e atende múltiplos tipos de comércio, com núcleo de atendimento, agenda, CRM, campanhas, áudio e uma vertical operacional de alimentação.
 
-1. manter atendimento real confiável;
-2. preservar Meta/WhatsApp/Coexistência já funcionando;
-3. ativar os primeiros estabelecimentos com controle de acesso;
-4. estruturar cobrança com Asaas;
-5. evoluir a inteligência e o CRM sem interromper produção;
-6. construir a V2 por etapas pequenas e reversíveis.
+Princípio do projeto:
 
-> Regra principal: nenhuma evolução da V2 pode comprometer o serviço atual.
+```text
+preservar produção
+→ validar com uso real
+→ corrigir causa raiz
+→ teste de regressão
+→ PR pequeno
+→ deploy controlado
+```
 
----
+Não reescrever fluxos estáveis apenas para preparar funcionalidades futuras.
 
-# 1. Estado atual validado
+## 2. Stack e produção
 
-A base atual já possui:
-
-- WhatsApp oficial via Meta Cloud API;
-- Embedded Signup;
+- Next.js 14 + TypeScript + Tailwind;
+- Firebase Authentication + Firestore;
+- Vercel;
+- Meta WhatsApp Business Platform / Cloud API;
 - Coexistência com WhatsApp Business App;
-- recebimento e envio de mensagens;
-- IA para atendimento;
-- base de conhecimento;
-- agenda;
-- criação, consulta, remarcação e cancelamento de agendamentos;
-- memória estruturada do cliente;
-- resumo de conversa;
-- detecção de intenção;
-- estado de tarefa;
-- ferramentas internas;
-- política para não inventar informações operacionais;
-- handoff humano;
-- fila de pendências;
-- recurso para ensinar/corrigir a Lívia;
-- CRM automático;
-- caixa de entrada;
-- oportunidades/funil;
-- dashboard;
-- autenticação;
-- multi-tenant;
-- persistência no Firestore;
-- produção em Vercel.
+- OpenAI para inteligência/transcrição/voz;
+- Asaas para billing da Lívia;
+- arquitetura multi-tenant.
 
-## Meta / Coexistência
+## 3. WhatsApp / Meta
 
-A fase de revisão da Meta foi concluída.
+Já implementado e validado:
 
-A integração foi validada em cenário real de cliente com Business Portfolio separado do Technology Provider.
-
-O fluxo de Coexistência funciona com:
-
-```text
-WhatsApp Business App
-+
-Meta Cloud API
-+
-Lívia
-```
-
-O caso de self-onboarding do próprio portfólio do Technology Provider não deve ser usado como referência de cliente porque a Meta não suporta esse cenário.
-
-Não alterar sem necessidade:
-
-- App Meta;
+- WhatsApp oficial via Meta;
 - Embedded Signup;
-- configuração de produção;
-- webhook;
-- ownership;
 - Coexistência;
-- proteção de tokens/PINs;
-- filtros de echo/history/app-state.
+- recebimento e envio;
+- classificação de eventos do webhook;
+- deduplicação;
+- echo/history/app-state fora do pipeline normal da IA;
+- handoff humano;
+- isolamento por estabelecimento;
+- conexão e dados preservados em desconexões seguras.
 
----
+Não alterar Meta, WABA, Coexistência, webhook ou ownership sem necessidade comprovada.
 
-# 2. Fase operacional atual
+## 4. Atendimento e IA
 
-O ciclo oficial permanece:
+A Lívia já possui:
 
-```text
-Cliente real testa
-      ↓
-Problema real aparece
-      ↓
-Reproduzir
-      ↓
-Encontrar causa raiz
-      ↓
-Corrigir com o menor impacto possível
-      ↓
-Criar teste de regressão
-      ↓
-Validar ponta a ponta
-      ↓
-Voltar ao atendimento real
-```
+- atendimento conversacional;
+- base de conhecimento configurável por estabelecimento;
+- memória/contexto;
+- ferramentas internas;
+- regras para não inventar preço, agenda, disponibilidade ou pagamento;
+- handoff humano;
+- conversas e inbox;
+- CRM;
+- dashboard;
+- respostas curtas e orientadas ao contexto.
 
-Não corrigir sintomas apenas com prompt quando backend ou dados estruturados puderem garantir o comportamento.
+### Áudio
 
----
-
-# 3. Abertura controlada
-
-A aquisição inicial deve ser controlada.
-
-Separar:
+Áudio está operacional em produção:
 
 ```text
-panelAccess
-whatsappAccess
-trialStatus
-subscriptionStatus
+WhatsApp recebe áudio
+→ backend baixa a mídia
+→ transcreve
+→ texto entra no mesmo pipeline da conversa
+→ IA responde
+→ quando habilitado, resposta pode voltar em áudio
 ```
 
-O usuário pode acessar o painel sem necessariamente possuir uma vaga para conectar WhatsApp.
+Conteúdo estruturado/visual — por exemplo cardápio, listas de horários e resumos estruturados — pode ser forçado para texto mesmo quando a entrada foi áudio. Isso evita sintetizar listas longas em voz. A regra entrou em produção no commit `96f73c8`.
 
-A autorização de conexão deve ser aplicada no backend.
+Imagem/documento recebido não deve ser tratado como verdade operacional apenas por interpretação da IA.
 
-O painel também possui autorização server-side própria: Firebase Authentication
-valida a identidade, `panelAccess` permite ou bloqueia o uso do painel e
-`whatsappBeta` controla, separadamente, a coorte de conexão de WhatsApp.
+## 5. Agenda
 
-O provisionamento de `panelAccess` usa uma fronteira administrativa distinta,
-autenticada por sessão Firebase e autorizada pela allowlist server-only
-`PANEL_ADMIN_UIDS`. Um usuário com painel permitido não é platform admin. Sem
-essa configuração, a operação administrativa falha fechada. Conceder acesso ao
-painel não concede `whatsappBeta`; revogar o painel não desconecta o WhatsApp.
+Operacional:
 
-Enquanto cobrança e suporte estão sendo preparados, novos clientes podem entrar por lote controlado e acompanhamento próximo.
+- consulta de disponibilidade;
+- criação;
+- remarcação;
+- cancelamento;
+- prevenção de conflito;
+- interpretação de datas/horários;
+- integração com o fluxo conversacional.
 
----
+A IA nunca deve confirmar agendamento sem resultado real da ferramenta/backend.
 
-# 4. Billing
+## 6. CRM e painel
 
-O provedor financeiro inicial é o Asaas.
+Já existem:
 
-A arquitetura mantém regras comerciais dentro da Lívia e usa Asaas como provedor de pagamento.
-
-**Decisão comercial do MVP (registrada na OT-07B):**
-
-- um único plano contratável: **Lívia — R$ 129,00/mês**;
-- 7 dias grátis;
-- cobrança recorrente mensal;
-- libera as funcionalidades atuais da Lívia, sem feature gating entre planos nesta fase;
-- Pro e Premium permanecem apenas como apresentação visual "Em breve" no frontend, sem gerar checkout ou assinatura;
-- campanhas de marketing ainda não fazem parte deste MVP.
-
-Esta decisão é o escopo comercial válido até que uma nova OT a altere — não inventar preços, planos ou limites além do que está registrado aqui.
-
-**Já implementado (auditado na OT-07A, `main`):**
-
-- client Asaas (`lib/billing/asaas.ts`) — sandbox e produção, validação de prefixo de chave por ambiente;
-- provisioning de customer/subscription (`lib/billing/provisioning.ts`);
-- state machine de `billingStatus` (`lib/billing/stateMachine.ts`);
-- tradução de eventos Asaas → eventos de domínio (`lib/billing/asaasWebhookEvents.ts`);
-- webhook Asaas com processamento atômico e idempotente (`app/api/webhooks/asaas/route.ts` + `lib/billing/asaasWebhookProcessing.ts`);
-- homologação Sandbox do provisioning já realizada (harness administrativo, `lib/billing/asaasSandboxHarness.ts`).
-
-**Ainda pendente (não confundir com "a preparar do zero"):**
-
-- plano único do MVP (Lívia, R$129,00/mês, ciclo mensal, 7 dias grátis) ainda não existe como fluxo comercial real — hoje `app/painel/plano` é mockup visual, sem checkout;
-- inicialização automática do trial (`trialStartAt`/`trialEndsAt`) no cadastro do establishment;
-- ligação entre `billingStatus` e controle de acesso real (painel e WhatsApp) — hoje nenhuma rota consome `billingStatus`;
-- expiração automática de trial/grace period (suspensão automática) — a state machine suporta, mas nada aciona hoje;
-- homologação E2E pelo fluxo real de produto (a homologação existente usa o harness administrativo, não o caminho que um cliente percorreria);
-- ativação do Asaas Production.
-
-Não desconectar Meta/WhatsApp por inadimplência. O acesso deve ser controlado pela Lívia preservando conexão e dados.
-
----
-
-# 5. IA
-
-A V1 usa modelo econômico para atendimento.
-
-A V2 deve migrar para uma camada de IA configurável e mais capaz, sem hardcode espalhado no projeto.
-
-A troca deve ser feita somente após benchmark de:
-
-- qualidade de conversa;
-- uso de ferramentas;
+- clientes;
+- conversas;
+- histórico;
+- CRM;
+- funil/oportunidades;
+- dashboard;
+- handoff;
+- conhecimento;
 - agenda;
-- contexto;
-- multimídia;
-- latência;
-- custo;
-- regressões.
+- campanhas;
+- pedidos/cardápio;
+- configurações operacionais.
 
-A arquitetura e candidatos atuais estão documentados em `LIVIA-V2-ROADMAP.md`.
+Métricas devem vir de dados persistidos, não de texto gerado pela IA.
 
----
+## 7. Campanhas
 
-# 6. V2
+Campanhas já deixaram de ser apenas roadmap.
 
-A direção oficial da próxima geração está em:
+Estado atual:
 
-`LIVIA-V2-ROADMAP.md`
+- criação de campanha;
+- contatos;
+- templates Meta aprovados;
+- seleção de template;
+- envio real pela plataforma oficial;
+- histórico/status de campanha;
+- limite comercial do período gratuito tratado no produto;
+- resposta do destinatário retorna ao fluxo normal da Lívia.
 
-A V2 inclui, de forma incremental:
+Campanhas devem respeitar regras da Meta, elegibilidade, consentimento/opt-out e cobrança aplicável. Não usar automação de WhatsApp Web como substituto da API oficial.
 
-- CRM central com timeline;
-- áudio e imagem;
-- campanhas de marketing;
-- templates Meta;
-- fila de envios;
-- vendas pelo WhatsApp;
-- pagamentos;
-- Asaas;
-- equipes e responsáveis;
-- múltiplos números por empresa;
-- um número oficial com vários contatos internos;
-- roteamento para corretores/vendedores/técnicos;
-- oportunidades e pedidos;
-- automações;
-- IA mais capaz e configurável.
+## 8. Vertical Alimentação
 
-Nada disso deve ser implementado como um único projeto gigante.
+A frente de restaurantes/lanchonetes/delivery está operacional em produção.
 
----
+Entregue:
 
-# 7. Prioridade de execução
+- F1 — correções de base do catálogo/pedidos;
+- F2 — configuração de pedidos no painel;
+- F3 — cardápio, PIX e tom conversacional;
+- F4 — robustez do carrinho/tool loop;
+- F5 — resumo canônico + confirmação explícita;
+- F6 — máquina de estados operacionais e histórico append-only;
+- F7 — notificações automáticas de status;
+- F8 — horários próprios de pedidos, inclusive overnight.
 
-Executar nesta ordem:
+Capacidades atuais incluem:
 
-1. estabilidade da V1;
-2. controle de acesso inicial;
-3. billing Asaas;
-4. gateway/benchmark de IA;
-5. fundação do CRM V2;
-6. multimídia;
-7. equipes/roteamento;
-8. campanhas;
-9. pagamentos de clientes finais;
-10. múltiplos números oficiais;
-11. automações.
+- categorias/produtos;
+- variações/adicionais;
+- carrinho persistido;
+- cálculo backend;
+- entrega/retirada;
+- taxa;
+- forma de pagamento;
+- resumo e confirmação;
+- estados operacionais;
+- notificações;
+- horários de pedido;
+- bloqueio de novos drafts fora do horário;
+- painel de pedidos.
 
-A ordem pode mudar somente por bloqueio real de cliente, venda ou operação.
+Pagamento online do pedido do cliente final continua domínio separado do billing SaaS da Lívia e não deve ser confundido com ele.
 
----
+## 9. Billing da Lívia
 
-# 8. Qualidade mínima
+O billing SaaS usa Asaas.
 
-A Lívia deve:
-
-- não inventar agendamentos;
-- não inventar preços;
-- não inventar disponibilidade;
-- não inventar pagamentos;
-- consultar dados reais antes de ações críticas;
-- preservar contexto;
-- evitar duplicações;
-- manter isolamento entre estabelecimentos;
-- não responder echoes/histórico como mensagem de cliente;
-- manter CRM e dashboard baseados em dados reais;
-- transferir corretamente para humano;
-- ter regressão para bugs reais corrigidos.
-
----
-
-# 9. Regra para Claude e Codex
-
-Claude e Codex devem trabalhar em branches isoladas.
-
-Processo:
+Fluxo implementado:
 
 ```text
-Auditar main/produção
-→ definir escopo mínimo
-→ branch
+/painel/plano
+→ identificação CPF/CNPJ
+→ customer idempotente
+→ subscription
+→ primeira cobrança
+→ PIX / QR Code / copia-e-cola
+→ webhook Asaas
+→ billingStatus
+```
+
+Há state machine, idempotência e processamento de webhook. O controle comercial e os gates devem continuar sendo auditados antes de qualquer mudança que possa suspender atendimento. Nunca desconectar Meta/WhatsApp apenas por cobrança.
+
+## 10. Prospecting / Demo
+
+Existe canal interno separado para prospecção Revenue e demonstração:
+
+- `revenue` preserva o tenant de prospecção;
+- `demo` usa tenant de demonstração dedicado;
+- endpoint interno seleciona explicitamente o canal;
+- autorização Demo exige estabelecimento configurado + sessão Prospect válida + estado permitido + lead correspondente;
+- não é permitido escolher establishment arbitrário.
+
+A demonstração pode executar ações reais controladas no ambiente Demo, marcadas como `mode: "demo"`, sem produzir efeitos comerciais/operacionais reais indevidos.
+
+Fluxo comercial atual:
+
+```text
+primeiro contato humano/manual
+→ prospect responde
+→ Lívia assume
+→ demonstra capacidade na própria conversa
+→ interesse
+→ convite para experimentar o produto
+```
+
+A demonstração por áudio é parte importante desse fluxo, mas conteúdo estruturado deve permanecer legível em texto.
+
+## 11. Segurança e concorrência
+
+Preservar:
+
+- isolamento multi-tenant;
+- dedupe por mensagem;
+- idempotência de mutações;
+- leases/revalidação antes de ações críticas;
+- ownership;
+- tokens cifrados;
+- ausência de segredos em logs;
+- fail-closed em fronteiras administrativas;
+- ações críticas determinadas pelo backend.
+
+## 12. Estado de qualidade / CI
+
+Produção pode estar saudável mesmo quando um check de CI falha por problema preexistente de ambiente de teste. Não mascarar isso.
+
+Regra:
+
+- distinguir falha preexistente em `main` de regressão criada por PR;
+- não corrigir CI incidentalmente dentro de uma feature sem escopo aprovado;
+- documentar a causa e tratar em PR próprio.
+
+## 13. Documentação
+
+Documentos vivos:
+
+- `README.md` — estado oficial atual;
+- `FOCO-OPERACIONAL.md` — checklist de operação;
+- `LIVIA-V2-PRIORIDADE-EXECUCAO.md` — próximas prioridades;
+- `LIVIA-V2-ROADMAP.md` — direção futura;
+- `MVP-AUDIO.md` — arquitetura e estado de áudio;
+- `docs/CAMPANHAS.md` — campanhas;
+- `docs/v2-alimentacao/README.md` — vertical Alimentação;
+- `COEXISTENCE_ROADMAP.md` — histórico/arquitetura de Coexistência.
+
+Auditorias datadas em `docs/AUDITORIA-*.md` são registros históricos. Não devem ser reescritas para parecer atuais.
+
+## 14. Regra para agentes
+
+Claude, Codex e outros agentes devem partir da `main` remota atualizada.
+
+```text
+auditar estado real
+→ escopo mínimo
+→ branch isolada
 → implementar
-→ testes
-→ regressão
-→ TypeScript/build
+→ testes relevantes
+→ typecheck/build quando aplicável
 → PR
-→ checks/preview
-→ validar
-→ merge somente verde
+→ comparar falhas com main
+→ merge/deploy controlado
 ```
 
-Parar em caso de erro, conflito, alteração fora de escopo, quebra de contrato, risco de dados ou risco para Meta/produção.
+Não assumir que documentação antiga representa o estado atual quando o código/produção já avançaram.
 
-Não usar produção como laboratório.
+## Direção
 
----
-
-# 10. Documentos oficiais
-
-- `README.md` — estado e direção atual;
-- `FOCO-OPERACIONAL.md` — checklist operacional;
-- `COEXISTENCE_ROADMAP.md` — histórico/arquitetura da Coexistência implementada;
-- `LIVIA-V2-ROADMAP.md` — evolução oficial da V2.
-
----
-
-# Direção oficial
-
-```text
-Preservar V1
-   ↓
-Clientes reais
-   ↓
-Cobrança
-   ↓
-IA mais capaz
-   ↓
-CRM V2
-   ↓
-Marketing + Vendas + Pagamentos
-   ↓
-Escala
-```
-
-A Lívia não precisa ser reescrita. Ela deve evoluir sobre o núcleo que já funciona.
+A Lívia não é mais apenas uma recepcionista com agenda. Hoje o produto combina atendimento, voz, CRM, campanhas e operação de pedidos no WhatsApp. A evolução deve continuar incremental, usando o backend como fonte de verdade e preservando o que já está validado em produção.

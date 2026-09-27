@@ -863,3 +863,12 @@ contato
 ```
 
 A V2 só avança sem comprometer o serviço que já está funcionando.
+
+
+---
+
+## Atualização de estado — 26/09/2026
+
+Este roadmap contém decisões arquiteturais ainda úteis, mas várias capacidades descritas como futuras já foram entregues. Antes de executar qualquer item, conferir `README.md` e a `main` atual.
+
+Já avançaram para produto/código: áudio e resposta por voz; campanhas; CRM; vertical Alimentação F1–F8; billing Asaas com PIX/webhook; canal Prospect/Demo separado. Itens futuros devem ser lidos como direção, não como prova de ausência no produto.
