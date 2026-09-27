@@ -76,7 +76,7 @@ import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
 import { deriveTaskState } from "@/lib/ai/taskState";
-import { taskAfterExplicitContextSwitch } from "@/lib/ai/contextSwitch";
+import { startsAuditContext, taskAfterExplicitContextSwitch } from "@/lib/ai/contextSwitch";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -1120,6 +1120,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     storedProfile?.name || !knownName
       ? storedProfile
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
+  const isContextSwitch = startsAuditContext(customerText);
   const existingTask: ConversationTask | null = taskAfterExplicitContextSwitch(customerText, conversation.task ?? null);
 
   if (isSilentAcknowledgement(customerText, detectedIntent, existingTask, history)) {
@@ -1149,13 +1150,14 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     brainResult = await think({
       est,
       kb,
-      history: historyForAI,
+      history: isContextSwitch ? historyForAI.slice(-1) : historyForAI,
       contactPhone,
       contactName,
       customerProfile,
       prospectingContext,
       demoAuthorization,
       task: existingTask,
+      suppressBooking: isContextSwitch,
       intent: detectedIntent,
       hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
       orderAwaitingConfirmation,
