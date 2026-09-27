@@ -76,6 +76,7 @@ import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
 import { deriveTaskState } from "@/lib/ai/taskState";
+import { taskAfterExplicitContextSwitch } from "@/lib/ai/contextSwitch";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -1119,7 +1120,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     storedProfile?.name || !knownName
       ? storedProfile
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
-  const existingTask: ConversationTask | null = conversation.task ?? null;
+  const existingTask: ConversationTask | null = taskAfterExplicitContextSwitch(customerText, conversation.task ?? null);
 
   if (isSilentAcknowledgement(customerText, detectedIntent, existingTask, history)) {
     logStage("silent acknowledgement, no reply", { msgId: msg.id, estId: est.id, conversationId: conversation.id });

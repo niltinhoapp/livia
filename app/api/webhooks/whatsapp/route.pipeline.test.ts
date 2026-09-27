@@ -762,6 +762,78 @@ describe("lifecycle de ConversationTask concluida", () => {
   });
 });
 
+describe("context switch: auditoria descarta task de agenda ativa", () => {
+  const schedulingTask: ConversationTask = {
+    type: "schedule_appointment",
+    state: "offer_options",
+    collectedData: { serviceName: "Limpeza" },
+    missingData: ["date"],
+    updatedAt: 1,
+  };
+
+  it("mensagem de auditoria ignora a task de agenda e não consulta horários", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+    think.mockResolvedValueOnce({
+      reply: "Que ótimo que você fez a Auditoria! Vou te explicar os resultados.",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.1",
+      text: "Oi Lívia! Acabei de fazer a Auditoria de Atendimento. Leads por dia: 8 Ticket médio: R$ 199 Tempo médio de resposta: Até 30 minutos Estimativa apresentada: R$ 2.388/mês Pode me explicar esse resultado e mostrar como você poderia ajudar minha empresa?",
+    }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    expect(brainArgs.task).toBeNull();
+  });
+
+  it("mensagem de cálculo de perda ignora a task de agenda", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+    think.mockResolvedValueOnce({
+      reply: "Entendi, posso te mostrar como reduzir essa perda.",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.2",
+      text: "Acabei de rodar a Auditoria e o cálculo indicou que eu perco cerca de R$ 9.000 por mês devido ao meu tempo de resposta.",
+    }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    expect(brainArgs.task).toBeNull();
+  });
+
+  it("'Pode ser às 14h' preserva a task de agenda normalmente", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+    think.mockResolvedValueOnce({
+      reply: "Perfeito, agendado para as 14h!",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.time.1", text: "Pode ser às 14h" }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    expect(brainArgs.task).toEqual(schedulingTask);
+  });
+
+  it("'sexta de manhã' preserva a task de agenda normalmente", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+    think.mockResolvedValueOnce({
+      reply: "Certo, sexta de manhã!",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.time.2", text: "sexta de manhã" }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    expect(brainArgs.task).toEqual(schedulingTask);
+  });
+});
+
 describe("1 — mensagem de texto recebida", () => {
   it("percorre o caminho inteiro: IA chamada, resposta enviada e persistida", async () => {
     const res = await enviarPayload(payloadMensagem());
