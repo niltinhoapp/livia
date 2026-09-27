@@ -142,7 +142,7 @@ function fn(
 // independente de a Livia poder agendar.
 const getBusinessHours: ToolDefinition = {
   name: "get_business_hours",
-  enabled: () => true,
+  enabled: (ctx) => !ctx.suppressBooking,
   schema: fn(
     "get_business_hours",
     "Retorna o horário de funcionamento REAL de um dia específico (aberto/fechado, horário, pausas). Use antes de afirmar se o estabelecimento está aberto em algum dia.",
@@ -314,7 +314,7 @@ const createAppointmentTool: ToolDefinition = {
 // agendamento é "hoje".
 const getCustomerAppointments: ToolDefinition = {
   name: "get_customer_appointments",
-  enabled: () => true,
+  enabled: (ctx) => !ctx.suppressBooking,
   schema: fn(
     "get_customer_appointments",
     "Retorna os agendamentos REAIS deste cliente na agenda. Use SEMPRE que ele perguntar sobre um horário já marcado (ex.: 'confirma minha consulta', 'tenho consulta hoje?', 'qual horário marquei?', 'você marcou?') — nunca responda isso de memória.",
