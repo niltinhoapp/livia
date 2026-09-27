@@ -214,6 +214,7 @@ function buildSystemPrompt(
   intent: Intent,
   appointmentLookup: { ok: boolean; data?: unknown } | null,
   prospectingContext?: import("@/types").ProspectingContext,
+  options?: { suppressBooking?: boolean },
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
@@ -278,7 +279,7 @@ function buildSystemPrompt(
     }
   }
 
-    if (bot.bookingEnabled) {
+    if (bot.bookingEnabled && !options?.suppressBooking) {
     rules.push(
       "Você PODE agendar, remarcar e cancelar. Regras:",
       "- Descubra o serviço desejado e o dia de preferência.",
@@ -945,6 +946,7 @@ export interface BrainInput {
   operationIdScope?: string;
   prospectingContext?: ProspectingContext;
   demoAuthorization?: DemoAuthorization;
+  suppressBooking?: boolean;
 }
 
 export interface BrainResult {
@@ -1111,7 +1113,7 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
-  const booking = est.bot.bookingEnabled;
+  const booking = est.bot.bookingEnabled && !input.suppressBooking;
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
   // (getScheduleConfig devolve o default quando não há doc), inclusive sem
@@ -1152,7 +1154,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const discussedDate =
     statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null };
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null, suppressBooking: input.suppressBooking };
   const tools = toolsFor(toolCtx);
 
   let booked = false;
@@ -1268,7 +1270,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking }) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
         (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : ""),

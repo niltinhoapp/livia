@@ -762,7 +762,7 @@ describe("lifecycle de ConversationTask concluida", () => {
   });
 });
 
-describe("context switch: auditoria descarta task de agenda ativa", () => {
+describe("context switch: auditoria cria fronteira de contexto completa", () => {
   const schedulingTask: ConversationTask = {
     type: "schedule_appointment",
     state: "offer_options",
@@ -770,9 +770,13 @@ describe("context switch: auditoria descarta task de agenda ativa", () => {
     missingData: ["date"],
     updatedAt: 1,
   };
+  const schedulingHistory: Message[] = [
+    { id: "m-old-1", role: "customer", text: "Quero agendar uma limpeza", at: 1 },
+    { id: "m-old-2", role: "bot", text: "Qual dia prefere?", at: 2 },
+  ];
 
-  it("mensagem de auditoria ignora a task de agenda e não consulta horários", async () => {
-    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+  it("mensagem de auditoria: task null, histórico só com a mensagem atual, suppressBooking true", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask, schedulingHistory));
     think.mockResolvedValueOnce({
       reply: "Que ótimo que você fez a Auditoria! Vou te explicar os resultados.",
       handoff: false, booked: false, rescheduled: false, cancelled: false,
@@ -784,12 +788,15 @@ describe("context switch: auditoria descarta task de agenda ativa", () => {
       text: "Oi Lívia! Acabei de fazer a Auditoria de Atendimento. Leads por dia: 8 Ticket médio: R$ 199 Tempo médio de resposta: Até 30 minutos Estimativa apresentada: R$ 2.388/mês Pode me explicar esse resultado e mostrar como você poderia ajudar minha empresa?",
     }));
 
-    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null; history: Message[]; suppressBooking?: boolean };
     expect(brainArgs.task).toBeNull();
+    expect(brainArgs.history).toHaveLength(1);
+    expect(brainArgs.history[0].text).toContain("Auditoria de Atendimento");
+    expect(brainArgs.suppressBooking).toBe(true);
   });
 
-  it("mensagem de cálculo de perda ignora a task de agenda", async () => {
-    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+  it("mensagem de cálculo de perda: mesma fronteira de contexto", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask, schedulingHistory));
     think.mockResolvedValueOnce({
       reply: "Entendi, posso te mostrar como reduzir essa perda.",
       handoff: false, booked: false, rescheduled: false, cancelled: false,
@@ -801,12 +808,14 @@ describe("context switch: auditoria descarta task de agenda ativa", () => {
       text: "Acabei de rodar a Auditoria e o cálculo indicou que eu perco cerca de R$ 9.000 por mês devido ao meu tempo de resposta.",
     }));
 
-    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null; history: Message[]; suppressBooking?: boolean };
     expect(brainArgs.task).toBeNull();
+    expect(brainArgs.history).toHaveLength(1);
+    expect(brainArgs.suppressBooking).toBe(true);
   });
 
-  it("'Pode ser às 14h' preserva a task de agenda normalmente", async () => {
-    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+  it("'Pode ser às 14h' preserva task, histórico completo e booking ativo", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask, schedulingHistory));
     think.mockResolvedValueOnce({
       reply: "Perfeito, agendado para as 14h!",
       handoff: false, booked: false, rescheduled: false, cancelled: false,
@@ -815,12 +824,14 @@ describe("context switch: auditoria descarta task de agenda ativa", () => {
 
     await enviarPayload(payloadMensagem({ id: "wamid.time.1", text: "Pode ser às 14h" }));
 
-    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null; history: Message[]; suppressBooking?: boolean };
     expect(brainArgs.task).toEqual(schedulingTask);
+    expect(brainArgs.history.length).toBeGreaterThan(1);
+    expect(brainArgs.suppressBooking).toBeFalsy();
   });
 
-  it("'sexta de manhã' preserva a task de agenda normalmente", async () => {
-    loadConversation.mockResolvedValue(conversa("bot", schedulingTask));
+  it("'sexta de manhã' preserva task e histórico completo", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask, schedulingHistory));
     think.mockResolvedValueOnce({
       reply: "Certo, sexta de manhã!",
       handoff: false, booked: false, rescheduled: false, cancelled: false,
@@ -829,8 +840,82 @@ describe("context switch: auditoria descarta task de agenda ativa", () => {
 
     await enviarPayload(payloadMensagem({ id: "wamid.time.2", text: "sexta de manhã" }));
 
-    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null };
+    const brainArgs = think.mock.calls[0]?.[0] as { task: ConversationTask | null; history: Message[]; suppressBooking?: boolean };
     expect(brainArgs.task).toEqual(schedulingTask);
+    expect(brainArgs.history.length).toBeGreaterThan(1);
+  });
+
+  it("após auditoria, 'Restaurante' continua no novo contexto sem ressuscitar agenda", async () => {
+    let persistedTask: ConversationTask | null = schedulingTask;
+    const persistedHistory: Message[] = [...schedulingHistory];
+    loadConversation.mockImplementation(async () => conversa("bot", persistedTask ?? undefined, [...persistedHistory]));
+    setConversationTask.mockImplementation(async (_estId: unknown, _cid: unknown, nextTask: unknown) => {
+      persistedTask = nextTask as ConversationTask | null;
+    });
+    appendMessage.mockImplementation(async (_estId: unknown, _cid: unknown, role: unknown, text: unknown, waMessageId?: unknown) => {
+      const msg: Message = { id: String(waMessageId ?? `m-${persistedHistory.length}`), role: role as Message["role"], text: String(text), at: persistedHistory.length + 1, waMessageId: typeof waMessageId === "string" ? waMessageId : undefined };
+      persistedHistory.push(msg);
+      return { id: msg.id, at: msg.at };
+    });
+
+    think
+      .mockResolvedValueOnce({
+        reply: "Que legal que você fez a Auditoria! Qual é o segmento da sua empresa?",
+        handoff: false, booked: false, rescheduled: false, cancelled: false,
+        toolCalls: [],
+      })
+      .mockResolvedValueOnce({
+        reply: "Restaurantes costumam perder muitos leads por tempo de resposta. Posso te mostrar como a Lívia ajuda!",
+        handoff: false, booked: false, rescheduled: false, cancelled: false,
+        toolCalls: [],
+      });
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.continuity.1",
+      text: "Acabei de fazer a Auditoria de Atendimento. Leads por dia: 41 Ticket médio: R$ 845",
+    }));
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.continuity.2",
+      text: "Restaurante",
+    }));
+
+    expect(think).toHaveBeenCalledTimes(2);
+    const secondCallArgs = think.mock.calls[1]?.[0] as { task: ConversationTask | null; suppressBooking?: boolean };
+    expect(secondCallArgs.task).toBeNull();
+    expect(secondCallArgs.suppressBooking).toBeFalsy();
+    expect(persistedTask).toBeNull();
+  });
+
+  it("histórico persistido no banco não é apagado pela fronteira de contexto", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", schedulingTask, schedulingHistory));
+    think.mockResolvedValueOnce({
+      reply: "Vou te explicar o resultado da Auditoria.",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.persist",
+      text: "Acabei de fazer a Auditoria de Atendimento. Leads por dia: 78",
+    }));
+
+    expect(appendMessage).toHaveBeenCalled();
+    const loadedConversation = await loadConversation();
+    expect(loadedConversation.history).toEqual(schedulingHistory);
+  });
+
+  it("conversa sem auditoria preserva comportamento normal", async () => {
+    loadConversation.mockResolvedValue(conversa("bot", undefined, []));
+    think.mockResolvedValueOnce({
+      reply: "Nosso horário é das 8 às 18h.",
+      handoff: false, booked: false, rescheduled: false, cancelled: false,
+      toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.normal.1", text: "Qual o horário de funcionamento?" }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { suppressBooking?: boolean };
+    expect(brainArgs.suppressBooking).toBeFalsy();
   });
 });
 

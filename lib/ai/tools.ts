@@ -49,8 +49,10 @@ export interface ToolContext {
   prospectingContext?: import("@/types").ProspectingContext;
   // Apenas transporte nesta etapa; nenhuma tool muda seu comportamento ainda.
   demoAuthorization?: DemoAuthorization;
+  suppressBooking?: boolean;
 }
 
+const isBookingActive = (ctx: ToolContext) => ctx.est.bot.bookingEnabled && !ctx.suppressBooking;
 const isAuthorizedDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
 const matchingMode = (a: Appointment, ctx: ToolContext) => {
   const authorization = ctx.demoAuthorization;
@@ -220,7 +222,7 @@ const updateCustomerProfile: ToolDefinition = {
 // ---- findAvailableAppointments (agenda real) ----
 const findAvailableAppointments: ToolDefinition = {
   name: "find_available_appointments",
-  enabled: (ctx) => ctx.est.bot.bookingEnabled,
+  enabled: (ctx) => isBookingActive(ctx),
   schema: fn(
     "find_available_appointments",
     "Retorna os horários livres REAIS de um dia. Use antes de oferecer qualquer horário — nunca chute. Informe o serviço para que a duração correta seja aplicada.",
@@ -256,7 +258,7 @@ const findAvailableAppointments: ToolDefinition = {
 // ---- createAppointment ----
 const createAppointmentTool: ToolDefinition = {
   name: "create_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
+  enabled: (ctx) => isBookingActive(ctx) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn("create_appointment", "Cria o agendamento após o cliente escolher e confirmar um horário.", {
     type: "object",
     properties: {
@@ -379,7 +381,7 @@ const getCustomerAppointments: ToolDefinition = {
 // muda se esta ferramenta devolver sucesso; texto da IA nunca confirma nada.
 const confirmAppointment: ToolDefinition = {
   name: "confirm_appointment",
-  enabled: (ctx) => ctx.est.bot.bookingEnabled,
+  enabled: (ctx) => isBookingActive(ctx),
   schema: fn(
     "confirm_appointment",
     "Confirma a PRESENÇA do cliente num agendamento que está aguardando confirmação. Use apenas quando ele disser explicitamente que vai comparecer (ex.: 'confirmo', 'sim, vou estar lá').",
@@ -465,7 +467,7 @@ const confirmAppointment: ToolDefinition = {
 // para que a pessoa diga qual — escolher sozinha é justamente o erro.
 const rescheduleAppointment: ToolDefinition = {
   name: "reschedule_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
+  enabled: (ctx) => isBookingActive(ctx) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn(
     "reschedule_appointment",
     "Remarca um agendamento do cliente para um novo horário. Se ele tiver mais de um agendamento ativo, informe appointmentId (vindo de get_customer_appointments) — nunca escolha por conta própria. Use find_available_appointments antes para confirmar que o novo horário está livre.",
@@ -527,7 +529,7 @@ const rescheduleAppointment: ToolDefinition = {
 // ---- cancelAppointment ----
 const cancelAppointment: ToolDefinition = {
   name: "cancel_appointment",
-  enabled: (ctx) => (ctx.est.bot.bookingEnabled) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
+  enabled: (ctx) => isBookingActive(ctx) && (!ctx.prospectingContext || isAuthorizedDemo(ctx)),
   schema: fn(
     "cancel_appointment",
     "Cancela UM agendamento específico do cliente, identificado pelo id. Só use depois que a pessoa tiver confirmado explicitamente que quer cancelar aquele horário.",
