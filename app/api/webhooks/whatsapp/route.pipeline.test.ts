@@ -44,6 +44,7 @@ const getConversation = vi.fn();
 const loadConversation = vi.fn();
 const appendMessage = vi.fn();
 const setConversationTask = vi.fn();
+const setConversationContext = vi.fn();
 const setConversationStatus = vi.fn();
 const setAwaitingHumanOfferConfirmation = vi.fn();
 const setConversationIntent = vi.fn();
@@ -126,6 +127,7 @@ vi.mock("@/lib/repo", () => ({
   reopenConversation: (...a: unknown[]) => reopenConversation(...a),
   setConversationIntent: (...a: unknown[]) => setConversationIntent(...a),
   setConversationTask: (...a: unknown[]) => setConversationTask(...a),
+  setConversationContext: (...a: unknown[]) => setConversationContext(...a),
   setConversationSummary: vi.fn(),
   getCustomerProfile: vi.fn(async () => null),
   upsertCustomerProfile: (...a: unknown[]) => upsertCustomerProfile(...a),
@@ -803,6 +805,13 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
     expect(brainArgs.history).toHaveLength(1);
     expect(brainArgs.history[0].text).toContain("Auditoria de Atendimento");
     expect(brainArgs.suppressBooking).toBe(true);
+    expect(setConversationContext).toHaveBeenCalledWith(
+      "est_odonto",
+      PHONE,
+      expect.objectContaining({ purpose: "audit", source: "audit_calculator" }),
+      true,
+      expect.objectContaining({ leaseId: "lease-test" }),
+    );
   });
 
   it("mensagem de cálculo de perda: mesma fronteira de contexto", async () => {
@@ -857,10 +866,15 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
 
   it("após auditoria, 'Restaurante' continua no novo contexto sem ressuscitar agenda", async () => {
     let persistedTask: ConversationTask | null = schedulingTask;
+    let persistedContext: Conversation["conversationContext"];
     const persistedHistory: Message[] = [...schedulingHistory];
-    loadConversation.mockImplementation(async () => conversa("bot", persistedTask ?? undefined, [...persistedHistory]));
+    loadConversation.mockImplementation(async () => conversa("bot", persistedTask ?? undefined, [...persistedHistory], { conversationContext: persistedContext }));
     setConversationTask.mockImplementation(async (_estId: unknown, _cid: unknown, nextTask: unknown) => {
       persistedTask = nextTask as ConversationTask | null;
+    });
+    setConversationContext.mockImplementation(async (_estId: unknown, _cid: unknown, nextContext: unknown, clearTask: unknown) => {
+      persistedContext = nextContext as Conversation["conversationContext"];
+      if (clearTask) persistedTask = null;
     });
     appendMessage.mockImplementation(async (_estId: unknown, _cid: unknown, role: unknown, text: unknown, waMessageId?: unknown) => {
       const msg: Message = { id: String(waMessageId ?? `m-${persistedHistory.length}`), role: role as Message["role"], text: String(text), at: persistedHistory.length + 1, waMessageId: typeof waMessageId === "string" ? waMessageId : undefined };
@@ -878,6 +892,11 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
         reply: "Restaurantes costumam perder muitos leads por tempo de resposta. Posso te mostrar como a Lívia ajuda!",
         handoff: false, booked: false, rescheduled: false, cancelled: false,
         toolCalls: [],
+      })
+      .mockResolvedValueOnce({
+        reply: "Posso ajudar automatizando o atendimento do seu restaurante.",
+        handoff: false, booked: false, rescheduled: false, cancelled: false,
+        toolCalls: [],
       });
 
     await enviarPayload(payloadMensagem({
@@ -888,12 +907,25 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
       id: "wamid.audit.continuity.2",
       text: "Restaurante",
     }));
+    await enviarPayload(payloadMensagem({
+      id: "wamid.audit.continuity.3",
+      text: "Como você poderia me ajudar?",
+    }));
 
-    expect(think).toHaveBeenCalledTimes(2);
+    expect(think).toHaveBeenCalledTimes(3);
     const secondCallArgs = think.mock.calls[1]?.[0] as { task: ConversationTask | null; suppressBooking?: boolean };
+    const thirdCallArgs = think.mock.calls[2]?.[0] as { task: ConversationTask | null; suppressBooking?: boolean; history: Message[] };
     expect(secondCallArgs.task).toBeNull();
-    expect(secondCallArgs.suppressBooking).toBeFalsy();
+    expect(secondCallArgs.suppressBooking).toBe(true);
+    expect(thirdCallArgs.task).toBeNull();
+    expect(thirdCallArgs.suppressBooking).toBe(true);
+    expect(thirdCallArgs.history.map((message) => message.text)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Auditoria de Atendimento"),
+      "Restaurante",
+      "Como você poderia me ajudar?",
+    ]));
     expect(persistedTask).toBeNull();
+    expect(persistedContext?.purpose).toBe("audit");
   });
 
   it("histórico persistido no banco não é apagado pela fronteira de contexto", async () => {

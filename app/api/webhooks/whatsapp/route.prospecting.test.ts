@@ -129,6 +129,8 @@ describe("Prospecção Assistida Inbound Pipeline (F3)", () => {
     expect(session).toBeDefined();
     expect(session?.status).toBe("LIVIA_ACTIVE");
     expect(session?.firstReplyAt).toBeTypeOf("number");
+    const conversation = fakeDb.col(`establishments/${EST_ID}/conversations`).get(phone);
+    expect(conversation?.conversationContext).toMatchObject({ purpose: "commercial", source: "prospecting" });
   });
 
   it("5. segunda mensagem não sobrescreve firstReplyAt e 6. sessão LIVIA_ACTIVE é reconhecida sem regressão", async () => {

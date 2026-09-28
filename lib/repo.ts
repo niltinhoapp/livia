@@ -38,6 +38,7 @@ import type {
   CampaignRecipientStatus,
   ProspectingSession,
   ProspectingStatus,
+  ConversationContext,
 } from "@/types";
 import { assertAutomationFence } from "@/lib/automationFence";
 
@@ -2132,6 +2133,26 @@ export async function setConversationTask(
   await db.runTransaction(async (tx) => {
     await assertAutomationFence(tx, establishmentId, automationFence);
     tx.update(ref, { task: task ?? FieldValue.delete() });
+  });
+}
+
+// Persiste o papel da conversa e, ao entrar em Audit/Commercial, elimina a
+// task operacional incompatível na MESMA transação. A policy é calculada na
+// borda; o repositório apenas grava a decisão já tomada.
+export async function setConversationContext(
+  establishmentId: string,
+  conversationId: string,
+  context: ConversationContext,
+  clearOperationalTask: boolean,
+  automationFence?: AutomationFence,
+): Promise<void> {
+  const ref = sub(establishmentId, "conversations").doc(conversationId);
+  await db.runTransaction(async (tx) => {
+    await assertAutomationFence(tx, establishmentId, automationFence);
+    tx.update(ref, {
+      conversationContext: context,
+      ...(clearOperationalTask ? { task: FieldValue.delete() } : {}),
+    });
   });
 }
 

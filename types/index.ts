@@ -410,6 +410,21 @@ export interface Conversation {
   // distintos: um crash pode deixar inbound > processed para recuperação.
   inboundSequence?: number;
   processedInboundSequence?: number;
+  // Papel durável desta conversa. Documentos antigos não possuem o campo e
+  // são interpretados como atendimento operacional (compatibilidade sem
+  // backfill). ProspectingSession continua sendo a fonte de verdade do seu
+  // próprio funil; este objeto registra somente o papel/capabilities.
+  conversationContext?: ConversationContext;
+}
+
+export type ConversationPurpose = "operational" | "commercial" | "audit";
+export type ConversationContextSource = "normal" | "prospecting" | "audit_calculator";
+
+export interface ConversationContext {
+  purpose: ConversationPurpose;
+  source: ConversationContextSource;
+  enteredAt: number;
+  updatedAt: number;
 }
 
 // Token de fencing de um turno automático. Toda mutação comercial iniciada
