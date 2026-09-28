@@ -16,6 +16,7 @@ import {
   getPendingTask,
 } from "@/lib/repo";
 import {
+  isDemoAppointment,
   listAppointments,
   listAppointmentsCreatedSince,
   listAppointmentsCancelledSince,
@@ -28,6 +29,14 @@ import type { Conversation, CustomerProfile, InboxCategory, IntentType, Opportun
 
 const THIRTY_DAYS_MS = 30 * 24 * 3600000;
 const NINETY_DAYS_MS = 90 * 24 * 3600000;
+
+// Métrica é sobre operação REAL (F2). Um agendamento de demonstração não pode
+// entrar em funil, oportunidade, contagem do dia nem — por consequência — no
+// resumo diário enviado ao dono por template do WhatsApp, que consome
+// getDashboardMetrics. A F0 já havia fechado o lembrete; este era o último
+// efeito externo que um registro demo ainda alcançava.
+const withoutDemo = <T extends { mode?: "demo" }>(appointments: T[]): T[] =>
+  appointments.filter((a) => !isDemoAppointment(a));
 
 // ---- Passo 12 — Oportunidades ----
 //
@@ -56,13 +65,16 @@ export async function getOpportunities(
   const [pendingTasks, recentConversations, cancelledRecently, upcoming] = await Promise.all([
     preloadedPendingTasks ? Promise.resolve(preloadedPendingTasks) : listPendingTasks(establishmentId),
     listConversationsSince(establishmentId, since30d, 300),
-    listAppointmentsCancelledSince(establishmentId, since30d, 200),
+    listAppointmentsCancelledSince(establishmentId, since30d, 200).then(withoutDemo),
     listAppointments(establishmentId, Date.now(), Date.now() + NINETY_DAYS_MS, UPCOMING_APPOINTMENTS_LIMIT),
   ]);
 
   const nameByConversationId = new Map<string, string | null>(recentConversations.map((c) => [c.id, c.contactName]));
   const activePhones = new Set(
-    upcoming.filter((a) => a.status === "pending" || a.status === "confirmed").map((a) => normalizePhone(a.contactPhone)),
+    upcoming
+      .filter((a) => !isDemoAppointment(a))
+      .filter((a) => a.status === "pending" || a.status === "confirmed")
+      .map((a) => normalizePhone(a.contactPhone)),
   );
   const hasActiveAppointment = (phone: string) => activePhones.has(normalizePhone(phone));
 
@@ -188,8 +200,8 @@ export async function getDashboardMetrics(
   const pendingTasks = await listPendingTasks(establishmentId, 200);
   const [todayConvos, createdToday, cancelledToday, opportunities] = await Promise.all([
     listConversationsSince(establishmentId, todayStart, 500),
-    listAppointmentsCreatedSince(establishmentId, todayStart, 500),
-    listAppointmentsCancelledSince(establishmentId, todayStart, 500),
+    listAppointmentsCreatedSince(establishmentId, todayStart, 500).then(withoutDemo),
+    listAppointmentsCancelledSince(establishmentId, todayStart, 500).then(withoutDemo),
     getOpportunities(establishmentId, pendingTasks),
   ]);
 
