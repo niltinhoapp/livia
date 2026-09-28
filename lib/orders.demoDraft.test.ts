@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => { const fake = await import("@/lib/__testing__/firestoreFake"); return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb }; });
 import { fakeDb } from "@/lib/__testing__/firestoreFake";
 import {
@@ -27,8 +27,32 @@ async function seed() {
   await saveMenuProduct(EST, { categoryId: "cat", name: "X", basePriceCents: 1000, active: true }, "prod");
 }
 const add = (authorization?: typeof demo) => addOrderItem(EST, CONV, CONV, null, "prod", null, [], 1, null, undefined, false, undefined, authorization);
+
+// Relógio fixo dentro do expediente.
+//
+// Este arquivo testa o ESCOPO do draft demo, não a janela de recebimento de
+// pedidos — mas `seed()` não cadastra orderHours, então a janela caía no
+// expediente canônico default (Seg-Sex 09:00-18:00 com almoço 12:00-13:00) e
+// era avaliada contra o relógio REAL. Fora desse intervalo, todo teste que
+// cria draft falhava com `NewOrderBlockedError: outside_order_hours` — os 13
+// casos do arquivo passavam ou falhavam conforme a hora do dia em que a suíte
+// rodava (foi o que deixou o CI vermelho).
+//
+// Congela SÓ Date (`toFake: ["Date"]`): setTimeout/microtasks seguem reais,
+// então o Firestore falso e o async do serviço continuam funcionando. O fake
+// gera id por contador + Math.random(), nunca por timestamp, então nada colide
+// com o tempo parado. Nenhuma linha de produção muda — a correção é do
+// fixture, e a regra de horário continua sendo a real.
+const SEGUNDA_14H_BRT = new Date("2026-10-05T17:00:00.000Z"); // 14:00 em UTC-3
+
 describe("draft demo de addOrderItem", () => {
-  beforeEach(async () => { fakeDb.reset(); await seed(); });
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(SEGUNDA_14H_BRT);
+    fakeDb.reset();
+    await seed();
+  });
+  afterEach(() => { vi.useRealTimers(); });
   it("cria draft demo já marcado com lead", async () => { await add(demo); expect(await getActiveOrder(EST, CONV)).toMatchObject({ mode: "demo", prospectingLeadId: "lead-a" }); });
   it("preserva o draft para o mesmo lead", async () => { const first = await add(demo); const second = await add(demo); expect(second.id).toBe(first.id); expect(second).toMatchObject({ mode: "demo", prospectingLeadId: "lead-a" }); });
   it("recusa outro lead", async () => { await add(demo); await expect(add({ ...demo, prospectingLeadId: "lead-b" })).rejects.toThrow("draft_scope_mismatch"); });
