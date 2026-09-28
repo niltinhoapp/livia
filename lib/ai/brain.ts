@@ -257,6 +257,12 @@ function buildSystemPrompt(
     conversationContext?: ConversationContext;
     capabilities?: ConversationCapabilities;
     auditNeedsDiagnosis?: boolean;
+    // F5.5: há um pedido real em aberto nesta demonstração (itens no
+    // carrinho, ainda não concluído). Ver o bloco de prioridade no fim desta
+    // função — sem ele, a orientação comercial abaixo (pensada para
+    // apresentar a Lívia) fazia a resposta seguinte a um pedido já iniciado
+    // voltar a ser discurso de venda em vez de terminar o pedido.
+    activeOrderInProgress?: boolean;
   },
 ): string {
   const bot = est.bot;
@@ -466,6 +472,24 @@ function buildSystemPrompt(
       appointmentLookup.ok
         ? "Estes são os dados reais da agenda, já consultados. Responda AGORA com base neles, citando serviço e horário. É PROIBIDO dizer que vai verificar, pedir um momento ou mandar aguardar — a consulta já foi feita e o resultado está acima."
         : "",
+    );
+  }
+
+  // F5.5 — pedido demo em andamento tem prioridade sobre o discurso
+  // comercial. Colocado por último de propósito: as regras comerciais acima
+  // (apresentar a Lívia, oferecer "explicar como funciona", avançar o funil)
+  // continuam valendo QUANDO NÃO há pedido aberto; aqui elas são explicitamente
+  // suspensas em favor de concluir o pedido real que o prospect começou,
+  // pelo MESMO fluxo/tools da vertical Alimentação (canUseOrders acima) —
+  // nenhuma pergunta nova, nenhuma state machine paralela.
+  if (mayPresentLivia && canUseOrders && options?.activeOrderInProgress) {
+    sections.push(
+      "",
+      "=== PEDIDO DEMO EM ANDAMENTO (prioridade sobre a orientação comercial acima) ===",
+      "Há um pedido real em aberto no carrinho desta demonstração. Enquanto ele não for concluído, cancelado, ou o cliente explicitamente trocar de assunto, sua prioridade AGORA é concluir esse pedido pelo fluxo real de Pedidos (retirada ou entrega, endereço quando aplicável, forma de pagamento, observações, resumo canônico e confirmação) — não retomar a apresentação comercial da Lívia.",
+      "NÃO pergunte se a pessoa quer que você explique como a Lívia funciona, nem diga apenas o que ela 'pode fazer'. FAÇA: continue o pedido normalmente, como faria num atendimento operacional real dessa vertical.",
+      "Uma resposta curta ('não', 'sim', 'entrega', 'retirada', 'pix', 'dinheiro', um endereço) que responde a uma pergunta SOBRE O PEDIDO pertence ao pedido — não é um sinal para encerrar a demonstração ou voltar a vender a Lívia.",
+      "Só volte ao discurso comercial depois que o pedido for concluído (confirm_order), cancelado, ou o cliente explicitamente disser que não quer continuar o pedido.",
     );
   }
 
@@ -1504,11 +1528,26 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     : null;
   if (prospectCatalogPrice) toolCalls.push({ name: "search_menu", args: { query: catalogPriceQuery } });
 
+  // Pedido demo em andamento (F5.5): o prospect pode começar um pedido REAL
+  // no meio da demonstração ("quero uma coca e x-burger"). Consulta o mesmo
+  // resumo canônico que get_order_draft usa — nenhum estado paralelo — só
+  // para decidir se a orientação de prioridade abaixo entra no prompt.
+  let hasOpenDemoOrder = false;
+  if ((conversationContext.purpose === "commercial" || conversationContext.purpose === "audit") && hasCapability(capabilities, "order_read")) {
+    if (!(await canContinueAutomation())) return abortForHandoff();
+    const orderDraftLookup = await runTool("get_order_draft", {}, toolCtx);
+    if (orderDraftLookup.ok) {
+      const draft = orderDraftLookup.data as OrderSummaryForReply | null;
+      hasOpenDemoOrder = Boolean(draft?.items?.length && (draft.status === "draft" || draft.status === "awaiting_confirmation"));
+    }
+    if (hasOpenDemoOrder) toolCalls.push({ name: "get_order_draft", args: {} });
+  }
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, pendingOptionSelection ? null : task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis }) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, pendingOptionSelection ? null : task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis, activeOrderInProgress: hasOpenDemoOrder }) +
         optionSelectionSection(pendingOptionSelection) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
