@@ -15,7 +15,7 @@ const STOPWORDS = new Set(["de", "da", "do", "das", "dos", "o", "a", "os", "as",
 export function normalizeMenuText(value: string): string {
   return value
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLocaleLowerCase("pt-BR")
     .replace(/(\d)([a-z])/g, "$1 $2")
     .replace(/([a-z])(\d)/g, "$1 $2")
@@ -28,6 +28,8 @@ function queryTokens(query: string): string[] {
 }
 
 function tokenMatches(token: string, haystack: string[]): boolean {
+  // Número é quantidade/volume: casa inteiro ("3" não é "350", "2" não é "20").
+  if (/^\d+$/.test(token)) return haystack.includes(token);
   if (haystack.some((word) => word.startsWith(token))) return true;
   // Plural simples ("cocas", "latas") casa com o singular cadastrado.
   return token.length > 3 && token.endsWith("s") && haystack.some((word) => word === token.slice(0, -1));

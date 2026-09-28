@@ -185,6 +185,66 @@ describe("F5.4 — AGENDA → PEDIDO: '1' escolhe a opção da lista de produtos
   });
 });
 
+describe("F5.4 — cadeia completa: agendamento concluído → pedido → '1'", () => {
+  it("search_menu encerra a tarefa de agenda e o '1' seguinte escolhe o X-Burger sem ferramenta de agenda", async () => {
+    const { deriveTaskState } = await import("./taskState");
+    const pedido = [
+      customer("quero marcar um corte"),
+      bot("Prontinho! Seu horário de Corte está reservado para 02/10 às 10:00."),
+      customer("quero uma coca lata 350ml e x-burger"),
+    ];
+
+    // Turno 1: a Lívia consulta o cardápio e apresenta as opções.
+    scripted = [
+      { content: null, tool_calls: [toolCall("s1", "search_menu", { query: "x-burger" }), toolCall("s2", "search_menu", { query: "coca lata 350ml" })] },
+      { content: XBURGER_LIST },
+    ];
+    const turno1 = await think({ est: est(), kb: null, history: pedido, contactPhone: "5511999990000", contactName: null, customerProfile: null, task: STALE_AGENDA_TASK, intent: OTHER });
+    expect(runToolNames()).toEqual(["search_menu", "search_menu"]);
+    expect(turno1.reply).toBe(XBURGER_LIST);
+
+    // O webhook deriva a próxima tarefa com o que rodou neste turno: a agenda
+    // antiga não permanece ativa, só pela consulta ao cardápio.
+    const nextTask = deriveTaskState({
+      existingTask: STALE_AGENDA_TASK,
+      intent: OTHER,
+      toolCalls: turno1.toolCalls,
+      booked: turno1.booked,
+      statedDate: turno1.statedDate,
+      statedService: turno1.statedService,
+    });
+    expect(nextTask).toBeNull();
+
+    // Turno 2: "1".
+    runToolMock.mockClear();
+    capturedMessages = null;
+    scripted = [
+      {
+        content: null,
+        tool_calls: [
+          toolCall("t1", "find_available_appointments", { date: "2026-10-02" }),
+          toolCall("t2", "create_appointment", { serviceName: "Corte", startAt: 1 }),
+          toolCall("t3", "add_order_item", { productId: "demo-prod-xburger", quantity: 1 }),
+        ],
+      },
+      { content: "Anotei 1 X-Burger no seu pedido!" },
+    ];
+    const turno2 = await think({
+      est: est(), kb: null,
+      history: [...pedido, bot(XBURGER_LIST), customer("1")],
+      contactPhone: "5511999990000", contactName: null, customerProfile: null, task: nextTask, intent: OTHER,
+    });
+    const prompt = systemContent();
+    expect(prompt).toContain("ESCOLHA DE OPÇÃO DA SUA ÚLTIMA LISTA");
+    expect(prompt).toContain("X-Burger — R$ 24,00");
+    expect(prompt).not.toContain("=== TAREFA EM ANDAMENTO ===");
+    expect(runToolNames()).toEqual(["add_order_item"]);
+    expect(assertBookable).not.toHaveBeenCalled();
+    expect(turno2.booked).toBe(false);
+    expect(turno2.toolCalls.map((t) => t.name)).toEqual(["add_order_item"]);
+  });
+});
+
 describe("F5.4 — agenda preservada: listas de horário e de serviço não mudam", () => {
   it("'1' respondendo a uma lista de HORÁRIOS continua no caminho determinístico da agenda", async () => {
     await think({
