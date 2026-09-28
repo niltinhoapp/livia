@@ -516,6 +516,18 @@ export function deniesBooking(reply: string): boolean {
   return BOOKING_DENIAL.test(reply) || UNAVAILABLE_CLAIM.test(reply);
 }
 
+// O inverso da recusa inventada também é um fato operacional: dizer que há
+// opções de agenda sem uma listagem positiva é tão incorreto quanto dizer que
+// não há. A expressão deliberadamente exige a combinação de disponibilidade
+// com horário/opção/vaga, para não confundir explicações genéricas como
+// "a agenda fica disponível quando configurada".
+const AVAILABLE_SLOTS_CLAIM =
+  /\b(tenho|temos|h[áa]|existem|encontrei)\b[^.!?\n]{0,60}\b(hor[áa]rios?|op[çc][õo]es|vagas)\b[^.!?\n]{0,30}\b(livres?|dispon[íi]veis?)\b/i;
+
+export function claimsAvailableSlots(reply: string): boolean {
+  return AVAILABLE_SLOTS_CLAIM.test(reply);
+}
+
 // Confirmação explícita de que o horário ficou marcado.
 //
 // Enumerar as formas de NEGAR é enxugar gelo: a cada recusa nova o modelo
@@ -1018,6 +1030,39 @@ async function realAlternatives(
   toolCalls.push({ name: "find_available_appointments", args: { date } });
   const data = result.data as { slots?: { time: string }[] } | undefined;
   return (data?.slots ?? []).slice(0, 5).map((s) => ({ time: s.time }));
+}
+
+function addLocalDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return isoDate(new Date(Date.UTC(year!, month! - 1, day! + days)));
+}
+
+// A agenda oficial de demonstração pode receber uma data fechada ou já
+// ocupada. Em vez de conduzir o prospect dia a dia, percorremos uma janela
+// curta e mostramos SOMENTE o primeiro resultado positivo devolvido pela
+// ferramenta real. O cenário continua sendo apenas baseline: a decisão vem
+// de computeSlots/slotBookability, exatamente como numa agenda normal.
+async function nextDemoAvailability(
+  toolCtx: ToolContext,
+  fromDate: string,
+  serviceName: unknown,
+  toolCalls: ToolCallRecord[],
+): Promise<{ date?: string; slots: { time: string }[] } | null> {
+  if (toolCtx.demoAuthorization?.authorized !== true) return null;
+
+  for (let days = 1; days <= 7; days++) {
+    const date = addLocalDays(fromDate, days);
+    const args = {
+      date,
+      ...(typeof serviceName === "string" && serviceName.trim() ? { serviceName } : {}),
+    };
+    const result = await runTool("find_available_appointments", args, toolCtx);
+    toolCalls.push({ name: "find_available_appointments", args });
+    if (!result.ok) continue;
+    const data = result.data as { date?: string; slots?: { time: string }[] } | undefined;
+    if (data?.slots?.length) return { date: data.date ?? date, slots: data.slots };
+  }
+  return null;
 }
 
 // Resposta determinística montada a partir dos dados REAIS da agenda. Usada
@@ -1531,6 +1576,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         if (ORDER_MUTATION_TOOLS.has(name)) orderMutationAttempts++;
 
         const result = await runTool(name, args, toolCtx);
+        let nextDemoSlots: { date?: string; slots: { time: string }[] } | null = null;
         if (!result.ok && ORDER_DRAFT_MUTATION_TOOLS.has(name)) {
           const data = result.data as { reason?: unknown; nextOpening?: unknown } | undefined;
           if ((data?.reason === "orders_disabled" || data?.reason === "outside_order_hours") && (data.nextOpening === null || (typeof data.nextOpening === "object" && data.nextOpening !== null))) {
@@ -1579,6 +1625,17 @@ export async function think(input: BrainInput): Promise<BrainResult> {
             // permite recusar, logo em seguida, um create_appointment com
             // instante de outro dia (assertSameDay em lib/ai/tools.ts).
             if (data?.date) toolCtx.discussedDate = data.date;
+            // A data inicialmente pedida pode estar fechada ou sem vagas.
+            // Na demo oficial, busque o próximo dia demonstrável agora, com
+            // as mesmas ferramentas e regras reais, em vez de o modelo
+            // sugerir "amanhã" por conta própria.
+            if (!data?.slots?.length && data?.date) {
+              nextDemoSlots = await nextDemoAvailability(toolCtx, data.date, args.serviceName, toolCalls);
+              if (nextDemoSlots) {
+                ultimaDisponibilidade = nextDemoSlots;
+                toolCtx.discussedDate = nextDemoSlots.date;
+              }
+            }
           }
         }
         if (result.ok && ORDER_SUMMARY_TOOLS.has(name)) {
@@ -1587,6 +1644,15 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         }
         if (result.ok && name === "prepare_order_confirmation") canonicalConfirmationSummary = result.data as OrderSummaryForReply;
         messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+        if (nextDemoSlots) {
+          messages.push({
+            role: "system",
+            content:
+              "=== PRÓXIMA DISPONIBILIDADE REAL DA AGENDA DEMO ===\n" +
+              JSON.stringify(nextDemoSlots) +
+              "\nA data originalmente consultada não tinha vagas. Ofereça somente estes horários e esta data; não invente disponibilidade para amanhã ou qualquer outro dia.",
+          });
+        }
       }
       if (canonicalConfirmationSummary) {
         const reply = composeOrderConfirmationRequest(canonicalConfirmationSummary) ?? "Seu pedido está pronto para confirmação. Responda “confirmo” para fechar.";
@@ -1791,6 +1857,26 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         reply = "Vou chamar uma pessoa da equipe pra confirmar esse horário com você.";
         handoff = true;
       }
+    }
+
+    // A resposta não pode oferecer vagas que o backend não listou. A regra de
+    // prompt já dizia isso, mas o modelo ainda afirmou "amanhã tenho opções"
+    // em produção sem chamar a tool. Uma única correção permite que ele faça
+    // a consulta; insistência vira uma resposta neutra, nunca uma agenda
+    // inventada.
+    if (claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content:
+            "A resposta acima afirmou que há horários/opções disponíveis, mas nenhuma consulta positiva à agenda ocorreu. Não anuncie disponibilidade. Use find_available_appointments e responda somente com os slots reais retornados; se não houver, diga isso sem sugerir um dia ou horário específico.",
+        });
+        continue;
+      }
+      reply = "Posso consultar a agenda de demonstração para confirmar os próximos horários disponíveis.";
+      handoff = false;
     }
 
     // ---- Regra geral: promessa de continuação inexistente ----
