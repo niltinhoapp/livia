@@ -77,6 +77,7 @@ describe("segmentação comercial", () => {
     ["Tenho uma clínica", "clinic"],
     ["Meu negócio é um salão", "salon"],
     ["Tenho um restaurante delivery", "restaurant"],
+    ["Balas e doces", "restaurant"],
     ["É um pet shop com banho e tosa", "pet"],
     ["Tenho uma ótica", "optical"],
     ["Presto serviços de assistência técnica", "services"],
@@ -98,11 +99,17 @@ describe("demo e transições", () => {
   });
 
   it("Audit só qualifica com intenção comercial inequívoca", () => {
-    for (const vague of ["tenho um restaurante", "como você me ajudaria?", "parece interessante"]) {
+    for (const vague of ["sim", "legal", "interessante", "me explica melhor", "como funciona?", "talvez", "depois eu vejo", "tenho um restaurante", "como você me ajudaria?"]) {
       expect(explicitlyQualifiesAudit(vague)).toBe(false);
     }
     expect(explicitlyQualifiesAudit("Quero fazer uma demonstração")).toBe(true);
     expect(explicitlyQualifiesAudit("Gostaria de contratar a Lívia")).toBe(true);
+    expect(explicitlyQualifiesAudit("Sim. Me mostra na prática como você atenderia um cliente meu querendo comprar balas e doces pelo WhatsApp.")).toBe(true);
+    expect(explicitlyQualifiesAudit("Quero ver funcionando")).toBe(true);
+    expect(explicitlyQualifiesAudit("Vamos fazer a demonstração")).toBe(true);
+    expect(explicitlyQualifiesAudit("Pode me mostrar como funciona na prática?")).toBe(true);
+    expect(explicitlyQualifiesAudit("Quero testar")).toBe(true);
+    expect(explicitlyQualifiesAudit("Vamos testar")).toBe(true);
   });
 
   it("Audit -> Commercial preserva dados e boundary; nunca vira Operational por frase", () => {

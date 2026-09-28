@@ -75,7 +75,9 @@ export function extractAuditData(text: string, capturedAt: number): AuditConvers
 export function inferCommercialSegment(text: string): CommercialSegment | null {
   const value = normalize(text);
   if (/\b(pet\s*shop|veterinari[ao]|banho\s+e\s+tosa)\b/.test(value)) return "pet";
-  if (/\b(restaurante|lanchonete|pizzaria|delivery|hamburgueria)\b/.test(value)) return "restaurant";
+  // Alimentação usa a jornada de restaurante já existente. Mantemos a
+  // taxonomia pequena: não há uma categoria nova para cada tipo de loja.
+  if (/\b(restaurante|lanchonete|pizzaria|delivery|hamburgueria|confeitaria|bomboniere|balas?|doces?|salgados?)\b/.test(value)) return "restaurant";
   if (/\b(salao|barbearia|manicure|cabeleireir[oa])\b/.test(value)) return "salon";
   if (/\b(otica|oculos)\b/.test(value)) return "optical";
   if (/\b(clinica|consultorio|dentista|odontologi[ao])\b/.test(value)) return "clinic";
@@ -88,6 +90,12 @@ export function explicitlyQualifiesAudit(text: string): boolean {
   return (
     /\b(quero|gostaria|vamos|posso)\b.{0,40}\b(testar|experimentar|contratar)\b/.test(value) ||
     /\b(quero|gostaria)\b.{0,40}\b(ver|fazer|continuar)\b.{0,20}\bdemonstracao\b/.test(value) ||
+    // "me mostra na prática" é uma solicitação concreta de demonstração,
+    // diferente de interesse vago como "como funciona?". O padrão exige
+    // tanto o pedido dirigido de mostrar quanto a expressão "na prática".
+    /\b(?:me\s+mostr[ae]|pode\s+me\s+mostrar)\b.{0,60}\bna\s+pratica\b/.test(value) ||
+    /\bquero\b.{0,30}\bver\b.{0,30}\bfuncionando\b/.test(value) ||
+    /\bvamos\b.{0,30}\b(?:fazer|ver|iniciar|continuar)\b.{0,25}\bdemonstracao\b/.test(value) ||
     /\b(quero|gostaria)\b.{0,40}\bconhecer\b.{0,20}\blivia\b/.test(value)
   );
 }

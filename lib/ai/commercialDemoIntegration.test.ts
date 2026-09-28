@@ -122,19 +122,33 @@ describe("F2 + F3", () => {
     expect(await runTool("find_available_appointments", { date: DATE }, ctx)).toMatchObject({ ok: false });
   });
 
-  it("Audit mantém diagnóstico, identifica restaurante e usa o catálogo oficial após qualificação legítima", async () => {
+  it("reproduz a conversa Audit real até o catálogo oficial somente após autorização", async () => {
     const initial: ConversationContext = { purpose: "audit", source: "audit_calculator", enteredAt: 100, updatedAt: 100 };
     const diagnosed = enrichCommercialContext({
       context: initial,
-      text: "Leads por dia: 20 Ticket médio: R$150 Tempo médio: 2 horas Estimativa: R$12.000/mês Tenho um restaurante",
+      text: "Oi Lívia! Acabei de fazer a Auditoria de Atendimento. Leads por dia: 85 Ticket médio: R$ 1.560 Tempo médio de resposta: Até 5 minutos Estimativa apresentada: R$ 0/mês",
       now: 100,
       allowAuditQualification: false,
     });
-    const qualified = enrichCommercialContext({ context: diagnosed.context, text: "Quero continuar a demonstração", now: 200, allowAuditQualification: true });
+    expect(diagnosed.context).toMatchObject({
+      purpose: "audit", source: "audit_calculator",
+      audit: { leadsPerDay: 85, averageTicketCents: 156_000, responseTimeText: "Até 5 minutos", estimatedOpportunityCentsPerMonth: 0 },
+    });
+
+    const segmented = enrichCommercialContext({ context: diagnosed.context, text: "Balas e doces", now: 150, allowAuditQualification: true });
+    expect(segmented.context).toMatchObject({ purpose: "audit", commercial: { segment: "restaurant" } });
+
+    const qualified = enrichCommercialContext({
+      context: segmented.context,
+      text: "Sim. Me mostra na prática como você atenderia um cliente meu querendo comprar balas e doces pelo WhatsApp.",
+      now: 200,
+      allowAuditQualification: true,
+    });
+    expect(qualified.auditQualified).toBe(true);
     expect(qualified.context).toMatchObject({
       purpose: "commercial", source: "audit_calculator", enteredAt: 100,
       commercial: { segment: "restaurant" },
-      audit: { leadsPerDay: 20, averageTicketCents: 15_000, responseTimeText: "2 horas", estimatedOpportunityCentsPerMonth: 1_200_000 },
+      audit: { leadsPerDay: 85, averageTicketCents: 156_000, responseTimeText: "Até 5 minutos", estimatedOpportunityCentsPerMonth: 0 },
     });
 
     const authorized = authorizeDemo({
@@ -148,12 +162,40 @@ describe("F2 + F3", () => {
       leadId: A.lead,
     });
     expect(authorized).toEqual(authorization(A.lead));
-    expect(capabilitiesForConversation({ context: qualified.context, bookingEnabled: true, ordersEnabled: true, demoAuthorized: authorized.authorized }).demo_execution).toBe(true);
+    const capabilities = capabilitiesForConversation({ context: qualified.context, bookingEnabled: true, ordersEnabled: true, demoAuthorized: authorized.authorized });
+    expect(capabilities.demo_execution).toBe(true);
+    expect(capabilities.catalog_read).toBe(true);
 
     await seedDemoCatalog(EST);
-    const menu = await runTool("list_menu", {}, toolContext(qualified.context));
+    const ctx = toolContext(qualified.context);
+    expect(toolsFor(ctx).map((tool) => tool.function.name)).toContain("search_menu");
+    expect(toolsFor(ctx).map((tool) => tool.function.name)).not.toContain("get_customer_profile");
+    const menu = await runTool("list_menu", {}, ctx);
     const products = (menu.data as { categories: { products: { name: string; basePriceCents: number }[] }[] }).categories.flatMap((category) => category.products);
     expect(products.find((product) => product.name === "X-Burger")).toMatchObject({ basePriceCents: 2400 });
+    expect(await runTool("search_menu", { query: "coca" }, ctx)).toMatchObject({ ok: true, data: { products: expect.arrayContaining([expect.objectContaining({ id: "demo-prod-coca" })]) } });
+    expect(await runTool("search_menu", { query: "x-burger" }, ctx)).toMatchObject({ ok: true, data: { products: expect.arrayContaining([expect.objectContaining({ id: "demo-prod-xburger" })]) } });
+    expect(await runTool("get_customer_profile", {}, ctx)).toMatchObject({ ok: false });
+  });
+
+  it("Audit que pede demonstração sem DemoAuthorization continua fail-closed para execução", async () => {
+    const audit: ConversationContext = {
+      purpose: "audit", source: "audit_calculator", enteredAt: 100, updatedAt: 150,
+      commercial: { segment: "restaurant", segmentIdentifiedAt: 150 },
+      audit: { leadsPerDay: 85, capturedAt: 100 },
+    };
+    const qualified = enrichCommercialContext({
+      context: audit,
+      text: "Me mostra na prática como você atenderia um cliente meu querendo comprar balas e doces pelo WhatsApp.",
+      now: 200,
+      allowAuditQualification: true,
+    });
+    const ctx = toolContext(qualified.context, A.lead, A.phone, false);
+    expect(qualified.context).toMatchObject({ purpose: "commercial", source: "audit_calculator", audit: { leadsPerDay: 85 } });
+    expect(hasCapability(ctx.capabilities!, "demo_execution")).toBe(false);
+    expect(toolsFor(ctx).map((tool) => tool.function.name)).not.toContain("find_available_appointments");
+    expect(await runTool("find_available_appointments", { date: DATE }, ctx)).toMatchObject({ ok: false });
+    expect(await runTool("add_order_item", { productId: "demo-prod-xburger", quantity: 1 }, ctx)).toMatchObject({ ok: false });
   });
 
   it("separa mensalidade da Lívia, preço do catálogo demo e preço operacional", async () => {
