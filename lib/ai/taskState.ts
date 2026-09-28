@@ -86,6 +86,15 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
     };
   }
 
+  // O cliente mudou de assunto para um PEDIDO: nesta rodada rodou alguma
+  // ferramenta do domínio pedido (consulta ao cardápio ou escrita no pedido)
+  // e nenhuma de agenda. A tarefa de agenda anterior não continua viva por
+  // inércia — senão a próxima resposta curta ("1", "a 2") volta a ser lida
+  // como horário (F5.4). O domínio muda já na consulta ("quero uma coca e
+  // x-burger" → search_menu), não só quando o item é gravado. A agenda em si
+  // não é tocada; um novo pedido de agendamento cria outra tarefa normalmente.
+  if (existingTask && supersededByOrderDomain(existingTask, toolCalls)) return null;
+
   // Mesma tarefa continuando (a intenção desta mensagem bate com a tarefa
   // ativa, ou não há intenção de tarefa nova mas já havia uma em andamento —
   // ex. "sexta de manhã" não dispara nenhuma keyword de agendamento, mas a
@@ -133,6 +142,27 @@ export function deriveTaskState(input: DeriveTaskStateInput): ConversationTask |
 
   // Nada a rastrear (perguntas factuais, conversa geral).
   return null;
+}
+
+// Leitura do cardápio e do carrinho: já comprova que a conversa está no
+// domínio pedido, mesmo antes de qualquer item ser gravado.
+const MENU_READ_TOOL_NAMES = new Set<ToolName>([
+  "list_menu", "list_menu_category", "search_menu", "get_menu_product", "get_order_draft",
+]);
+const ORDER_MUTATION_TOOL_NAMES = new Set<ToolName>([
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment",
+  "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
+]);
+const ORDER_DOMAIN_TOOL_NAMES = new Set<ToolName>([...MENU_READ_TOOL_NAMES, ...ORDER_MUTATION_TOOL_NAMES]);
+const AGENDA_TOOL_NAMES = new Set<ToolName>([
+  "get_customer_appointments", "find_available_appointments", "create_appointment",
+  "confirm_appointment", "reschedule_appointment", "cancel_appointment",
+]);
+
+function supersededByOrderDomain(existingTask: ConversationTask, toolCalls: ToolCallRecord[]): boolean {
+  if (!TASK_INTENTS.has(existingTask.type)) return false;
+  return toolCalls.some((t) => ORDER_DOMAIN_TOOL_NAMES.has(t.name))
+    && !toolCalls.some((t) => AGENDA_TOOL_NAMES.has(t.name));
 }
 
 // Avança o estado com base no que a IA realmente chamou nesta rodada. Nunca
