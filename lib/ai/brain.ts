@@ -4,7 +4,7 @@
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import type OpenAI from "openai";
 import type { AutomationFence, Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
-import { getScheduleConfig, localToEpoch, assertBookable } from "@/lib/scheduling";
+import { getScheduleConfig, localToEpoch, assertBookable, demoSlots, PRODUCTION_SLOTS } from "@/lib/scheduling";
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
 import { parseServiceSelection } from "@/lib/ai/serviceSelection";
@@ -847,7 +847,20 @@ async function resolveTimeSelection(
   // Sem serviço definido não dá para criar — mas a disponibilidade ainda é
   // decidida pelo backend, nunca pelo modelo.
   if (!serviceName) {
-    const motivo = await assertBookable(toolCtx.est.id, config, startAt, config.defaultDurationMin);
+    // Mesmo escopo de disputa de slot usado por find_available_appointments
+    // (F0.2): num turno de demonstração autorizada, demos de outros leads não
+    // podem produzir uma recusa aqui.
+    const motivo = await assertBookable(
+      toolCtx.est.id,
+      config,
+      startAt,
+      config.defaultDurationMin,
+      Date.now(),
+      undefined,
+      toolCtx.demoAuthorization?.authorized === true
+        ? demoSlots(toolCtx.demoAuthorization.prospectingLeadId)
+        : PRODUCTION_SLOTS,
+    );
     if (motivo) {
       return { kind: "conflict", reason: motivo, alternatives: await realAlternatives(toolCtx, date, toolCalls) };
     }

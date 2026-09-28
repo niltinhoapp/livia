@@ -34,6 +34,10 @@ vi.mock("@/lib/scheduling", () => ({
     return Date.UTC(y!, m! - 1, d!) + minutos * 60000 - offset * 60000;
   },
   assertBookable: (...a: unknown[]) => assertBookable(...(a as [])),
+  // Público de disputa de slot (F0.2). brain.ts passa um destes a
+  // assertBookable; aqui só precisam existir com a mesma forma.
+  PRODUCTION_SLOTS: { kind: "production" },
+  demoSlots: (prospectingLeadId: string | null) => ({ kind: "demo", prospectingLeadId }),
 }));
 
 const runTool = vi.fn(async (name: string, args: Record<string, unknown>) => {

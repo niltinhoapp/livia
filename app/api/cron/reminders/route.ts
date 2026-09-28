@@ -8,7 +8,7 @@
 // frequencia). Protegido pelo CRON_SECRET.
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase/admin";
-import { getScheduleConfig, listAppointments, updateAppointment } from "@/lib/scheduling";
+import { getScheduleConfig, isDemoAppointment, listAppointments, updateAppointment } from "@/lib/scheduling";
 import { sendTemplate } from "@/lib/whatsapp/client";
 import type { Establishment } from "@/types";
 
@@ -29,6 +29,9 @@ export async function GET(req: NextRequest) {
     .get();
 
   let sent = 0;
+  // Contado à parte para que "nenhum lembrete enviado" num tenant de
+  // demonstração seja observável no retorno do cron, em vez de silencioso.
+  let skippedDemo = 0;
   const skipped: string[] = [];
   const errors: string[] = [];
 
@@ -44,6 +47,11 @@ export async function GET(req: NextRequest) {
 
     const appts = await listAppointments(est.id, now, now + WINDOW_MS);
     for (const a of appts) {
+      // Agendamento de demonstração nunca gera lembrete real: o destinatário
+      // é um prospect, e o compromisso não existe. Antes desta guarda o cron
+      // filtrava apenas por `status`, e um registro demo (que nasce
+      // "pending") era indistinguível de um agendamento de cliente.
+      if (isDemoAppointment(a)) { skippedDemo++; continue; }
       if (a.reminderSentAt) continue;
       if (a.status !== "pending" && a.status !== "confirmed") continue;
       try {
@@ -66,7 +74,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ establishments: snap.size, sent, skipped, errors });
+  return NextResponse.json({ establishments: snap.size, sent, skippedDemo, skipped, errors });
 }
 
 // epoch -> "DD/MM às HH:MM" no fuso local (offset fixo).

@@ -34,6 +34,12 @@ export default defineConfig({
     // do estado em que aquele worktree foi criado — produzindo falhas
     // espúrias sem relação com o código sendo revisado (confirmado na
     // OT-05B: 39 arquivos falhando, todos dentro de .worktrees/).
-    exclude: ["node_modules/**", ".next/**", ".worktrees/**"],
+    //
+    // O padrão genérico cobre worktrees que não moram em .worktrees/: um
+    // checkout deixado como `.pr140-worktree/` na raiz era coletado e
+    // duplicava cada falha da suíte, misturando código de outra branch com
+    // o da branch em revisão. Diretórios de worktree são untracked por
+    // natureza, então a exclusão é por padrão de nome, não por lista.
+    exclude: ["node_modules/**", ".next/**", ".worktrees/**", "**/.*worktree*/**"],
   },
 });

@@ -93,6 +93,7 @@ import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription
 import { synthesizeSpeech, SpeechError } from "@/lib/ai/speech";
 import { isLegacyBusinessInquiry, LEGACY_DEMO_CHANNEL_REPLY } from "@/lib/demoSafety";
 import { authorizeDemo, type DemoAuthorization } from "@/lib/demoAuthorization";
+import { serviceBlockedByBilling } from "@/lib/billing/serviceEntitlement";
 import type {
   Establishment,
   EstablishmentWhatsapp,
@@ -158,6 +159,28 @@ function sanitizeLogData(data: Record<string, unknown>): Record<string, unknown>
 
 function logStage(stage: string, data?: Record<string, unknown>) {
   console.log(`[livia webhook] ${stage}`, data ? JSON.stringify(sanitizeLogData(data)) : "");
+}
+
+// Gate comercial ÚNICO do webhook (F0.4). Dois eixos INDEPENDENTES, nunca
+// acoplados: `Establishment.status` (estado operacional, decidido por
+// operação) e `billing.billingStatus` (entitlement, decidido pelo Asaas e
+// pelo cron de expiração). Este helper só responde "a Lívia pode atender
+// agora?" — não escreve nem sincroniza nenhum dos dois.
+//
+// Existe como função para que os dois pontos do webhook que já gateavam por
+// `est.status` (o fallback de áudio e o fluxo textual) apliquem exatamente a
+// mesma regra, em vez de duas condições que podem divergir.
+function servicePaused(est: Establishment, msgId: string | undefined, conversationId: string): boolean {
+  if (est.status !== "active") return true;
+  const billing = serviceBlockedByBilling(est, Date.now());
+  if (billing.blocked) {
+    // O motivo nunca vai para o cliente final (a resposta é neutra), mas
+    // precisa ser observável: "a Lívia parou de atender este tenant" sem
+    // rastro foi exatamente o problema que SERVICE_PAUSED_REPLY resolveu.
+    logStage("service blocked by billing", { msgId, estId: est.id, conversationId, reason: billing.reason });
+    return true;
+  }
+  return false;
 }
 
 function audioErrorCode(err: unknown): string {
@@ -783,7 +806,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       // handoff/human a Lívia permanece em silêncio e apenas mantém a fila
       // humana atualizada. Uma conta suspensa conserva o fallback comercial
       // já usado pelo fluxo textual, sem revelar o erro técnico de áudio.
-      if (est.status !== "active") {
+      if (servicePaused(est, msg.id, conversation.id)) {
         if (!warnedServicePausedRecently(history, Date.now())) {
           await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, false, msg.id, outboundContext());
         }
@@ -923,7 +946,12 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // uma causa COMERCIAL — distinta de canal desconectado (tratado acima,
   // tecnicamente sem caminho de resposta) e de erro técnico (que continua
   // subindo para o catch do POST, sem virar "conta inativa").
-  if (est.status !== "active") {
+  //
+  // F0.4: além de `Establishment.status`, o gate considera o ENTITLEMENT de
+  // billing. A mensagem do cliente já foi persistida acima e o bloqueio
+  // acontece ANTES de think() — nenhuma chamada de IA, ferramenta ou mutação
+  // operacional roda para um tenant sem direito de uso.
+  if (servicePaused(est, msg.id, conversation.id)) {
     if (!warnedServicePausedRecently(history, Date.now())) {
       await replyAndLog(wa, est, conversation.id, contactPhone, SERVICE_PAUSED_REPLY, shouldReplyWithVoice(inbound.kind, est), msg.id, outboundContext());
     }
@@ -1066,6 +1094,8 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       logStage("automation discarded after handoff before reminder action", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
       return;
     }
+    // findNextAppointment já exclui registros de demonstração na origem (ver
+    // lib/scheduling.ts): esta rotina é destinada a cliente real.
     const next = await findNextAppointment(est.id, normalizePhone(contactPhone));
     if (next && next.reminderSentAt && (next.status === "pending" || next.status === "confirmed")) {
       if (intent === "confirm") {

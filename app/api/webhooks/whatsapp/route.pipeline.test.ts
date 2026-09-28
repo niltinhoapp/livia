@@ -13,6 +13,16 @@ import type { Conversation, ConversationTask, Establishment, Message, WhatsAppIn
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
 
+// Firestore falso para TODO o grafo de imports da rota — mesmo padrão já
+// usado por route.prospecting.test.ts. Sem isto, qualquer modulo do grafo que
+// toque Firestore (hoje lib/demoSafety.ts, via isLegacyBusinessInquiry)
+// inicializa credenciais reais e derruba o pipeline inteiro: este arquivo
+// reportava "no tests" porque cert() lancava durante a coleta.
+vi.mock("@/lib/firebase/admin", async () => {
+  const fake = await import("@/lib/__testing__/firestoreFake");
+  return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb };
+});
+
 vi.mock("@/lib/whatsapp/outbox", () => {
   class OutboundRetryableError extends Error { constructor(public code: string) { super(code); } }
   class OutboundReconciliationRequiredError extends Error { constructor(public code: string) { super(code); } }

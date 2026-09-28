@@ -1,11 +1,17 @@
-import { sub } from "@/lib/firebase/admin";
-
 export interface DemoSafetyConfig { legacyAliases?: string[]; }
 
 const normalized = (value: string) => value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR");
 
 /** Configurável por tenant em establishments/{id}/meta/demoSafety. */
 export async function isLegacyBusinessInquiry(establishmentId: string, text: string): Promise<boolean> {
+  // Mesma regra já documentada em lib/attachments/storage.ts: um módulo
+  // importado pelo webhook não pode importar @/lib/firebase/admin no topo —
+  // isso inicializa credenciais só por importar a rota. Aqui o custo era
+  // invisível em produção e total em teste: este import estático fazia
+  // cert() lançar durante a COLETA de route.*.test.ts, e os 5 arquivos que
+  // não mockam firebase/admin reportavam "no tests" (103 casos, incluindo
+  // route.pipeline.test.ts, nunca executaram).
+  const { sub } = await import("@/lib/firebase/admin");
   const snap = await sub(establishmentId, "meta").doc("demoSafety").get();
   const aliases = snap.exists ? (snap.data() as DemoSafetyConfig).legacyAliases : [];
   if (!Array.isArray(aliases) || !aliases.length) return false;
