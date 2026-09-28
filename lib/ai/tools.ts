@@ -9,7 +9,12 @@
 // (lib/scheduling.ts, lib/repo.ts) — nada é reimplementado.
 import type OpenAI from "openai";
 import type { DemoAuthorization } from "@/lib/demoAuthorization";
-import type { Appointment, Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile, OrderPaymentMethod, FoodOrder, AutomationFence } from "@/types";
+import type { Appointment, Establishment, ScheduleConfig, KnowledgeBase, CustomerProfile, OrderPaymentMethod, FoodOrder, AutomationFence, ConversationContext } from "@/types";
+import {
+  capabilitiesForConversation,
+  type ConversationCapabilities,
+  type ConversationCapability,
+} from "@/lib/ai/conversationPolicy";
 import {
   listAppointments,
   listActiveCustomerAppointments,
@@ -53,6 +58,8 @@ export interface ToolContext {
   prospectingContext?: import("@/types").ProspectingContext;
   // Apenas transporte nesta etapa; nenhuma tool muda seu comportamento ainda.
   demoAuthorization?: DemoAuthorization;
+  conversationContext?: ConversationContext;
+  capabilities?: ConversationCapabilities;
   suppressBooking?: boolean;
 }
 
@@ -713,12 +720,65 @@ const DEMO_ORDER_MUTATION_TOOLS = new Set([
 ]);
 const hasAuthorizedProspectDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
 
+const TOOL_CAPABILITY: Readonly<Record<string, ConversationCapability>> = {
+  get_business_hours: "agenda_read",
+  get_customer_profile: "customer_profile_read",
+  update_customer_profile: "customer_profile_mutate",
+  get_customer_appointments: "agenda_read",
+  find_available_appointments: "agenda_read",
+  create_appointment: "agenda_mutate",
+  confirm_appointment: "agenda_mutate",
+  reschedule_appointment: "agenda_mutate",
+  cancel_appointment: "agenda_mutate",
+  list_menu: "catalog_read",
+  list_menu_category: "catalog_read",
+  search_menu: "catalog_read",
+  get_menu_product: "catalog_read",
+  get_order_draft: "order_read",
+  get_order_status: "order_read",
+  add_order_item: "order_mutate",
+  update_order_item: "order_mutate",
+  remove_order_item: "order_mutate",
+  set_order_fulfillment: "order_mutate",
+  set_order_address: "order_mutate",
+  set_order_payment: "order_mutate",
+  prepare_order_confirmation: "order_mutate",
+  confirm_order: "order_mutate",
+  request_human_handoff: "human_handoff",
+  update_prospecting_status: "commercial_guidance",
+};
+
+function effectiveCapabilities(ctx: ToolContext): ConversationCapabilities {
+  if (ctx.capabilities) return ctx.capabilities;
+  const inferredPurpose = ctx.conversationContext?.purpose ?? (ctx.prospectingContext ? "commercial" : "operational");
+  return capabilitiesForConversation({
+    context: ctx.conversationContext ?? {
+      purpose: inferredPurpose,
+      source: inferredPurpose === "commercial" ? "prospecting" : "normal",
+      enteredAt: 0,
+      updatedAt: 0,
+    },
+    bookingEnabled: Boolean(ctx.est.bot.bookingEnabled),
+    ordersEnabled: Boolean(ctx.est.bot.ordersEnabled),
+    demoAuthorized: ctx.demoAuthorization?.authorized === true,
+    suppressBooking: ctx.suppressBooking,
+  });
+}
+
+function toolEnabled(tool: ToolDefinition, ctx: ToolContext): boolean {
+  const required = TOOL_CAPABILITY[tool.name];
+  // Falha fechada: tool nova sem classificação nunca chega ao modelo nem
+  // executa por chamada forjada.
+  if (!required || !effectiveCapabilities(ctx)[required]) return false;
+  return tool.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(tool.name));
+}
+
 export function toolsFor(ctx: ToolContext): OpenAI.Chat.ChatCompletionTool[] {
-  return TOOL_REGISTRY.filter((t) => t.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(t.name))).map((t) => t.schema);
+  return TOOL_REGISTRY.filter((tool) => toolEnabled(tool, ctx)).map((tool) => tool.schema);
 }
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const tool = TOOL_REGISTRY.find((t) => t.name === name && (t.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(name))));
+  const tool = TOOL_REGISTRY.find((candidate) => candidate.name === name && toolEnabled(candidate, ctx));
   if (!tool) return { ok: false, error: `ferramenta desconhecida ou indisponível: ${name}` };
   try {
     const result = await tool.execute(ctx, args);

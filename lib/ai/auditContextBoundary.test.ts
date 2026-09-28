@@ -33,7 +33,8 @@ vi.mock("@/lib/repo", () => ({
 }));
 
 const { think } = await import("./brain");
-const { toolsFor } = await import("./tools");
+const { runTool, toolsFor, TOOL_REGISTRY } = await import("./tools");
+const { capabilitiesForConversation } = await import("./conversationPolicy");
 
 const est = {
   id: "est-1",
@@ -42,6 +43,7 @@ const est = {
     personaName: "Livia",
     tone: "acolhedora",
     bookingEnabled: true,
+    ordersEnabled: true,
     handoffKeywords: [],
     medicalGuardrail: false,
   },
@@ -72,6 +74,13 @@ const SCHEDULING_TOOLS = [
   "get_customer_appointments",
   "get_business_hours",
 ];
+const ORDER_TOOLS = [
+  "list_menu", "list_menu_category", "search_menu", "get_menu_product", "get_order_draft",
+  "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment",
+  "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order", "get_order_status",
+];
+const auditContext = { purpose: "audit", source: "audit_calculator", enteredAt: 1, updatedAt: 1 } as const;
+const auditCapabilities = capabilitiesForConversation({ context: auditContext, bookingEnabled: true, ordersEnabled: true, demoAuthorized: false });
 
 function toolNames(ctx: Partial<ToolContext> = {}): string[] {
   return toolsFor({
@@ -91,6 +100,21 @@ beforeEach(() => {
 });
 
 describe("audit context boundary — tools", () => {
+  it("toda tool registrada possui ao menos um contexto autorizado pela policy", () => {
+    const commercialContext = { purpose: "commercial", source: "prospecting", enteredAt: 1, updatedAt: 1 } as const;
+    const demoCapabilities = capabilitiesForConversation({ context: commercialContext, bookingEnabled: true, ordersEnabled: true, demoAuthorized: true });
+    const authorizedAcrossContexts = new Set([
+      ...toolNames(),
+      ...toolNames({
+        conversationContext: commercialContext,
+        capabilities: demoCapabilities,
+        prospectingContext: { leadId: "lead", normalizedPhone: "5511999999999", businessName: "Demo", segment: "teste", initialManualMessage: "Oi", status: "REVEALED", preRevealReplyCount: 0, preparedAt: 1, manualSendConfirmedAt: 1, firstReplyAt: 1, revealedAt: 1, expiresAt: Number.MAX_SAFE_INTEGER },
+        demoAuthorization: { authorized: true, establishmentId: est.id, prospectingLeadId: "lead" },
+      }),
+    ]);
+    expect([...authorizedAcrossContexts].sort()).toEqual(TOOL_REGISTRY.map((tool) => tool.name).sort());
+  });
+
   it("suppressBooking=true removes all scheduling tools", () => {
     const names = toolNames({ suppressBooking: true });
     for (const tool of SCHEDULING_TOOLS) {
@@ -105,11 +129,22 @@ describe("audit context boundary — tools", () => {
     }
   });
 
-  it("non-scheduling tools remain available during audit", () => {
-    const names = toolNames({ suppressBooking: true });
-    expect(names).toContain("get_customer_profile");
-    expect(names).toContain("update_customer_profile");
+  it("Audit expõe somente capabilities permitidas", () => {
+    const names = toolNames({ conversationContext: auditContext, capabilities: auditCapabilities });
+    for (const tool of [...SCHEDULING_TOOLS, ...ORDER_TOOLS, "get_customer_profile", "update_customer_profile"]) {
+      expect(names).not.toContain(tool);
+    }
     expect(names).toContain("request_human_handoff");
+  });
+
+  it("runTool recusa mutações forjadas de agenda, pedido e perfil em Audit", async () => {
+    const ctx = {
+      est, kb, config: null, contactPhone: "5511999999999", contactName: "Cliente", offset: -180,
+      customerProfile: null, conversationContext: auditContext, capabilities: auditCapabilities,
+    } satisfies ToolContext;
+    for (const name of ["create_appointment", "confirm_order", "set_order_address", "update_customer_profile"]) {
+      await expect(runTool(name, {}, ctx)).resolves.toMatchObject({ ok: false, error: expect.stringContaining("indisponível") });
+    }
   });
 });
 
@@ -132,6 +167,8 @@ describe("audit context boundary — system prompt via think()", () => {
       task: null,
       intent: { type: "general_question", confidence: 0.5, entities: {} },
       suppressBooking: true,
+      conversationContext: auditContext,
+      capabilities: auditCapabilities,
     });
 
     const systemMsg = completionInput?.messages.find((m) => m.role === "system");
@@ -157,12 +194,15 @@ describe("audit context boundary — system prompt via think()", () => {
       task: null,
       intent: { type: "general_question", confidence: 0.5, entities: {} },
       suppressBooking: true,
+      conversationContext: auditContext,
+      capabilities: auditCapabilities,
     });
 
     const toolNames = completionInput?.tools?.map((t) => t.function.name) ?? [];
     for (const tool of SCHEDULING_TOOLS) {
       expect(toolNames).not.toContain(tool);
     }
+    for (const tool of ORDER_TOOLS) expect(toolNames).not.toContain(tool);
   });
 
   it("without suppressBooking: scheduling instructions present in prompt", async () => {

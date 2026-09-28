@@ -3,7 +3,7 @@
 // para consultar horários livres e criar agendamentos sozinha, durante a
 // conversa — sempre com o horário vindo da disponibilidade real (sem inventar).
 import type OpenAI from "openai";
-import type { AutomationFence, Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent } from "@/types";
+import type { AutomationFence, Establishment, KnowledgeBase, Message, CustomerProfile, ConversationTask, Intent, ConversationContext } from "@/types";
 import { getScheduleConfig, localToEpoch, assertBookable, demoSlots, PRODUCTION_SLOTS } from "@/lib/scheduling";
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
@@ -22,6 +22,11 @@ import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 import { operationSemanticKey, stableToolOperationId } from "@/lib/ai/operationId";
 import { composeOrderConfirmationRequest, composeOrderReply, type OrderSummaryForReply } from "@/lib/ai/orderReply";
+import {
+  capabilitiesForConversation,
+  hasCapability,
+  type ConversationCapabilities,
+} from "@/lib/ai/conversationPolicy";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -214,7 +219,11 @@ function buildSystemPrompt(
   intent: Intent,
   appointmentLookup: { ok: boolean; data?: unknown } | null,
   prospectingContext?: import("@/types").ProspectingContext,
-  options?: { suppressBooking?: boolean },
+  options?: {
+    suppressBooking?: boolean;
+    conversationContext?: ConversationContext;
+    capabilities?: ConversationCapabilities;
+  },
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
@@ -240,6 +249,14 @@ function buildSystemPrompt(
   // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
   // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
   rules.push(...knowledgeGuidanceToText(kb));
+  if (options?.conversationContext?.purpose === "audit") {
+    rules.push(
+      "--- CONTEXTO AUDIT PERSISTENTE ---",
+      "Esta conversa veio da Auditoria/Calculadora e continua nessa jornada comercial. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil.",
+    );
+  } else if (options?.conversationContext?.purpose === "commercial" && !prospectingContext) {
+    rules.push("--- CONTEXTO COMERCIAL PERSISTENTE ---", "Esta é uma conversa comercial sobre a Lívia, não um atendimento operacional de cliente.");
+  }
   if (prospectingContext) {
     if (prospectingContext.status === "PREPARED" || prospectingContext.status === "WAITING_REPLY" || prospectingContext.status === "LIVIA_ACTIVE") {
       rules.push(
@@ -274,7 +291,11 @@ function buildSystemPrompt(
     }
   }
 
-    if (bot.bookingEnabled && !options?.suppressBooking) {
+  const canReadAgenda = options?.capabilities ? hasCapability(options.capabilities, "agenda_read") : !options?.suppressBooking;
+  const canMutateAgenda = options?.capabilities ? hasCapability(options.capabilities, "agenda_mutate") : bot.bookingEnabled && !options?.suppressBooking;
+  const canUseOrders = options?.capabilities ? hasCapability(options.capabilities, "order_read") : Boolean(bot.ordersEnabled);
+
+  if (canMutateAgenda) {
     rules.push(
       "SEMPRE que a pessoa perguntar sobre um horário que ela já marcou (\"confirma minha consulta\", \"tenho consulta hoje?\", \"qual horário marquei?\", \"você marcou?\", \"quando é meu horário?\"), use a ferramenta get_customer_appointments ANTES de responder. Nunca responda isso pelo histórico da conversa.",
       "Um agendamento com status \"pending\" EXISTE e está reservado — diga o horário e que está aguardando a confirmação da pessoa. Nunca diga que não há agendamento nesse caso.",
@@ -289,10 +310,10 @@ function buildSystemPrompt(
       "- Se a pessoa confirmar que vai comparecer (\"confirmo\", \"sim, vou\"), use confirm_appointment. O horário só passa a contar como confirmado se essa ferramenta devolver sucesso.",
       "- Após criar/remarcar/cancelar, confirme os detalhes (serviço, dia e hora) em uma frase curta.",
     );
-  } else if (!bot.bookingEnabled) {
+  } else if (options?.conversationContext?.purpose === "operational" && !bot.bookingEnabled && canReadAgenda) {
     rules.push("Você ainda não fecha agendamentos; para marcar, oriente a pessoa a falar com a equipe.");
   }
-  if (bot.ordersEnabled) {
+  if (canUseOrders) {
     rules.push(
       "Você PODE montar pedidos somente pelas ferramentas de cardápio.",
       "- Nunca invente produto, adicional, disponibilidade, preço, taxa ou total: consulte list_menu/search_menu/get_menu_product e o resumo do pedido.",
@@ -314,7 +335,9 @@ function buildSystemPrompt(
   );
   const sections = [rules.join("\n"), "", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb)];
 
-  const profileText = customerProfileToText(customerProfile);
+  const profileText = !options?.capabilities || hasCapability(options.capabilities, "customer_profile_read")
+    ? customerProfileToText(customerProfile)
+    : null;
   if (profileText) {
     sections.push("", "=== O QUE VOCÊ JÁ SABE SOBRE ESTE CLIENTE ===", profileText);
   }
@@ -330,7 +353,7 @@ function buildSystemPrompt(
   // ESPECÍFICA desta mensagem — mais eficaz do que confiar só na instrução
   // genérica. Determinístico (lib/ai/trustPolicy.ts): zero chamadas de IA
   // extras.
-  const trust = evaluateTrust(intent, kb, { ordersEnabled: Boolean(bot.ordersEnabled) });
+  const trust = evaluateTrust(intent, kb, { ordersEnabled: canUseOrders });
   if (!trust.hasSource && trust.directive) {
     sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
   }
@@ -956,6 +979,8 @@ export interface BrainInput {
   operationIdScope?: string;
   prospectingContext?: ProspectingContext;
   demoAuthorization?: DemoAuthorization;
+  conversationContext?: ConversationContext;
+  capabilities?: ConversationCapabilities;
   suppressBooking?: boolean;
 }
 
@@ -1123,7 +1148,20 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
-  const booking = est.bot.bookingEnabled && !input.suppressBooking;
+  const conversationContext = input.conversationContext ?? {
+    purpose: input.prospectingContext ? "commercial" as const : "operational" as const,
+    source: input.prospectingContext ? "prospecting" as const : "normal" as const,
+    enteredAt: 0,
+    updatedAt: 0,
+  };
+  const capabilities = input.capabilities ?? capabilitiesForConversation({
+    context: conversationContext,
+    bookingEnabled: Boolean(est.bot.bookingEnabled),
+    ordersEnabled: Boolean(est.bot.ordersEnabled),
+    demoAuthorized: input.demoAuthorization?.authorized === true,
+    suppressBooking: input.suppressBooking,
+  });
+  const booking = hasCapability(capabilities, "agenda_mutate");
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
   // (getScheduleConfig devolve o default quando não há doc), inclusive sem
@@ -1164,7 +1202,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   const discussedDate =
     statedDate ?? (typeof task?.collectedData.date === "string" ? task.collectedData.date : null);
 
-  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null, suppressBooking: input.suppressBooking };
+  const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, conversationContext, capabilities, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null, suppressBooking: input.suppressBooking };
   const tools = toolsFor(toolCtx);
 
   let booked = false;
@@ -1223,7 +1261,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // texto sem chamar ferramenta nenhuma — respondeu "vou verificar, um
   // momento" com um Appointment real existindo na agenda.
   let appointmentLookup: Awaited<ReturnType<typeof runTool>> | null = null;
-  if (intent.type === "check_appointment") {
+  if (intent.type === "check_appointment" && hasCapability(capabilities, "agenda_read")) {
     if (!(await canContinueAutomation())) return abortForHandoff();
     appointmentLookup = await runTool("get_customer_appointments", {}, toolCtx);
     toolCalls.push({ name: "get_customer_appointments", args: {} });
@@ -1271,7 +1309,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // produtos por inferência do modelo quando o catálogo está cadastrado.
   const latestProspectText = [...history].reverse().find((message) => message.role === "customer")?.text ?? "";
   const prospectMenuRequest = /\b(card[áa]pio|lanche(?:s)?|bebida(?:s)?|pizza(?:s)?|produto(?:s)?)\b/i.test(latestProspectText);
-  const prospectMenu = input.demoAuthorization?.authorized && prospectMenuRequest
+  const prospectMenu = hasCapability(capabilities, "demo_execution") && prospectMenuRequest
     ? await runTool("list_menu", {}, toolCtx)
     : null;
   if (prospectMenu) toolCalls.push({ name: "list_menu", args: {} });
@@ -1280,7 +1318,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking }) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities }) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
         (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : ""),

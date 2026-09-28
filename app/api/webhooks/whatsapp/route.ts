@@ -30,6 +30,7 @@ import {
   reopenConversation,
   setConversationIntent,
   setConversationTask,
+  setConversationContext,
   setConversationSummary,
   getCustomerProfile,
   upsertCustomerProfile,
@@ -76,7 +77,13 @@ import { think } from "@/lib/ai/brain";
 import { detectIntent } from "@/lib/ai/intent";
 import { confirmCancelReminderIntent } from "@/lib/ai/reminderConfirmation";
 import { deriveTaskState } from "@/lib/ai/taskState";
-import { startsAuditContext, taskAfterExplicitContextSwitch } from "@/lib/ai/contextSwitch";
+import { startsAuditContext } from "@/lib/ai/contextSwitch";
+import {
+  capabilitiesForConversation,
+  hasCapability,
+  historyForConversationContext,
+  resolveConversationContext,
+} from "@/lib/ai/conversationPolicy";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -843,6 +850,33 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       : {}),
   });
 
+  // Resolve o papel antes de qualquer atalho operacional (inclusive resposta
+  // a lembrete). Audit explícito vence; Audit persistido continua; depois
+  // vem ProspectingSession ativa; documentos antigos seguem operacionais.
+  const contextResolution = resolveConversationContext({
+    persisted: conversation.conversationContext,
+    prospectingSession,
+    startsAudit: startsAuditContext(customerText),
+    now: persistedCustomer.at,
+  });
+  const conversationCapabilities = capabilitiesForConversation({
+    context: contextResolution.context,
+    bookingEnabled: Boolean(est.bot.bookingEnabled),
+    ordersEnabled: Boolean(est.bot.ordersEnabled),
+    demoAuthorized: false, // recalculado após authorizeDemo, antes do brain
+  });
+  if (contextResolution.changed) {
+    await setConversationContext(
+      est.id,
+      conversation.id,
+      contextResolution.context,
+      contextResolution.clearOperationalTask,
+      automationFence,
+    );
+    conversation.conversationContext = contextResolution.context;
+    if (contextResolution.clearOperationalTask) conversation.task = undefined;
+  }
+
   // Imagem/documento e demais tipos continuam apenas reconhecidos e
   // persistidos. Não há visão, OCR, parser de documento nem conteúdo
   // inventado. Áudio transcrito segue abaixo exatamente como texto.
@@ -1088,7 +1122,9 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // Resposta ao lembrete de agendamento (anti-no-show). Só age quando existe
   // um agendamento que JÁ recebeu lembrete e ainda aguarda confirmação —
   // assim "sim"/"ok" no meio de outra conversa não é confundido.
-  const intent = confirmCancelReminderIntent(customerText);
+  const intent = hasCapability(conversationCapabilities, "agenda_mutate")
+    ? confirmCancelReminderIntent(customerText)
+    : null;
   if (intent) {
     if (!(await canContinueAutomation())) {
       logStage("automation discarded after handoff before reminder action", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
@@ -1133,25 +1169,27 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // IA para virarem contexto do prompt (fonte de verdade sobre o cliente e
   // sobre em que etapa da tarefa a conversa está — Fase 4/5).
   const detectedIntent = closureIntent;
-  const storedProfile = await getCustomerProfile(est.id, contactPhone);
+  const canUseCustomerProfile = hasCapability(conversationCapabilities, "customer_profile_read");
+  const storedProfile = canUseCustomerProfile ? await getCustomerProfile(est.id, contactPhone) : null;
   // Identidade: o nome pode já existir no sistema mesmo sem estar no perfil —
   // o contato pode não ter nome público no WhatsApp (contactName null), mas
   // ter dado o nome ao agendar. Sem esta resolução, a Livia perguntava de
   // novo o nome de um cliente que ela já conhecia. Só busca nos agendamentos
   // quando não há nome em lugar nenhum, então não pesa no caminho comum.
-  const knownName =
-    storedProfile?.name ??
-    contactName ??
-    (await findCustomerNameFromAppointments(est.id, contactPhone));
+  const knownName = canUseCustomerProfile
+    ? storedProfile?.name ?? contactName ?? (await findCustomerNameFromAppointments(est.id, contactPhone))
+    : contactName;
   // O nome resolvido tem que chegar ao prompt já nesta mensagem — inclusive
   // quando ainda não existe documento de perfil (primeira conversa de um
   // cliente que já tinha agendamento).
-  const customerProfile: CustomerProfile | null =
-    storedProfile?.name || !knownName
+  const customerProfile: CustomerProfile | null = !canUseCustomerProfile
+    ? null
+    : storedProfile?.name || !knownName
       ? storedProfile
       : { ...(storedProfile ?? emptyProfile(est.id, contactPhone)), name: knownName };
-  const isContextSwitch = startsAuditContext(customerText);
-  const existingTask: ConversationTask | null = taskAfterExplicitContextSwitch(customerText, conversation.task ?? null);
+  const existingTask: ConversationTask | null = contextResolution.context.purpose === "audit"
+    ? null
+    : conversation.task ?? null;
 
   if (isSilentAcknowledgement(customerText, detectedIntent, existingTask, history)) {
     logStage("silent acknowledgement, no reply", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
@@ -1159,15 +1197,6 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   }
 
   logStage("invoking AI", { msgId: msg.id, estId: est.id, conversationId: conversation.id, intent: detectedIntent.type });
-  // Lê o estado do carrinho DEPOIS de persistir a mensagem. O brain só recebe
-  // a autorização estrutural para confirmar quando existe um resumo pendente;
-  // texto do modelo não pode fabricar pedido, versão ou confirmação.
-  const activeOrder = est.bot.ordersEnabled
-    ? await (await import("@/lib/orders")).getActiveOrder(est.id, normalizePhone(contactPhone))
-    : null;
-  const orderAwaitingConfirmation = activeOrder?.status === "awaiting_confirmation"
-    ? { orderId: activeOrder.id, version: activeOrder.version }
-    : null;
   const demoAuthorization: DemoAuthorization = authorizeDemo({
     establishment: est,
     internalDemoProspectingEstablishmentId: process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID,
@@ -1175,19 +1204,37 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     phone: normalizePhone(contactPhone),
     leadId: prospectingContext?.leadId ?? "",
   });
+  const effectiveCapabilities = capabilitiesForConversation({
+    context: contextResolution.context,
+    bookingEnabled: Boolean(est.bot.bookingEnabled),
+    ordersEnabled: Boolean(est.bot.ordersEnabled),
+    demoAuthorized: demoAuthorization.authorized,
+  });
+  // Lê o carrinho somente quando a policy permite dados de pedido. O brain
+  // recebe a autorização estrutural para confirmar; texto não fabrica ID ou
+  // versão. Audit e Commercial sem demo nem sequer consultam esse dado.
+  const activeOrder = hasCapability(effectiveCapabilities, "order_read")
+    ? await (await import("@/lib/orders")).getActiveOrder(est.id, normalizePhone(contactPhone))
+    : null;
+  const orderAwaitingConfirmation = activeOrder?.status === "awaiting_confirmation"
+    ? { orderId: activeOrder.id, version: activeOrder.version }
+    : null;
   let brainResult: Awaited<ReturnType<typeof think>>;
   try {
     brainResult = await think({
       est,
       kb,
-      history: isContextSwitch ? historyForAI.slice(-1) : historyForAI,
+      history: historyForConversationContext(historyForAI, contextResolution),
       contactPhone,
       contactName,
       customerProfile,
       prospectingContext,
       demoAuthorization,
+      conversationContext: contextResolution.context,
+      capabilities: effectiveCapabilities,
       task: existingTask,
-      suppressBooking: isContextSwitch,
+      // Compatibilidade: suppressBooking agora deriva da policy; não decide.
+      suppressBooking: !hasCapability(effectiveCapabilities, "agenda_read"),
       intent: detectedIntent,
       hasLastConfirmedOrder: Boolean(conversation.lastConfirmedOrderId),
       orderAwaitingConfirmation,
@@ -1311,7 +1358,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
 
   // Fase 4: deriva e persiste o próximo estado da tarefa a partir do que a
   // IA realmente fez nesta rodada — nunca do que ela disse que faria.
-  const nextTask = deriveTaskState({
+  const nextTask = hasCapability(effectiveCapabilities, "agenda_mutate") ? deriveTaskState({
     existingTask,
     intent: detectedIntent,
     toolCalls,
@@ -1323,7 +1370,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     // O serviço que o cliente nomeou nesta mensagem — pelo mesmo motivo, para
     // a próxima mensagem ("as 17") não herdar um serviço preso de antes (OT-02G).
     statedService,
-  });
+  }) : null;
   await setConversationIntent(est.id, conversation.id, detectedIntent.type, automationFence);
   // Guarda o agendamento que está aguardando confirmação de cancelamento, pra
   // que o "sim" da próxima mensagem cancele o ID EXATO — nunca "o próximo".
@@ -1345,7 +1392,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     ? (toolCalls.find((t) => t.name === "create_appointment" && typeof t.args.serviceName === "string")?.args
         .serviceName as string | undefined)
     : undefined;
-  await upsertCustomerProfile(est.id, contactPhone, {
+  if (hasCapability(effectiveCapabilities, "customer_profile_mutate")) await upsertCustomerProfile(est.id, contactPhone, {
     // `knownName` inclui o nome recuperado de um agendamento existente, então
     // a identidade passa a viver no perfil e a busca acima não se repete nas
     // próximas mensagens. Continua sendo dado determinístico (o próprio
