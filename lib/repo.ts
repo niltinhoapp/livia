@@ -2724,6 +2724,27 @@ export async function getProspectingSessionByPhone(
   return data;
 }
 
+// Operação explícita/auditável: somente pedido inequívoco do webhook pode
+// reabrir HUMAN/EXPIRED; OPTED_OUT e sessões ativas permanecem fail-closed.
+export async function reactivateProspectingSessionForDemo(establishmentId: string, phone: string, now = Date.now()): Promise<ProspectingSession | null> {
+  const normalizedPhone = normalizePhone(phone);
+  const ref = sub(establishmentId, "prospectingSessions").doc(normalizedPhone);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const current = snap.data() as ProspectingSession;
+    if (current.status !== "HUMAN" && current.status !== "EXPIRED") return null;
+    const next: ProspectingSession = {
+      ...current, status: "REVEALED", preRevealReplyCount: 0, manualSendConfirmedAt: now,
+      revealedAt: now, completedAt: null, expiresAt: now + 48 * 60 * 60 * 1000,
+      outcome: null, updatedAt: now,
+      demoReactivation: { at: now, reason: "explicit_practical_demo", previousStatus: current.status, previousExpiresAt: current.expiresAt ?? null },
+    };
+    tx.set(ref, next);
+    return next;
+  });
+}
+
 export async function getProspectingSessionByLeadId(
   establishmentId: string,
   leadId: string

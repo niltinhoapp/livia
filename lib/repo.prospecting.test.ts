@@ -12,6 +12,7 @@ import {
   getProspectingSessionByPhone,
   getProspectingSessionByLeadId,
   transitionProspectingSession,
+  reactivateProspectingSessionForDemo,
 } from "@/lib/repo";
 
 const EST = "est-123";
@@ -259,6 +260,24 @@ describe("Prospecção Assistida pela Lívia - F1", () => {
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(1);
     expect((rejected[0] as PromiseRejectedResult).reason.message).toBe("conflict_lead_id_different_phone");
+  });
+});
+
+describe("reativação explícita de demo", () => {
+  it("reativa HUMAN somente por operação backend, preserva lead e registra auditoria", async () => {
+    await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
+    await transitionProspectingSession(EST, PHONE_1, { action: "receive_reply" }, 20);
+    await transitionProspectingSession(EST, PHONE_1, { action: "reveal" }, 30);
+    await transitionProspectingSession(EST, PHONE_1, { action: "set_outcome", status: "HUMAN" }, 40);
+    const reactivated = await reactivateProspectingSessionForDemo(EST, PHONE_1, 100);
+    expect(reactivated).toMatchObject({ leadId: LEAD_1, status: "REVEALED", expiresAt: 100 + 48 * 60 * 60 * 1000, demoReactivation: { reason: "explicit_practical_demo", previousStatus: "HUMAN" } });
+  });
+
+  it("não reativa sessão ativa nem opt-out", async () => {
+    await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 20)).toBeNull();
+    await transitionProspectingSession(EST, PHONE_1, { action: "opt_out" }, 30);
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 40)).toBeNull();
   });
 });
 

@@ -1001,6 +1001,7 @@ export interface ProspectingSession {
   outcome: "interested" | "not_interested" | "human" | "opt_out" | "expired" | "closed" | null;
   createdAt: number;
   updatedAt: number;
+  demoReactivation?: { at: number; reason: "explicit_practical_demo"; previousStatus: ProspectingStatus; previousExpiresAt: number | null };
 }
 
 // ---- Ambiente oficial de demonstração (F2) ----

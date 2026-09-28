@@ -29,12 +29,13 @@ import {
 } from "@/lib/ai/conversationPolicy";
 import {
   asksCommercialProductPrice,
+  asksMenuSetup,
   commercialDemoGuidance,
   extractCatalogPriceQuery,
   inferCommercialSegment,
   SEGMENT_COMMERCIAL_GUIDANCE,
 } from "@/lib/ai/commercialContext";
-import { commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
+import { COMMERCIAL_MENU_IMPORT_FACT, commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -333,6 +334,7 @@ function buildSystemPrompt(
       "Apresente capacidade como possibilidade real/configurável; não afirme que ela já está habilitada para este prospect.",
     );
   }
+  if (mayPresentLivia && segment === "restaurant") rules.push(`--- CONFIGURAÇÃO DE CARDÁPIO ---\n${COMMERCIAL_MENU_IMPORT_FACT}\nNunca diga que o cadastro é somente manual.`);
   if (mayPresentLivia) {
     rules.push(commercialDemoGuidance(segment, Boolean(options?.capabilities?.demo_execution)));
   }
@@ -1305,6 +1307,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     && !isPreRevealProspecting
     && Boolean(ultimaDoCliente && asksCommercialProductPrice(ultimaDoCliente.text))
     && !auditNeedsDiagnosis;
+  const directMenuSetupQuestion = conversationContext.purpose !== "operational"
+    && conversationContext.commercial?.segment === "restaurant"
+    && Boolean(ultimaDoCliente && asksMenuSetup(ultimaDoCliente.text));
 
   // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
   // precedência; senão, o que já estava na tarefa. As ferramentas de criar e
@@ -1854,6 +1859,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // No primeiro turno de Audit, o diagnóstico continua tendo precedência.
     if (directCommercialPriceQuestion) {
       reply = commercialPriceReply();
+      handoff = false;
+    }
+    if (directMenuSetupQuestion) {
+      reply = COMMERCIAL_MENU_IMPORT_FACT;
       handoff = false;
     }
 

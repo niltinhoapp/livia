@@ -214,6 +214,16 @@ describe("F2 + F3", () => {
     expect(operationalReply.reply).not.toMatch(/R\$\s*129/);
   });
 
+  it("comercial de restaurante informa importação por imagem, sem prometer formatos inexistentes", async () => {
+    const restaurant = { ...commercialContext(), commercial: { segment: "restaurant" as const, segmentIdentifiedAt: 100 } };
+    const result = await brain(restaurant, "Preciso escrever manualmente o cardápio inteiro?");
+    const prompt = completionInput?.messages.find((message) => message.role === "system")?.content;
+    expect(prompt).toContain("JPG, PNG ou WEBP");
+    expect(prompt).toContain("Nunca diga que o cadastro é somente manual");
+    expect(prompt).toContain("não são suportados hoje");
+    expect(result.reply).toContain("JPG, PNG ou WEBP");
+  });
+
   it("demo comercial não acessa customer profile real e chamada forjada falha fechada", async () => {
     fakeDb.col(`establishments/${EST}/customers`).set(A.phone, { phone: A.phone, establishmentId: EST, name: "Nome Real" });
     const ctx = toolContext(commercialContext());
