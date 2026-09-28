@@ -14,6 +14,7 @@ export const LIVIA_COMMERCIAL_PRODUCT = {
     handoff: "transferência para atendimento humano quando necessário",
     audio: "entendimento e resposta a mensagens de áudio quando o recurso está habilitado",
     orders: "consulta de cardápio e montagem de pedidos para operações de alimentação configuradas",
+    menuSetup: "cardápio manual ou importado por imagens JPG, PNG ou WEBP, com revisão antes de publicar",
   },
 } as const;
 
@@ -35,3 +36,5 @@ export function commercialProductFacts(): string[] {
 export function commercialPriceReply(): string {
   return `A Lívia custa ${formatCommercialPrice()} por mês e tem ${LIVIA_COMMERCIAL_PRODUCT.trialDays} dias gratuitos para experimentar. Se quiser, posso explicar como funciona a contratação.`;
 }
+
+export const COMMERCIAL_MENU_IMPORT_FACT = "O cardápio pode ser cadastrado manualmente ou importado por imagens JPG, PNG ou WEBP. Antes de publicar, você revisa os itens reconhecidos. CSV, Excel, PDF e importação por link não são suportados hoje.";

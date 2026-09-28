@@ -3,12 +3,14 @@ import type { ConversationContext } from "@/types";
 import { historyForConversationContext, transitionConversationContext } from "./conversationPolicy";
 import {
   asksCommercialProductPrice,
+  asksMenuSetup,
   commercialDemoGuidance,
   enrichCommercialContext,
   explicitlyQualifiesAudit,
   extractAuditData,
   inferCommercialSegment,
   normalizeAuditData,
+  requestsDemoNow,
 } from "./commercialContext";
 import { commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
 
@@ -33,6 +35,11 @@ describe("fonte comercial", () => {
     expect(asksCommercialProductPrice("Quanto custa?")).toBe(true);
     expect(asksCommercialProductPrice("Qual o preço da Lívia?")).toBe(true);
     expect(asksCommercialProductPrice("Quanto custa o corte?")).toBe(false);
+  });
+
+  it("reconhece pergunta sobre cadastro de cardápio", () => {
+    expect(asksMenuSetup("Preciso escrever manualmente o cardápio inteiro?")).toBe(true);
+    expect(asksMenuSetup("Quanto custa o X-Burger?")).toBe(false);
   });
 });
 
@@ -92,6 +99,12 @@ describe("segmentação comercial", () => {
 });
 
 describe("demo e transições", () => {
+  it("separa demo agora de trial por contexto imediato", () => {
+    expect(requestsDemoNow("Me mostre na prática como funciona")).toBe(true);
+    expect(requestsDemoNow("Quero testar")).toBe(false);
+    expect(requestsDemoNow("Quero testar", true)).toBe(true);
+    for (const vague of ["sim", "legal", "como funciona?", "me explica", "talvez"]) expect(requestsDemoNow(vague)).toBe(false);
+  });
   it("encaminha restaurante e agenda somente pela capability demo_execution", () => {
     expect(commercialDemoGuidance("restaurant", false)).toContain("NÃO está autorizada");
     expect(commercialDemoGuidance("restaurant", true)).toContain("cardápio");

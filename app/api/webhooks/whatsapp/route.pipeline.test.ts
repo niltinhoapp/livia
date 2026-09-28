@@ -109,6 +109,8 @@ const deriveTaskState = vi.fn(
   (input: { existingTask?: ConversationTask | null; booked: boolean }) =>
     input.booked ? null : (input.existingTask ?? null),
 );
+const getProspectingSessionByPhone = vi.fn(async (..._args: unknown[]): Promise<any> => null);
+const reactivateProspectingSessionForDemo = vi.fn(async (..._args: unknown[]): Promise<any> => null);
 
 vi.mock("@/lib/repo", () => ({
   findEstablishmentByPhoneNumberId: (...a: unknown[]) => findEstablishmentByPhoneNumberId(...a),
@@ -117,7 +119,8 @@ vi.mock("@/lib/repo", () => ({
   getKnowledgeBase: vi.fn(async () => null),
   loadConversation: (...a: unknown[]) => loadConversation(...a),
   loadProspectingSession: vi.fn(async () => null),
-  getProspectingSessionByPhone: vi.fn(async () => null),
+  getProspectingSessionByPhone: (...a: unknown[]) => (getProspectingSessionByPhone as any)(...a),
+  reactivateProspectingSessionForDemo: (...a: unknown[]) => (reactivateProspectingSessionForDemo as any)(...a),
   transitionProspectingSession: vi.fn(async () => null),
   appendMessage: (...a: unknown[]) => appendMessage(...a),
   setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
@@ -326,6 +329,31 @@ beforeEach(() => {
     rescheduled: false,
     cancelled: false,
     toolCalls: [],
+  });
+});
+
+describe("F5.2 — demo oficial a partir de Audit", () => {
+  it("reativa HUMAN expirada somente após pedido prático e entrega agenda demo ao brain", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    const demoEst = establishment({ demoChannel: { enabled: true }, bot: { personaName: "Livia", tone: "", bookingEnabled: true, ordersEnabled: true, medicalGuardrail: false } } as never);
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst);
+    getEstablishment.mockResolvedValue(demoEst);
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [], { conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 1, updatedAt: 1 } }));
+    getProspectingSessionByPhone.mockResolvedValue({ establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-a", status: "HUMAN", expiresAt: 1 });
+    reactivateProspectingSessionForDemo.mockResolvedValue({ establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-a", businessName: "Prospect", segment: "salão", initialManualMessage: "", status: "REVEALED", preRevealReplyCount: 0, preparedAt: 1, manualSendConfirmedAt: 2, firstReplyAt: null, revealedAt: 2, expiresAt: Date.now() + 60_000 });
+    await enviarPayload(payloadMensagem({ id: "wamid.f52.demo", text: "Me mostre na prática como vc faz no comercio um agendamento" }));
+    expect(reactivateProspectingSessionForDemo).toHaveBeenCalledWith("est_odonto", PHONE, expect.any(Number));
+    const input = think.mock.calls[0]?.[0] as { demoAuthorization: { authorized: boolean }; capabilities: { demo_execution: boolean; agenda_read: boolean; agenda_mutate: boolean } };
+    expect(input.demoAuthorization.authorized).toBe(true);
+    expect(input.capabilities).toMatchObject({ demo_execution: true, agenda_read: true, agenda_mutate: true });
+  });
+
+  it.each(["sim", "legal", "como funciona?"])("não reativa demo para mensagem vaga: %s", async (text) => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ demoChannel: { enabled: true } }));
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [], { conversationContext: { purpose: "commercial", source: "audit_calculator", enteredAt: 1, updatedAt: 1 } }));
+    await enviarPayload(payloadMensagem({ id: `wamid.f52.vague.${text}`, text }));
+    expect(reactivateProspectingSessionForDemo).not.toHaveBeenCalled();
   });
 });
 

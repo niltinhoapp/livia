@@ -100,12 +100,26 @@ export function explicitlyQualifiesAudit(text: string): boolean {
   );
 }
 
+export function requestsDemoNow(text: string, afterPracticalDemoOffer = false): boolean {
+  const value = normalize(text);
+  return /\b(?:me\s+mostr[ae]|pode\s+me\s+mostrar)\b.{0,60}\bna\s+pratica\b/.test(value)
+    || /\bquero\b.{0,30}\bver\b.{0,30}\bfuncionando\b/.test(value)
+    || /\b(?:vamos|quero)\b.{0,30}\b(?:fazer|ver|iniciar|continuar)\b.{0,25}\bdemonstracao\b/.test(value)
+    || /\b(?:quero|vamos)\s+testar\s+aqu[i]?\b/.test(value)
+    || (afterPracticalDemoOffer && /\b(?:quero|vamos)\s+testar\b/.test(value));
+}
+
 export function asksCommercialProductPrice(text: string): boolean {
   const value = normalize(text);
   const asksPrice = /\b(quanto\s+custa|qual\s+(?:e\s+)?(?:o\s+)?(?:preco|valor)|preco|mensalidade)\b/.test(value);
   if (!asksPrice) return false;
   return /\b(livia|plano|assinatura|mensalidade)\b/.test(value)
     || /^(?:oi[,! ]*)?(?:quanto\s+custa|qual\s+(?:e\s+)?(?:o\s+)?(?:preco|valor)|preco)[?!. ]*$/.test(value);
+}
+
+export function asksMenuSetup(text: string): boolean {
+  const value = normalize(text);
+  return /\bcardapio\b/.test(value) && /\b(manual(?:mente)?|escrever|cadastrar|colocar|importar)\b/.test(value);
 }
 
 // Em demonstração de restaurante, separa uma pergunta sobre item do catálogo

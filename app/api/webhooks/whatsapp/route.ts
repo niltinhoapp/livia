@@ -84,7 +84,7 @@ import {
   historyForConversationContext,
   resolveConversationContext,
 } from "@/lib/ai/conversationPolicy";
-import { enrichCommercialContext } from "@/lib/ai/commercialContext";
+import { enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -875,6 +875,27 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       context: enrichedContext.context,
       changed: true,
     };
+  }
+  const priorBotOfferedPracticalDemo = history.some((message) => message.role === "bot" && /\b(?:mostrar|demonstra(?:cao|ção)).{0,50}\bna\s+pr[áa]tica\b/i.test(message.text));
+  if (
+    contextResolution.context.purpose === "commercial"
+    && est.id === process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID
+    && est.demoChannel?.enabled === true
+    && requestsDemoNow(customerText, priorBotOfferedPracticalDemo)
+  ) {
+    const reactivated = await import("@/lib/repo").then((m) => m.reactivateProspectingSessionForDemo(est.id, contactPhone, persistedCustomer.at));
+    if (reactivated) {
+      prospectingSession = reactivated;
+      prospectingContext = {
+        leadId: reactivated.leadId, normalizedPhone: reactivated.normalizedPhone,
+        businessName: reactivated.businessName, segment: reactivated.segment,
+        initialManualMessage: reactivated.initialManualMessage, status: reactivated.status,
+        preRevealReplyCount: reactivated.preRevealReplyCount,
+        preparedAt: reactivated.preparedAt, manualSendConfirmedAt: reactivated.manualSendConfirmedAt,
+        firstReplyAt: reactivated.firstReplyAt, revealedAt: reactivated.revealedAt,
+        expiresAt: reactivated.expiresAt,
+      };
+    }
   }
   const conversationCapabilities = capabilitiesForConversation({
     context: contextResolution.context,
