@@ -84,6 +84,7 @@ import {
   historyForConversationContext,
   resolveConversationContext,
 } from "@/lib/ai/conversationPolicy";
+import { enrichCommercialContext } from "@/lib/ai/commercialContext";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -853,12 +854,28 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // Resolve o papel antes de qualquer atalho operacional (inclusive resposta
   // a lembrete). Audit explícito vence; Audit persistido continua; depois
   // vem ProspectingSession ativa; documentos antigos seguem operacionais.
-  const contextResolution = resolveConversationContext({
+  let contextResolution = resolveConversationContext({
     persisted: conversation.conversationContext,
     prospectingSession,
     startsAudit: startsAuditContext(customerText),
     now: persistedCustomer.at,
   });
+  const enrichedContext = enrichCommercialContext({
+    context: contextResolution.context,
+    text: customerText,
+    now: persistedCustomer.at,
+    // A própria mensagem de entrada deve receber primeiro a explicação do
+    // diagnóstico. Qualificação só vale em turno posterior e com intenção
+    // comercial inequívoca.
+    allowAuditQualification: !contextResolution.enteredAudit,
+  });
+  if (enrichedContext.changed) {
+    contextResolution = {
+      ...contextResolution,
+      context: enrichedContext.context,
+      changed: true,
+    };
+  }
   const conversationCapabilities = capabilitiesForConversation({
     context: contextResolution.context,
     bookingEnabled: Boolean(est.bot.bookingEnabled),

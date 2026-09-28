@@ -808,7 +808,16 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
     expect(setConversationContext).toHaveBeenCalledWith(
       "est_odonto",
       PHONE,
-      expect.objectContaining({ purpose: "audit", source: "audit_calculator" }),
+      expect.objectContaining({
+        purpose: "audit",
+        source: "audit_calculator",
+        audit: expect.objectContaining({
+          leadsPerDay: 8,
+          averageTicketCents: 19_900,
+          responseTimeText: "Até 30 minutos",
+          estimatedOpportunityCentsPerMonth: 238_800,
+        }),
+      }),
       true,
       expect.objectContaining({ leaseId: "lease-test" }),
     );
@@ -926,6 +935,8 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
     ]));
     expect(persistedTask).toBeNull();
     expect(persistedContext?.purpose).toBe("audit");
+    expect(persistedContext?.audit).toMatchObject({ leadsPerDay: 41, averageTicketCents: 84_500 });
+    expect(persistedContext?.commercial?.segment).toBe("restaurant");
   });
 
   it("histórico persistido no banco não é apagado pela fronteira de contexto", async () => {
