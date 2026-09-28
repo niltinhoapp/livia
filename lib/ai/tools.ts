@@ -25,6 +25,10 @@ import {
   weekdayOf,
   isActive,
   getScheduleConfig,
+  contendingAppointments,
+  demoSlots,
+  PRODUCTION_SLOTS,
+  type SlotAudience,
 } from "@/lib/scheduling";
 import { getCustomerProfile, upsertCustomerProfile } from "@/lib/repo";
 import { normalizePhone } from "@/lib/whatsapp/client";
@@ -64,6 +68,10 @@ const demoAppointmentScope = (ctx: ToolContext) => {
   const authorization = ctx.demoAuthorization;
   return authorization?.authorized === true ? { mode: "demo" as const, prospectingLeadId: authorization.prospectingLeadId } : {};
 };
+// Público de disputa de slot desta conversa — o par de leitura do escopo que
+// demoAppointmentScope aplica na escrita.
+const slotAudienceFor = (ctx: ToolContext): SlotAudience =>
+  ctx.demoAuthorization?.authorized === true ? demoSlots(ctx.demoAuthorization.prospectingLeadId) : PRODUCTION_SLOTS;
 
 export interface ToolResult {
   ok: boolean;
@@ -247,7 +255,13 @@ const findAvailableAppointments: ToolDefinition = {
     const duration = resolveServiceDuration(config, ctx.kb?.services, serviceName);
     const dayStart = localToEpoch(date, 0, config.utcOffsetMinutes);
     const existing = await listAppointments(ctx.est.id, dayStart, dayStart + 24 * 3600000);
-    const slots = computeSlots(config, date, duration, existing).slice(0, 12);
+    // Escopo de disputa de slot (F0.2). A LEITURA de agendamentos já era
+    // escopada por lead (matchingMode), mas a DISPONIBILIDADE não: demos de
+    // outros leads ocupavam o dia e o prospect recebia "não há horários
+    // livres" sem ter como ver a causa. `computeSlots` segue intocado — muda
+    // apenas quem entra na lista de ocupação.
+    const contending = contendingAppointments(slotAudienceFor(ctx), existing);
+    const slots = computeSlots(config, date, duration, contending).slice(0, 12);
     if (slots.length === 0) return { ok: true, data: { date, slots: [], note: "Sem horários livres neste dia." } };
     // `durationMin` volta só como informação: quem cria resolve de novo pela
     // mesma função, então listagem e criação não têm como divergir.

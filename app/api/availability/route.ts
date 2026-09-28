@@ -8,6 +8,8 @@ import {
   listAppointments,
   computeSlots,
   localToEpoch,
+  contendingAppointments,
+  PRODUCTION_SLOTS,
 } from "@/lib/scheduling";
 
 export async function GET(req: NextRequest) {
@@ -27,6 +29,8 @@ export async function GET(req: NextRequest) {
   const dayEnd = dayStart + 24 * 3600000;
   const existing = await listAppointments(id, dayStart, dayEnd);
 
-  const slots = computeSlots(config, date, duration, existing);
+  // Visão do painel = agenda real do estabelecimento. Um registro de
+  // demonstração nunca pode aparecer como horário ocupado para o dono.
+  const slots = computeSlots(config, date, duration, contendingAppointments(PRODUCTION_SLOTS, existing));
   return NextResponse.json({ date, duration, slots });
 }

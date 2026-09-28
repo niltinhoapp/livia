@@ -8,6 +8,8 @@ import {
   listAppointments,
   setStatus,
   updateAppointment,
+  contendingAppointments,
+  slotAudienceOf,
 } from "@/lib/scheduling";
 import type { AppointmentStatus } from "@/types";
 
@@ -33,7 +35,13 @@ export async function PATCH(
   // Remarcação
   if (typeof b.startAt === "number") {
     const durationMin = b.durationMin ?? appt.durationMin;
-    const existing = await listAppointments(estId, b.startAt - 24 * 3600000, b.startAt + 48 * 3600000);
+    const existing = contendingAppointments(
+      // Público derivado do próprio agendamento que o painel está remarcando:
+      // um registro de demonstração nunca bloqueia a remarcação de um
+      // agendamento real, nem o contrário (F0.2).
+      slotAudienceOf(appt),
+      await listAppointments(estId, b.startAt - 24 * 3600000, b.startAt + 48 * 3600000),
+    );
     const clash = existing.some(
       (a) =>
         a.id !== appt.id &&

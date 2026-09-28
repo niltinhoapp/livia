@@ -264,7 +264,10 @@ export async function bookAppointment(
     const [lock, existing] = await Promise.all([tx.get(lockRef), tx.get(ref)]);
     if (data.operationId && existing.exists) return existing.data() as Appointment;
     const snap = await tx.get(conflictQuery(establishmentId, data.startAt));
-    const reason = slotBookability(config, data.startAt, data.durationMin, snap.docs.map((d) => d.data() as Appointment), now);
+    // O público sai do próprio registro que está sendo criado — nenhum
+    // parâmetro novo atravessa o caminho transacional.
+    const contending = contendingAppointments(slotAudienceOf(data), snap.docs.map((d) => d.data() as Appointment));
+    const reason = slotBookability(config, data.startAt, data.durationMin, contending, now);
     if (reason) throw new AppointmentConflictError(reason);
     const appointment = newAppointment(establishmentId, ref.id, data);
     tx.set(ref, appointment);
@@ -293,7 +296,10 @@ export async function rescheduleBookedAppointment(
     const appointment = current.data() as Appointment;
     if (operationId && appointment.appliedOperationIds?.includes(operationId)) return;
     const snap = await tx.get(conflictQuery(establishmentId, startAt));
-    const reason = slotBookability(config, startAt, durationMin, snap.docs.map((d) => d.data() as Appointment), now, id);
+    // Público derivado do agendamento que está sendo remarcado (já lido acima
+    // nesta mesma transação).
+    const contending = contendingAppointments(slotAudienceOf(appointment), snap.docs.map((d) => d.data() as Appointment));
+    const reason = slotBookability(config, startAt, durationMin, contending, now, id);
     if (reason) throw new AppointmentConflictError(reason);
     tx.update(ref, {
       startAt,
@@ -383,12 +389,23 @@ export async function listActiveCustomerAppointments(
 }
 
 // Próximo agendamento ativo do contato (o mais cedo a partir de agora).
+//
+// Exclui registros de demonstração: o único consumidor é a rotina anti-no-show
+// do webhook, destinada a cliente REAL. Sem esta exclusão um registro demo
+// mais cedo podia (a) ser tratado como compromisso de cliente e (b) mascarar
+// o agendamento real que de fato aguardava confirmação (F0.1/F0.2).
 export async function findNextAppointment(
   establishmentId: string,
   contactPhone: string,
   now = Date.now(),
 ): Promise<Appointment | null> {
-  const found = await findCustomerAppointments(establishmentId, contactPhone, now, isActive, 1);
+  const found = await findCustomerAppointments(
+    establishmentId,
+    contactPhone,
+    now,
+    (a) => isActive(a) && !isDemoAppointment(a),
+    1,
+  );
   return found[0] ?? null;
 }
 
@@ -415,6 +432,70 @@ const MAX_PAGES = 4;
 
 export function isActive(a: Appointment): boolean {
   return a.status !== "cancelled" && a.status !== "no_show";
+}
+
+// Um agendamento de demonstração existe apenas para mostrar o fluxo a um
+// prospect. Ele NUNCA pode produzir efeito para cliente real — nem lembrete,
+// nem template operacional, nem entrada em rotina de atendimento.
+//
+// Isto é enforcement de BACKEND, não instrução de prompt: o tipo já declarava
+// a garantia ("Registros demo nunca entram na agenda comercial nem em seus
+// lembretes", ver types/index.ts), mas nenhum consumidor a aplicava — o cron
+// de lembrete filtrava só por `status` e podia enviar um template REAL ao
+// prospect sobre um compromisso que não existe.
+//
+// Ausência de `mode` é produção, por compatibilidade com todo documento
+// criado antes do campo existir.
+export function isDemoAppointment(a: Pick<Appointment, "mode">): boolean {
+  return a.mode === "demo";
+}
+
+// ---- QUEM DISPUTA SLOT COM QUEM (F0.2) ----
+//
+// `mode: "demo"` era só um rótulo: o registro de demonstração era gravado
+// marcado, mas entrava no MESMO cálculo de disponibilidade e de conflito da
+// agenda real. Duas consequências, ambas observadas:
+//
+//   1. demos acumulavam ocupação e a agenda de demonstração ficava sem
+//      horário livre — e o prospect não tinha como ver por quê, porque a
+//      LEITURA dele já era escopada por lead (matchingMode em lib/ai/tools.ts);
+//   2. um registro de demonstração podia bloquear um horário de cliente REAL
+//      do mesmo estabelecimento.
+//
+// A correção é de ESCOPO DE LEITURA, não do motor: `slotBookability` e
+// `computeSlots` continuam idênticos e continuam sendo a única regra de
+// reservabilidade. O que muda é apenas QUAIS agendamentos entram na lista
+// `existing` que eles recebem.
+//
+// Regras:
+//   público produção -> só agendamentos de produção disputam. Demo nunca
+//                       bloqueia cliente real.
+//   público demo     -> agendamentos de produção disputam (a demonstração
+//                       mostra a agenda REAL do estabelecimento, nunca
+//                       disponibilidade inventada) E o próprio lead disputa
+//                       consigo mesmo (quem acabou de reservar 14h precisa
+//                       ver 14h ocupado — é o que mantém a demo coerente).
+//                       Demos de OUTROS leads não disputam.
+export type SlotAudience =
+  | { kind: "production" }
+  | { kind: "demo"; prospectingLeadId: string | null };
+
+export const PRODUCTION_SLOTS: SlotAudience = { kind: "production" };
+
+export function demoSlots(prospectingLeadId: string | null): SlotAudience {
+  return { kind: "demo", prospectingLeadId };
+}
+
+// Público a que um agendamento pertence — usado para derivar o escopo de uma
+// mutação a partir do próprio registro, sem exigir parâmetro novo no caminho
+// transacional.
+export function slotAudienceOf(a: Pick<Appointment, "mode" | "prospectingLeadId">): SlotAudience {
+  return isDemoAppointment(a) ? demoSlots(a.prospectingLeadId ?? null) : PRODUCTION_SLOTS;
+}
+
+export function contendingAppointments(audience: SlotAudience, appointments: Appointment[]): Appointment[] {
+  if (audience.kind === "production") return appointments.filter((a) => !isDemoAppointment(a));
+  return appointments.filter((a) => !isDemoAppointment(a) || a.prospectingLeadId === audience.prospectingLeadId);
 }
 
 // ---- Compatibilidade com documentos legados ----
@@ -634,9 +715,12 @@ export async function assertBookable(
   durationMin: number,
   now = Date.now(),
   excludeId?: string,
+  // Default produção: qualquer chamador que não conheça o público continua
+  // com o comportamento de agenda real, e demo nunca bloqueia cliente real.
+  audience: SlotAudience = PRODUCTION_SLOTS,
 ): Promise<NotBookableReason | null> {
   const existing = await listAppointments(establishmentId, startAt - 24 * 3600000, startAt + 48 * 3600000);
-  return slotBookability(config, startAt, durationMin, existing, now, excludeId);
+  return slotBookability(config, startAt, durationMin, contendingAppointments(audience, existing), now, excludeId);
 }
 
 export async function hasScheduleConflict(

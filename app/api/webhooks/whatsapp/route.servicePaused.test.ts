@@ -10,6 +10,16 @@ import type { Establishment, Message, WhatsAppInboundJob } from "@/types";
 const APP_SECRET = "segredo-de-teste";
 process.env.META_APP_SECRET = APP_SECRET;
 
+// Firestore falso para TODO o grafo de imports da rota — mesmo padrão já
+// usado por route.prospecting.test.ts. Sem isto, qualquer modulo do grafo que
+// toque Firestore (hoje lib/demoSafety.ts, via isLegacyBusinessInquiry)
+// inicializa credenciais reais e derruba o pipeline inteiro: este arquivo
+// reportava "no tests" porque cert() lancava durante a coleta.
+vi.mock("@/lib/firebase/admin", async () => {
+  const fake = await import("@/lib/__testing__/firestoreFake");
+  return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb };
+});
+
 vi.mock("@/lib/whatsapp/outbox", () => {
   class OutboundRetryableError extends Error { constructor(public code: string) { super(code); } }
   class OutboundReconciliationRequiredError extends Error { constructor(public code: string) { super(code); } }
@@ -277,3 +287,171 @@ describe("CRÍTICO 5 — conta inativa não pode virar silêncio", () => {
   });
 });
 
+// ---- F0.4: entitlement de billing no servidor ----
+//
+// Antes disto o webhook gateava SO por Establishment.status, e nada no codigo
+// escreve status "suspended" a partir do billing: um tenant sem direito de uso
+// continuava sendo atendido integralmente. O bloqueio tem que acontecer ANTES
+// de think(), sem enfraquecer a barreira duravel (a mensagem do cliente
+// continua persistida) e sem bloquear tenant legado.
+describe("F0.4 — billing bloqueia atendimento no servidor", () => {
+  const trialBilling = (trialEndsAt: unknown) =>
+    ({ billingStatus: "trial", trialStartAt: 0, trialEndsAt, updatedAt: 0 } as never);
+
+  it("(8) billing suspended: nao chama a IA e responde a pausa neutra", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "suspended", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).not.toHaveBeenCalled();
+    expect(textosEnviados()).toEqual([SERVICE_PAUSED_REPLY]);
+  });
+
+  it("(9) billing canceled bloqueia", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "canceled", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("oi");
+
+    expect(think).not.toHaveBeenCalled();
+    expect(textosEnviados()).toEqual([SERVICE_PAUSED_REPLY]);
+  });
+
+  it("(10) trial expirado alem da tolerancia bloqueia", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: trialBilling(Date.now() - 48 * 60 * 60 * 1000) }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("oi");
+
+    expect(think).not.toHaveBeenCalled();
+    expect(textosEnviados()).toEqual([SERVICE_PAUSED_REPLY]);
+  });
+
+  it("(11) TENANT LEGADO sem billing continua atendido", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(establishment());
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(textosEnviados()).toEqual(["Claro! Posso te ajudar com isso."]);
+  });
+
+  it("(12) billing active continua atendido", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "active", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("(13) past_due continua atendido — carencia", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "past_due", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("(14) trial dentro da janela continua atendido", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: trialBilling(Date.now() + 3 * 24 * 60 * 60 * 1000) }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("(15) trial com trialEndsAt corrompido NAO bloqueia (estado nao-provavel)", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: trialBilling(undefined) }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("(16) billingStatus desconhecido NAO bloqueia", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "migrando", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("bom dia");
+
+    expect(think).toHaveBeenCalledTimes(1);
+  });
+
+  it("(17) barreira duravel preservada: a mensagem do cliente e persistida mesmo bloqueado", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "suspended", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    const res = await entregar("preciso de ajuda");
+
+    expect(res.status).toBe(200);
+    const doCliente = appendMessage.mock.calls.filter((c) => c[2] === "customer");
+    expect(doCliente).toHaveLength(1);
+    expect(doCliente[0]![3]).toBe("preciso de ajuda");
+  });
+
+  it("(18) o cliente bloqueado por billing nunca ve cobranca, plano ou assinatura", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ billing: { billingStatus: "suspended", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("oi");
+
+    const texto = textosEnviados().join(" ").toLowerCase();
+    for (const proibido of ["trial", "cobran", "pagamento", "assinatura", "plano", "billing", "fatura"]) {
+      expect(texto).not.toContain(proibido);
+    }
+  });
+
+  it("(19) kill switch BILLING_ENFORCEMENT_ENABLED=false devolve o atendimento", async () => {
+    process.env.BILLING_ENFORCEMENT_ENABLED = "false";
+    try {
+      findEstablishmentByPhoneNumberId.mockResolvedValue(
+        establishment({ billing: { billingStatus: "suspended", updatedAt: 0 } as never }),
+      );
+      loadConversation.mockResolvedValue(conversa("bot"));
+
+      await entregar("bom dia");
+
+      expect(think).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.BILLING_ENFORCEMENT_ENABLED;
+    }
+  });
+
+  it("(20) Establishment.status vence: suspended operacional bloqueia mesmo com billing active", async () => {
+    findEstablishmentByPhoneNumberId.mockResolvedValue(
+      establishment({ status: "suspended", billing: { billingStatus: "active", updatedAt: 0 } as never }),
+    );
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await entregar("oi");
+
+    expect(think).not.toHaveBeenCalled();
+    expect(textosEnviados()).toEqual([SERVICE_PAUSED_REPLY]);
+  });
+});
