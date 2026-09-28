@@ -942,6 +942,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   // Uma oferta de humano não interrompe a Lívia. Só um pedido explícito ou
   // uma confirmação inequívoca, enquanto a oferta ainda está pendente, pode
   // mudar `bot` para `handoff`.
+  let humanOfferClosedThisTurn = false;
   if (conversation.status === "bot" && conversation.awaitingHumanOfferConfirmation) {
     const humanIntent = readHumanIntent(customerText);
     const confirmation = readConfirmation(customerText);
@@ -952,6 +953,11 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       const transitioned = await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff");
       if (!transitioned) return;
       await setAwaitingHumanOfferConfirmation(est.id, conversation.id, false);
+      // Handoff CONFIRMADO: só aqui (ou num pedido explícito) a sessão de
+      // prospecção vira HUMAN. A mera oferta não encerra a demonstração.
+      if (prospectingContext && prospectingContext.status !== "EXPIRED") {
+        await import("@/lib/repo").then((m) => m.transitionProspectingSession(est.id, contactPhone, { action: "set_outcome", status: "HUMAN" }));
+      }
       await upsertPendingTask(est.id, conversation.id, contactPhone, {
         type: "awaiting_human",
         waitingFor: "atendimento humano",
@@ -972,6 +978,9 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     // oferta. Isso impede que um "sim" de outro assunto, numa mensagem futura,
     // seja interpretado como aceite humano fora de contexto.
     await setAwaitingHumanOfferConfirmation(est.id, conversation.id, false, automationFence);
+    // A oferta termina neste turno: a nova demanda é atendida, sem reabrir a
+    // mesma oferta na resposta (F5.4 — "quero o x-burger" virava outra oferta).
+    humanOfferClosedThisTurn = true;
     if (declined) {
       logStage("customer declined human offer, Livia continuing", {
         msgId: msg.id,
@@ -1242,12 +1251,15 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     phone: normalizePhone(contactPhone),
     leadId: prospectingContext?.leadId ?? "",
   });
-  const effectiveCapabilities = capabilitiesForConversation({
+  const policyCapabilities = capabilitiesForConversation({
     context: contextResolution.context,
     bookingEnabled: Boolean(est.bot.bookingEnabled),
     ordersEnabled: Boolean(est.bot.ordersEnabled),
     demoAuthorized: demoAuthorization.authorized,
   });
+  const effectiveCapabilities = humanOfferClosedThisTurn
+    ? { ...policyCapabilities, human_handoff: false }
+    : policyCapabilities;
   // Lê o carrinho somente quando a policy permite dados de pedido. O brain
   // recebe a autorização estrutural para confirmar; texto não fabrica ID ou
   // versão. Audit e Commercial sem demo nem sequer consultam esse dado.
@@ -1344,7 +1356,9 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
 
     let prospectingAction: any = null;
   if (prospectingContext && prospectingContext.status !== "EXPIRED") {
-    if (handoff || explicitHumanRequest) {
+    // Só handoff confirmado encerra a sessão como HUMAN. Uma oferta pendente
+    // mantém a demonstração ativa (autorização demo e ferramentas de pedido).
+    if ((handoff && !awaitingHumanOfferConfirmation) || explicitHumanRequest) {
       prospectingAction = { action: "set_outcome", status: "HUMAN" };
     } else if (prospectingStatusTransition) {
       if (prospectingStatusTransition === "REVEALED") prospectingAction = { action: "reveal" };

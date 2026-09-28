@@ -8,6 +8,7 @@ import { getScheduleConfig, localToEpoch, assertBookable, demoSlots, PRODUCTION_
 import { parseTimeSelection, extractSingleTime } from "@/lib/ai/timeSelection";
 import { parseDateSelection } from "@/lib/ai/dateSelection";
 import { parseServiceSelection } from "@/lib/ai/serviceSelection";
+import { customerMessageBeforeLastBot, resolvePendingOptionSelection, type PendingOptionSelection } from "@/lib/ai/optionSelection";
 import { readConfirmation } from "@/lib/ai/confirmation";
 import { announcesTransfer, readHumanIntent } from "@/lib/ai/humanRequest";
 import type { ToolCallRecord, ToolName } from "@/lib/ai/taskState";
@@ -412,7 +413,9 @@ function buildSystemPrompt(
     );
   }
   rules.push(
-    `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
+    `Se a pessoa pedir um humano/atendente, demonstrar irritação que você não consiga resolver por aqui, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
+    "- Uma reclamação ou estranhamento sobre algo que você mesma pode esclarecer ou refazer (um horário, um item do pedido) não é motivo para chamar atendente: acolha, explique com os dados reais e resolva.",
+    "- Se a mensagem trouxer um pedido novo e claro que você pode atender (fazer um pedido, agendar, tirar uma dúvida), atenda esse pedido; não ofereça atendente.",
   );
   const sections = [rules.join("\n")];
   if (mayPresentLivia) {
@@ -1194,6 +1197,12 @@ const AGENDA_MUTATION_TOOLS = new Set<ToolName>([
 const ORDER_MUTATION_TOOLS = new Set<ToolName>([
   "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment", "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
 ]);
+// Ferramentas de agenda que não se aplicam a um turno em que o cliente está
+// escolhendo um item de uma lista NÃO de horários (ver optionSelection.ts).
+const AGENDA_TOOLS_FOR_OPTION_SELECTION = new Set<ToolName>([
+  ...AGENDA_MUTATION_TOOLS,
+  "find_available_appointments",
+]);
 const COMMERCIAL_MUTATION_TOOLS = new Set<ToolName>([
   ...AGENDA_MUTATION_TOOLS,
   ...ORDER_MUTATION_TOOLS,
@@ -1235,6 +1244,11 @@ function explicitlyStartsOrder(text: string): boolean {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, " ");
   return /\b(?:quero|queria|gostaria|preciso|vou|vamos|manda|mande|pedir|pedido)\b/.test(normalized);
+}
+
+function optionSelectionSection(selection: PendingOptionSelection | null): string {
+  if (!selection) return "";
+  return `\n\n=== ESCOLHA DE OPÇÃO DA SUA ÚLTIMA LISTA ===\nO cliente respondeu escolhendo a opção ${selection.index} da lista que você acabou de enviar: "${selection.item}". Essa resposta se refere a essa lista (não à agenda nem a um horário). Continue a tarefa daquela lista com esse item — por exemplo, se a lista era de produtos, use as ferramentas de pedido com esse produto. Não chame ferramentas de agenda neste turno.`;
 }
 
 function agendaMutationTool(mutation: AgendaMutation): ToolName {
@@ -1345,6 +1359,15 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, hasLastConfirmedOrder)
     : false;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
+  // "1", "a 2", "opção 1" respondendo à última lista NÃO de agenda do bot
+  // (produtos, por exemplo). Listas de horários ou de serviços da base
+  // continuam no caminho determinístico da agenda, sem mudança.
+  const pendingOptionSelection = (() => {
+    const selection = resolvePendingOptionSelection(history);
+    if (!selection) return null;
+    if (selection.items.some((item) => parseServiceSelection(item, kb?.services))) return null;
+    return selection;
+  })();
   const isPreRevealProspecting = input.prospectingContext
     ? input.prospectingContext.status === "PREPARED" || input.prospectingContext.status === "WAITING_REPLY" || input.prospectingContext.status === "LIVIA_ACTIVE"
     : false;
@@ -1440,7 +1463,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // gerar qualquer texto. "Confirmado", "ocupado" e "indisponível" passam a
   // ser sempre resultado real de execução.
   if (!(await canContinueAutomation())) return abortForHandoff();
-  const bookingOutcome = booking ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
+  // Uma escolha numérica de lista de produtos nunca é lida como horário
+  // ("1" → 01:00) de uma tarefa de agenda anterior.
+  const bookingOutcome = booking && !pendingOptionSelection ? await resolveTimeSelection(input, toolCtx, config, toolCalls) : null;
   if (bookingOutcome?.kind === "created") {
     booked = true;
     bookedInfo = { when: bookingOutcome.when, serviceName: bookingOutcome.serviceName };
@@ -1483,7 +1508,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis }) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, pendingOptionSelection ? null : task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis }) +
+        optionSelectionSection(pendingOptionSelection) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
         (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : "") +
@@ -1533,6 +1559,29 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         }
         if (name === "add_order_item" && ultimaDoCliente && explicitlyStartsOrder(ultimaDoCliente.text)) {
           args.__allowDraftCreation = true;
+        }
+        // Escolher "1" numa lista de produtos oferecida em resposta a um
+        // pedido explícito ("quero um x-burger") continua esse mesmo pedido.
+        if (name === "add_order_item" && pendingOptionSelection) {
+          const origem = customerMessageBeforeLastBot(history);
+          if (origem && explicitlyStartsOrder(origem)) args.__allowDraftCreation = true;
+        }
+
+        // A escolha deste turno pertence a uma lista que não é de agenda:
+        // nenhuma ferramenta de agenda roda com ela (o "1" já virou 10h
+        // ocupado em Production). Resultado interno mantém o protocolo válido.
+        if (pendingOptionSelection && AGENDA_TOOLS_FOR_OPTION_SELECTION.has(name)) {
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              ignored: true,
+              error: "customer is choosing an item from the last non-agenda list",
+              data: { selectedOption: pendingOptionSelection.index, selectedItem: pendingOptionSelection.item },
+            }),
+          });
+          continue;
         }
 
         // A primeira escrita bem-sucedida já determinou o fato operacional
@@ -1683,7 +1732,9 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // qualquer origem de handoff neste turno, inclusive a ferramenta e o
     // marcador de texto do modelo. Só a recusa EXPLÍCITA conta: um "none"
     // não impede nada.
-    let handoff = (handoffRequested || reply.includes(HANDOFF_TOKEN)) && !clienteRecusouHumano;
+    // Sem a capability (ex.: turno que acabou de substituir uma oferta de
+    // humano por um pedido novo), tool/marcador do modelo não reabrem oferta.
+    let handoff = (handoffRequested || reply.includes(HANDOFF_TOKEN)) && !clienteRecusouHumano && hasCapability(capabilities, "human_handoff");
     if (reply.includes(HANDOFF_TOKEN)) reply = reply.replaceAll(HANDOFF_TOKEN, "").trim();
 
     // Uma escrita concluída é um fato mais forte que qualquer texto livre.

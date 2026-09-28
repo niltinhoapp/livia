@@ -37,6 +37,7 @@ import {
 } from "@/lib/scheduling";
 import { getCustomerProfile, upsertCustomerProfile } from "@/lib/repo";
 import { normalizePhone } from "@/lib/whatsapp/client";
+import { menuProductMatches } from "@/lib/ai/menuSearch";
 const orderService = () => import("@/lib/orders");
 
 export interface ToolContext {
@@ -681,7 +682,7 @@ function orderMutationFailure(error: unknown) {
   }
   return { ok: false as const, error: String(error) };
 }
-const searchMenu: ToolDefinition = { name: "search_menu", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("search_menu", "Busca produtos DISPONÍVEIS no cardápio real. Use antes de adicionar itens ou informar preço; nunca invente produto, adicional ou valor.", { type: "object", properties: { query: { type: "string" } }, required: ["query"] }), async execute(ctx, args) { const query = typeof args.query === "string" ? args.query.trim().toLocaleLowerCase("pt-BR") : ""; if (!query) return { ok: false, error: "query obrigatória" }; const products = (await (await orderService()).listAvailableMenuProducts(ctx.est.id)).filter((p) => `${p.name} ${p.description ?? ""}`.toLocaleLowerCase("pt-BR").includes(query)).slice(0, 12); return { ok: true, data: { products: products.map((p) => ({ id: p.id, name: p.name, description: p.description, basePriceCents: p.basePriceCents, variants: p.variants.filter((v) => v.active), modifierGroups: p.modifierGroups.map((g) => ({ id: g.id, name: g.name, required: g.required, minSelections: g.minSelections, maxSelections: g.maxSelections, options: g.options.filter((o) => o.active) })) })) } }; } };
+const searchMenu: ToolDefinition = { name: "search_menu", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("search_menu", "Busca produtos DISPONÍVEIS no cardápio real. Use antes de adicionar itens ou informar preço; nunca invente produto, adicional ou valor.", { type: "object", properties: { query: { type: "string" } }, required: ["query"] }), async execute(ctx, args) { const query = typeof args.query === "string" ? args.query.trim() : ""; if (!query) return { ok: false, error: "query obrigatória" }; const products = (await (await orderService()).listAvailableMenuProducts(ctx.est.id)).filter((p) => menuProductMatches(p, query)).slice(0, 12); return { ok: true, data: { products: products.map((p) => ({ id: p.id, name: p.name, description: p.description, basePriceCents: p.basePriceCents, variants: p.variants.filter((v) => v.active), modifierGroups: p.modifierGroups.map((g) => ({ id: g.id, name: g.name, required: g.required, minSelections: g.minSelections, maxSelections: g.maxSelections, options: g.options.filter((o) => o.active) })) })) } }; } };
 const getMenuProductTool: ToolDefinition = { name: "get_menu_product", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("get_menu_product", "Retorna composição e preço REAIS de um produto pelo id recebido em search_menu.", { type: "object", properties: { productId: { type: "string" } }, required: ["productId"] }), async execute(ctx, args) { const product = typeof args.productId === "string" ? await (await orderService()).getAvailableMenuProduct(ctx.est.id, args.productId) : null; return product ? { ok: true, data: product } : { ok: false, error: "produto indisponível" }; } };
 // Teto de itens na listagem do cardápio inteiro: cardápio grande não pode
 // estourar o contexto da conversa. Passando disso, a Livia avisa que há mais
@@ -737,7 +738,7 @@ const requestHumanHandoff: ToolDefinition = {
   enabled: () => true,
   schema: fn(
     "request_human_handoff",
-    "Solicita transferência para um atendente humano. Use quando o cliente pedir explicitamente, demonstrar irritação, ou pedir algo fora do seu escopo.",
+    "Solicita transferência para um atendente humano. Use quando o cliente pedir explicitamente, demonstrar irritação que você não consiga resolver, ou pedir algo fora do seu escopo. Não use quando a mensagem traz um pedido novo e claro que você pode atender.",
     {
       type: "object",
       properties: { reason: { type: "string", description: "motivo curto, para o atendente entender o contexto" } },
