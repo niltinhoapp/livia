@@ -112,9 +112,26 @@ describe("contendingAppointments — público PRODUÇÃO", () => {
 });
 
 describe("contendingAppointments — público DEMO", () => {
-  it("produção disputa: a demo mostra a agenda REAL, não disponibilidade inventada", () => {
+  // F2 substituiu o paliativo da F0. Enquanto não existia cenário fictício,
+  // agendamentos de produção do tenant demo disputavam com a demonstração
+  // porque a alternativa seria inventar disponibilidade. Com o baseline de
+  // establishments/{id}/meta/demoScenario isso deixou de ser necessário — e
+  // manter seria pior: a demo passaria a expor a existência e o serviço de
+  // agendamentos reais ao listar ocupação.
+  it("produção NÃO disputa: o ambiente de demonstração é integralmente fictício", () => {
     const lista = [real(600)];
-    expect(contendingAppointments(demoSlots("lead-1"), lista).map((a) => a.id)).toEqual(["real_600"]);
+    expect(contendingAppointments(demoSlots("lead-1"), lista)).toHaveLength(0);
+  });
+
+  it("o baseline fictício disputa para QUALQUER lead", () => {
+    const baseline = appt({ id: "baseline_600", mode: "demo", prospectingLeadId: null, demoBaseline: true });
+    expect(contendingAppointments(demoSlots("lead-1"), [baseline]).map((a) => a.id)).toEqual(["baseline_600"]);
+    expect(contendingAppointments(demoSlots("lead-2"), [baseline]).map((a) => a.id)).toEqual(["baseline_600"]);
+  });
+
+  it("o baseline NUNCA disputa com produção", () => {
+    const baseline = appt({ id: "baseline_600", mode: "demo", prospectingLeadId: null, demoBaseline: true });
+    expect(contendingAppointments(PRODUCTION_SLOTS, [baseline])).toHaveLength(0);
   });
 
   it("o próprio lead disputa consigo mesmo: quem reservou 14h vê 14h ocupado", () => {
@@ -165,8 +182,22 @@ describe("acúmulo da agenda de demonstração (cenário da auditoria)", () => {
     expect(livres).toContain("11:00"); // o de outro lead, não
   });
 
-  it("agendamento REAL do tenant continua ocupando o slot na visão da demo", () => {
+  it("agendamento REAL do tenant NÃO ocupa slot na visão da demo (F2)", () => {
+    // Ver a nota em "contendingAppointments — público DEMO": a ocupação da
+    // demonstração vem do baseline fictício, não da agenda real do tenant.
     const escopado = contendingAppointments(demoSlots("lead-novo"), [real(9 * 60)]);
+    expect(times(escopado)).toContain("09:00");
+  });
+
+  it("o baseline fictício ocupa o slot na visão da demo", () => {
+    const baseline = appt({
+      id: "baseline_09",
+      mode: "demo",
+      prospectingLeadId: null,
+      demoBaseline: true,
+      startAt: localToEpoch(DATE, 9 * 60, config.utcOffsetMinutes),
+    });
+    const escopado = contendingAppointments(demoSlots("lead-novo"), [baseline]);
     expect(times(escopado)).not.toContain("09:00");
   });
 });

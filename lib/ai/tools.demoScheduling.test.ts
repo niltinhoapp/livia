@@ -11,8 +11,12 @@ import { runTool } from "./tools";
 
 const EST = "demo-est";
 const PHONE = "5511999999999";
+// 2030-01-07 é uma segunda. 10:00 e 14:00 estão livres no cenário demo default
+// (que ocupa 09:00, 09:30, 11:00 e 15:00) — este teste é sobre ESCOPO de lead,
+// não sobre a ocupação fictícia, então usa horários livres nas duas pontas.
+// A checagem de que o baseline bloqueia de fato vive em lib/demo/*.test.ts.
 const start = localToEpoch("2030-01-07", 10 * 60, -180);
-const moved = localToEpoch("2030-01-07", 11 * 60, -180);
+const moved = localToEpoch("2030-01-07", 14 * 60, -180);
 const est = { id: EST, bot: { bookingEnabled: true, ordersEnabled: false } } as any;
 const config = { ...defaultScheduleConfig(EST), leadHours: 0 };
 const prospect = { status: "INTERESTED", leadId: "lead-a" } as any;
