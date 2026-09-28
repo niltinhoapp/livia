@@ -43,7 +43,8 @@ export interface ConversationContextResolution {
 /**
  * Precedência deliberada:
  * 1. entrada explícita de Audit;
- * 2. Audit já persistido (uma ProspectingSession não o apaga no turno seguinte);
+ * 2. jornada originada em Audit já persistida (mesmo após Audit -> Commercial,
+ *    uma ProspectingSession não apaga seus dados/boundary no turno seguinte);
  * 3. ProspectingSession ativa;
  * 4. contexto persistido;
  * 5. operational para documentos antigos.
@@ -65,8 +66,8 @@ export function resolveConversationContext(input: {
   if (input.startsAudit) {
     purpose = "audit";
     source = "audit_calculator";
-  } else if (persisted?.purpose === "audit") {
-    purpose = "audit";
+  } else if (persisted?.source === "audit_calculator") {
+    purpose = persisted.purpose;
     source = persisted.source;
   } else if (isActiveProspectingSession(input.prospectingSession, now)) {
     purpose = "commercial";
@@ -132,13 +133,14 @@ export function hasCapability(capabilities: ConversationCapabilities, capability
 }
 
 // O boundary é durável: na entrada, somente a mensagem corrente; depois,
-// todas as mensagens desde enteredAt. Assim Audit lembra seus próprios
-// turnos sem voltar a receber o histórico operacional anterior.
+// todas as mensagens desde enteredAt. A origem audit_calculator mantém a
+// barreira mesmo após Audit -> Commercial, preservando a jornada sem voltar
+// a receber o histórico operacional anterior.
 export function historyForConversationContext(
   history: Message[],
   resolution: Pick<ConversationContextResolution, "context" | "enteredAudit">,
 ): Message[] {
-  if (resolution.context.purpose !== "audit") return history;
+  if (resolution.context.source !== "audit_calculator") return history;
   if (resolution.enteredAudit) return history.slice(-1);
   return history.filter((message) => message.at >= resolution.context.enteredAt);
 }
@@ -161,9 +163,10 @@ export function transitionConversationContext(
     (target === "operational" && reason === "manual_operational_reset");
   if (!allowed) throw new Error(`invalid_conversation_context_transition:${current.purpose}:${target}:${reason}`);
   return {
+    ...current,
     purpose: target,
     source: target === "operational" ? "normal" : current.source,
-    enteredAt: now,
+    enteredAt: reason === "audit_qualified" ? current.enteredAt : now,
     updatedAt: now,
   };
 }

@@ -179,8 +179,9 @@ describe("audit context boundary — system prompt via think()", () => {
     expect(prompt).not.toContain("Você PODE agendar");
     expect(prompt).not.toContain("Descubra o serviço desejado");
     expect(prompt).not.toContain("ainda não fecha agendamentos");
-    expect(prompt).toContain("Clínica Exemplo");
-    expect(prompt).toContain("Chegar com 10 minutos de antecedência");
+    expect(prompt).not.toContain("Clínica Exemplo");
+    expect(prompt).not.toContain("Chegar com 10 minutos de antecedência");
+    expect(prompt).toContain("FONTE COMERCIAL CANÔNICA DA LÍVIA");
   });
 
   it("suppressBooking=true: no scheduling tools in tool list", async () => {

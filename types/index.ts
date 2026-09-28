@@ -425,6 +425,23 @@ export interface ConversationContext {
   source: ConversationContextSource;
   enteredAt: number;
   updatedAt: number;
+  commercial?: CommercialConversationData;
+  audit?: AuditConversationData;
+}
+
+export type CommercialSegment = "clinic" | "salon" | "restaurant" | "pet" | "optical" | "services";
+
+export interface CommercialConversationData {
+  segment?: CommercialSegment;
+  segmentIdentifiedAt?: number;
+}
+
+export interface AuditConversationData {
+  leadsPerDay?: number;
+  averageTicketCents?: number;
+  responseTimeText?: string;
+  estimatedOpportunityCentsPerMonth?: number;
+  capturedAt: number;
 }
 
 // Token de fencing de um turno automático. Toda mutação comercial iniciada

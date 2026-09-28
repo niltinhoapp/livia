@@ -27,6 +27,13 @@ import {
   hasCapability,
   type ConversationCapabilities,
 } from "@/lib/ai/conversationPolicy";
+import {
+  asksCommercialProductPrice,
+  commercialDemoGuidance,
+  inferCommercialSegment,
+  SEGMENT_COMMERCIAL_GUIDANCE,
+} from "@/lib/ai/commercialContext";
+import { commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -181,6 +188,7 @@ function prospectingCommercialGuidance(
   prospectingContext: ProspectingContext,
   bot: Establishment["bot"],
   phase: "revelation" | "continuation",
+  capabilities?: ConversationCapabilities,
 ): string[] {
   const configuredCapabilities = [
     "atender mensagens pelo WhatsApp e responder com base nas informações que o estabelecimento configurar",
@@ -193,7 +201,10 @@ function prospectingCommercialGuidance(
     "Relacione o benefício ao segmento e ao contexto da conversa, escolhendo UMA situação plausível como hipótese (por exemplo, enquanto a equipe atende alguém, quando chega uma mensagem ou fora do horário). Nunca afirme que eles demoram para responder, perdem clientes, estão sobrecarregados ou têm qualquer problema sem que tenham dito isso.",
     `Capacidades reais que você pode apresentar, sem despejar lista: ${configuredCapabilities.join("; ")}. Só mencione agenda ou pedidos de forma condicional e somente se a capacidade correspondente estiver disponível acima.`,
     "Não invente recursos, integrações, preços, descontos, condições, contratação ou promessas comerciais.",
-    "Quando a sessão estiver REVEALED ou INTERESTED, você pode demonstrar agenda e pedidos usando as ferramentas reais. Todo resultado é DEMONSTRAÇÃO: diga explicitamente que agendamento é fictício e pedido não será preparado, entregue, cobrado ou enviado à operação.",
+    commercialDemoGuidance(
+      inferCommercialSegment(prospectingContext.segment) ?? undefined,
+      Boolean(capabilities?.demo_execution),
+    ),
   ];
 
   if (phase === "revelation") {
@@ -210,6 +221,25 @@ function prospectingCommercialGuidance(
   ];
 }
 
+function auditDataToText(context: ConversationContext | undefined): string[] {
+  const audit = context?.audit;
+  if (!audit) return [];
+  const facts = [
+    audit.leadsPerDay !== undefined ? `Leads por dia informados: ${audit.leadsPerDay}.` : null,
+    audit.averageTicketCents !== undefined ? `Ticket médio informado: ${formatCommercialPrice(audit.averageTicketCents)}.` : null,
+    audit.responseTimeText ? `Tempo médio de resposta informado: ${audit.responseTimeText}.` : null,
+    audit.estimatedOpportunityCentsPerMonth !== undefined
+      ? `Estimativa apresentada pela Calculadora: ${formatCommercialPrice(audit.estimatedOpportunityCentsPerMonth)} por mês.`
+      : null,
+  ].filter((fact): fact is string => Boolean(fact));
+  if (!facts.length) return [];
+  return [
+    ...facts,
+    "Esses dados já foram recebidos: NÃO pergunte por eles novamente.",
+    "A estimativa é uma simulação de potencial baseada nas informações fornecidas. Não é perda comprovada, não prova que todo contato seria venda e não garante recuperação do valor.",
+  ];
+}
+
 function buildSystemPrompt(
   est: Establishment,
   kb: KnowledgeBase | null,
@@ -223,24 +253,57 @@ function buildSystemPrompt(
     suppressBooking?: boolean;
     conversationContext?: ConversationContext;
     capabilities?: ConversationCapabilities;
+    auditNeedsDiagnosis?: boolean;
   },
 ): string {
   const bot = est.bot;
   const persona = bot.personaName || "Livia";
-  const rules: string[] = [
-    `Você é ${persona}, a atendente virtual de "${est.name}".`,
-    `Fale em português do Brasil, de forma ${bot.tone || "acolhedora e objetiva"}.`,
-    "Responda SOMENTE com base nas informações do estabelecimento abaixo.",
-    "Se a informação não estiver aqui, NÃO invente: ofereça transferir para um atendente.",
-    "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
-    "Quando a pessoa chegar demonstrando interesse em conhecer a própria Lívia, explique a Lívia diretamente nesta conversa. NÃO envie espontaneamente o link da landing page/site da Lívia como resposta ou próximo passo, pois a pessoa pode já ter vindo dessa página. Só envie o link do site/landing page se a pessoa pedir explicitamente o link, site, página ou endereço da web.",
-    "Nunca invente preços, horários, endereços ou disponibilidade.",
-    // Antídoto para a promessa vazia: se a resposta depende de checar algo,
-    // ou checa agora (ferramenta) ou transfere. Nunca prometer e encerrar.
-    "NUNCA diga que vai verificar depois, que já retorna, ou peça para a pessoa aguardar: sua execução termina quando você responde, e ninguém continuaria a verificação. Ou use a ferramenta agora e responda com o resultado, ou transfira para um atendente com request_human_handoff.",
-    nowHuman,
-  ];
-  if (bot.medicalGuardrail) {
+  const conversationPurpose = options?.conversationContext?.purpose ?? "operational";
+  const isSalesConversation = conversationPurpose === "commercial" || conversationPurpose === "audit";
+  const isPreRevealProspecting = prospectingContext
+    ? prospectingContext.status === "PREPARED" || prospectingContext.status === "WAITING_REPLY" || prospectingContext.status === "LIVIA_ACTIVE"
+    : false;
+  const mayPresentLivia = isSalesConversation && !isPreRevealProspecting;
+  const segment = options?.conversationContext?.commercial?.segment
+    ?? inferCommercialSegment(prospectingContext?.segment ?? "")
+    ?? undefined;
+  const rules: string[] = isPreRevealProspecting
+    ? [
+        `Você é ${persona}, numa demonstração comercial controlada. Siga estritamente as regras de revelação abaixo antes de se apresentar como Lívia.`,
+        `Fale em português do Brasil, de forma ${bot.tone || "acolhedora e objetiva"}.`,
+        "Antes da revelação, responda somente com base nos dados do ambiente demonstrativo abaixo e não invente informações.",
+        "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
+        "NUNCA diga que vai verificar depois, que já retorna, ou peça para a pessoa aguardar.",
+        nowHuman,
+      ]
+    : isSalesConversation
+    ? [
+        `Você é ${persona}, apresentando a própria Lívia, solução da ConectWeb para atendimento no WhatsApp.`,
+        `Fale em português do Brasil, de forma ${bot.tone || "acolhedora e objetiva"}.`,
+        "Use SOMENTE a fonte comercial e os dados recebidos nesta jornada. Não use dados pessoais, perfil, serviços ou preços operacionais do estabelecimento para vender a Lívia.",
+        `Quando perguntarem "quanto custa" neste contexto, responda sobre a Lívia: ${formatCommercialPrice()} por mês e ${LIVIA_COMMERCIAL_PRODUCT.trialDays} dias gratuitos. Não consulte nem cite preço de salão, clínica, cardápio ou serviço operacional.`,
+        "Conduza naturalmente: descubra o cenário, demonstre somente quando autorizado, conecte UM benefício relevante, responda à objeção ou preço perguntado e ofereça um próximo passo sem pressão. Faça no máximo UMA pergunta por resposta.",
+        "Não despeje uma lista de funcionalidades. Não invente recurso, integração, resultado, desconto, contratação ou histórico do prospect.",
+        "Nunca prometa recuperar receita, garantir faturamento ou afirmar que uma estimativa é perda comprovada.",
+        "Você pode oferecer continuar a conversa, explicar como experimentar ou como funciona a contratação. Nunca diga que teste, conta ou contratação foi ativado sem confirmação do backend.",
+        "Perguntas alheias ao negócio ou à Lívia (por exemplo Nobel da Paz, mitologia ou capital de país) não são gatilho comercial e não devem virar pitch.",
+        "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
+        nowHuman,
+      ]
+    : [
+        `Você é ${persona}, a atendente virtual de "${est.name}".`,
+        `Fale em português do Brasil, de forma ${bot.tone || "acolhedora e objetiva"}.`,
+        "Você representa este estabelecimento. NÃO transforme atendimento operacional em venda da própria Lívia.",
+        "Responda SOMENTE com base nas informações do estabelecimento abaixo.",
+        "Se a informação não estiver aqui, NÃO invente: ofereça transferir para um atendente.",
+        "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
+        "Nunca invente preços, horários, endereços ou disponibilidade.",
+        // Antídoto para a promessa vazia: se a resposta depende de checar algo,
+        // ou checa agora (ferramenta) ou transfere. Nunca prometer e encerrar.
+        "NUNCA diga que vai verificar depois, que já retorna, ou peça para a pessoa aguardar: sua execução termina quando você responde, e ninguém continuaria a verificação. Ou use a ferramenta agora e responda com o resultado, ou transfira para um atendente com request_human_handoff.",
+        nowHuman,
+      ];
+  if (!mayPresentLivia && bot.medicalGuardrail) {
     rules.push(
       "NUNCA dê diagnóstico ou orientação médica/clínica/de saúde. Para dúvidas assim, oriente a agendar uma consulta ou falar com um profissional.",
     );
@@ -248,14 +311,28 @@ function buildSystemPrompt(
   // Orientação cadastrada pelo comerciante em "Ensine a Livia" — vem DEPOIS
   // do medicalGuardrail de propósito: nada aqui pode enfraquecer essa trava,
   // só complementar tom/proibições/gatilhos de handoff específicos do negócio.
-  rules.push(...knowledgeGuidanceToText(kb));
+  if (!mayPresentLivia) rules.push(...knowledgeGuidanceToText(kb));
   if (options?.conversationContext?.purpose === "audit") {
     rules.push(
       "--- CONTEXTO AUDIT PERSISTENTE ---",
-      "Esta conversa veio da Auditoria/Calculadora e continua nessa jornada comercial. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil.",
+      "Esta conversa veio da Auditoria/Calculadora e não é lead frio. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil.",
+      "Fluxo: explique o diagnóstico recebido, contextualize sem transformar estimativa em fato, descubra o segmento somente se ainda não estiver conhecido, conecte uma capacidade relevante e ofereça um próximo passo.",
+      ...(options.auditNeedsDiagnosis
+        ? ["NA RESPOSTA ATUAL, comece pelo resultado/diagnóstico recebido antes de perguntar qualquer coisa."]
+        : []),
     );
   } else if (options?.conversationContext?.purpose === "commercial" && !prospectingContext) {
     rules.push("--- CONTEXTO COMERCIAL PERSISTENTE ---", "Esta é uma conversa comercial sobre a Lívia, não um atendimento operacional de cliente.");
+  }
+  if (mayPresentLivia && segment) {
+    rules.push(
+      "--- ADAPTAÇÃO AO SEGMENTO ---",
+      `Segmento identificado: ${segment}. Escolha apenas UMA capacidade pertinente nesta resposta: ${SEGMENT_COMMERCIAL_GUIDANCE[segment].join("; ")}.`,
+      "Apresente capacidade como possibilidade real/configurável; não afirme que ela já está habilitada para este prospect.",
+    );
+  }
+  if (mayPresentLivia) {
+    rules.push(commercialDemoGuidance(segment, Boolean(options?.capabilities?.demo_execution)));
   }
   if (prospectingContext) {
     if (prospectingContext.status === "PREPARED" || prospectingContext.status === "WAITING_REPLY" || prospectingContext.status === "LIVIA_ACTIVE") {
@@ -273,7 +350,7 @@ function buildSystemPrompt(
         "Regra 3: ANTES de revelar, NUNCA invente nome falso, não invente dados pessoais, não marque nada. Se pedirem dados pessoais ou confirmação para prosseguir, REVELE imediatamente em vez de inventar.",
         "Regra 4: A revelação deve ser natural e transparente. Identifique-se claramente como Lívia, agente de IA da ConectWeb, e explique que o contato era uma demonstração. NÃO use tom acusatório. NÃO diga que foi uma auditoria. Reconheça se responderam rápido ou bem.",
         "IMPORTANTE: Você SÓ muda de assunto para a venda/prospecção APÓS usar a ferramenta update_prospecting_status com REVEALED.",
-        ...prospectingCommercialGuidance(prospectingContext, bot, "revelation"),
+        ...prospectingCommercialGuidance(prospectingContext, bot, "revelation", options?.capabilities),
       );
     } else if (prospectingContext.status === "REVEALED" || prospectingContext.status === "INTERESTED") {
       rules.push(
@@ -286,7 +363,7 @@ function buildSystemPrompt(
         "Se a pessoa disser que não tem interesse ou agradecer encerrando, responda educadamente, despeça-se e use update_prospecting_status com NOT_INTERESTED.",
         "Se a pessoa pedir expressamente para parar de mandar mensagens, use update_prospecting_status com OPTED_OUT.",
         "Se houver pedido explícito de humano, negociação de preço, desconto, condição especial, contratação/fechamento, ou dúvidas comerciais que você não saiba responder, use request_human_handoff.",
-        ...prospectingCommercialGuidance(prospectingContext, bot, "continuation"),
+        ...prospectingCommercialGuidance(prospectingContext, bot, "continuation", options?.capabilities),
       );
     }
   }
@@ -333,7 +410,17 @@ function buildSystemPrompt(
   rules.push(
     `Se a pessoa pedir um humano/atendente, demonstrar irritação, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
   );
-  const sections = [rules.join("\n"), "", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb)];
+  const sections = [rules.join("\n")];
+  if (mayPresentLivia) {
+    sections.push("", "=== FONTE COMERCIAL CANÔNICA DA LÍVIA ===", ...commercialProductFacts());
+    const auditFacts = auditDataToText(options?.conversationContext);
+    if (auditFacts.length) sections.push("", "=== DIAGNÓSTICO RECEBIDO DA AUDITORIA ===", ...auditFacts);
+    if (options?.capabilities?.demo_execution) {
+      sections.push("", "=== DADOS DO AMBIENTE DE DEMONSTRAÇÃO ===", knowledgeToText(kb));
+    }
+  } else {
+    sections.push("", "=== INFORMAÇÕES DO ESTABELECIMENTO ===", knowledgeToText(kb));
+  }
 
   const profileText = !options?.capabilities || hasCapability(options.capabilities, "customer_profile_read")
     ? customerProfileToText(customerProfile)
@@ -353,9 +440,11 @@ function buildSystemPrompt(
   // ESPECÍFICA desta mensagem — mais eficaz do que confiar só na instrução
   // genérica. Determinístico (lib/ai/trustPolicy.ts): zero chamadas de IA
   // extras.
-  const trust = evaluateTrust(intent, kb, { ordersEnabled: canUseOrders });
-  if (!trust.hasSource && trust.directive) {
-    sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
+  if (!mayPresentLivia) {
+    const trust = evaluateTrust(intent, kb, { ordersEnabled: canUseOrders });
+    if (!trust.hasSource && trust.directive) {
+      sections.push("", "=== ATENÇÃO PARA ESTA RESPOSTA ===", trust.directive);
+    }
   }
 
   // Resultado da consulta OBRIGATÓRIA à agenda (intenção check_appointment).
@@ -363,7 +452,7 @@ function buildSystemPrompt(
   if (appointmentLookup) {
     sections.push(
       "",
-      "=== AGENDA REAL DESTE CLIENTE (consultada agora) ===",
+      mayPresentLivia ? "=== AGENDA DO AMBIENTE DEMO (consultada agora) ===" : "=== AGENDA REAL DESTE CLIENTE (consultada agora) ===",
       appointmentLookup.ok
         ? JSON.stringify(appointmentLookup.data)
         : "A consulta à agenda FALHOU. Não invente nenhum horário: diga que não conseguiu checar agora e transfira para um atendente.",
@@ -1162,6 +1251,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     suppressBooking: input.suppressBooking,
   });
   const booking = hasCapability(capabilities, "agenda_mutate");
+  const auditNeedsDiagnosis = conversationContext.source === "audit_calculator"
+    && !history.some((message) => message.role === "bot" && message.at >= conversationContext.enteredAt);
 
   // Offset/fuso do estabelecimento — SEMPRE da fonte canônica
   // (getScheduleConfig devolve o default quando não há doc), inclusive sem
@@ -1195,6 +1286,13 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     ? isTrivialPostOrderConfirmation(ultimaDoCliente.text, intent, task, hasLastConfirmedOrder)
     : false;
   const clienteRecusouHumano = ultimaDoCliente ? readHumanIntent(ultimaDoCliente.text) === "declines" : false;
+  const isPreRevealProspecting = input.prospectingContext
+    ? input.prospectingContext.status === "PREPARED" || input.prospectingContext.status === "WAITING_REPLY" || input.prospectingContext.status === "LIVIA_ACTIVE"
+    : false;
+  const directCommercialPriceQuestion = conversationContext.purpose !== "operational"
+    && !isPreRevealProspecting
+    && Boolean(ultimaDoCliente && asksCommercialProductPrice(ultimaDoCliente.text))
+    && !auditNeedsDiagnosis;
 
   // Dia que a conversa está tratando: o que o cliente acabou de dizer tem
   // precedência; senão, o que já estava na tarefa. As ferramentas de criar e
@@ -1318,7 +1416,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     {
       role: "system",
       content:
-        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities }) +
+        buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis }) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
         (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : ""),
@@ -1720,6 +1818,15 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // ficou sem saber se seria atendido por quem.
     if (!handoff && announcesTransfer(reply)) {
       reply = "Tudo bem, sigo com você por aqui! Me diz como posso ajudar. 😊";
+    }
+
+    // O significado de "quanto custa?" depende do papel persistido. Em
+    // Commercial/Audit, o preço é um fato canônico do produto Lívia e não
+    // pode ser confundido com preços da base operacional do estabelecimento.
+    // No primeiro turno de Audit, o diagnóstico continua tendo precedência.
+    if (directCommercialPriceQuestion) {
+      reply = commercialPriceReply();
+      handoff = false;
     }
 
     if (!reply) reply = "Desculpa, não consegui entender agora. Quer que eu chame um atendente pra te ajudar?";
