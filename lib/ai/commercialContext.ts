@@ -100,6 +100,16 @@ export function asksCommercialProductPrice(text: string): boolean {
     || /^(?:oi[,! ]*)?(?:quanto\s+custa|qual\s+(?:e\s+)?(?:o\s+)?(?:preco|valor)|preco)[?!. ]*$/.test(value);
 }
 
+// Em demonstração de restaurante, separa uma pergunta sobre item do catálogo
+// da pergunta genérica sobre o preço da própria Lívia. A busca continua sendo
+// executada pela tool oficial da F2; isto apenas extrai uma consulta curta e
+// explícita, sem inferir produto que a pessoa não citou.
+export function extractCatalogPriceQuery(text: string): string | null {
+  const match = /(?:quanto\s+custa|qual\s+(?:é\s+)?o\s+preço|preço)\s+(?:d[oa]\s+|(?:o|a)\s+)?([^?!.]{1,80})/i.exec(text);
+  const query = match?.[1]?.trim().replace(/["'“”]+/g, "") ?? "";
+  return query || null;
+}
+
 export function enrichCommercialContext(input: {
   context: ConversationContext;
   text: string;

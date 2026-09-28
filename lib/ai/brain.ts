@@ -30,6 +30,7 @@ import {
 import {
   asksCommercialProductPrice,
   commercialDemoGuidance,
+  extractCatalogPriceQuery,
   inferCommercialSegment,
   SEGMENT_COMMERCIAL_GUIDANCE,
 } from "@/lib/ai/commercialContext";
@@ -1421,6 +1422,11 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     ? await runTool("list_menu", {}, toolCtx)
     : null;
   if (prospectMenu) toolCalls.push({ name: "list_menu", args: {} });
+  const catalogPriceQuery = extractCatalogPriceQuery(latestProspectText);
+  const prospectCatalogPrice = hasCapability(capabilities, "demo_execution") && catalogPriceQuery
+    ? await runTool("search_menu", { query: catalogPriceQuery }, toolCtx)
+    : null;
+  if (prospectCatalogPrice) toolCalls.push({ name: "search_menu", args: { query: catalogPriceQuery } });
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
@@ -1429,7 +1435,8 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         buildSystemPrompt(est, kb, nowHuman, customerProfile, task, intent, appointmentLookup, input.prospectingContext, { suppressBooking: input.suppressBooking, conversationContext, capabilities, auditNeedsDiagnosis }) +
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
-        (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : ""),
+        (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : "") +
+        (prospectCatalogPrice ? `\n\n=== PREÇO CONSULTADO NO CATÁLOGO DEMO OFICIAL ===\n${JSON.stringify(prospectCatalogPrice)}\nInforme somente o preço devolvido pela tool; não confunda com a mensalidade da Lívia.` : ""),
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
@@ -1828,6 +1835,16 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // ficou sem saber se seria atendido por quem.
     if (!handoff && announcesTransfer(reply)) {
       reply = "Tudo bem, sigo com você por aqui! Me diz como posso ajudar. 😊";
+    }
+
+    const catalogProducts = prospectCatalogPrice?.ok
+      ? (prospectCatalogPrice.data as { products?: { name: string; basePriceCents: number; variants?: unknown[] }[] } | undefined)?.products ?? []
+      : [];
+    if (catalogProducts.length === 1) {
+      const product = catalogProducts[0]!;
+      const qualifier = product.variants?.length ? "tem preço base de" : "custa";
+      reply = `${product.name} ${qualifier} ${formatCommercialPrice(product.basePriceCents)} no catálogo da demonstração.`;
+      handoff = false;
     }
 
     // O significado de "quanto custa?" depende do papel persistido. Em
