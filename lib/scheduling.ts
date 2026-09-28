@@ -255,6 +255,12 @@ export async function bookAppointment(
   data: AppointmentInput,
   now = Date.now(),
   automationFence?: AutomationFence,
+  // Ocupação fictícia do cenário de demonstração para o dia sendo reservado
+  // (F2). Materializada em memória pelo chamador — nunca lida do Firestore,
+  // porque o baseline não é persistido. Sem isto a listagem diria que 08:00
+  // está ocupado e a criação aceitaria 08:00: a transação só vê documentos.
+  // Em produção é sempre vazio.
+  demoBaseline: Appointment[] = [],
 ): Promise<Appointment> {
   const appointments = sub(establishmentId, "appointments");
   const ref = data.operationId ? appointments.doc(data.operationId) : appointments.doc();
@@ -266,7 +272,10 @@ export async function bookAppointment(
     const snap = await tx.get(conflictQuery(establishmentId, data.startAt));
     // O público sai do próprio registro que está sendo criado — nenhum
     // parâmetro novo atravessa o caminho transacional.
-    const contending = contendingAppointments(slotAudienceOf(data), snap.docs.map((d) => d.data() as Appointment));
+    const contending = contendingAppointments(slotAudienceOf(data), [
+      ...snap.docs.map((d) => d.data() as Appointment),
+      ...demoBaseline,
+    ]);
     const reason = slotBookability(config, data.startAt, data.durationMin, contending, now);
     if (reason) throw new AppointmentConflictError(reason);
     const appointment = newAppointment(establishmentId, ref.id, data);
@@ -285,6 +294,9 @@ export async function rescheduleBookedAppointment(
   now = Date.now(),
   automationFence?: AutomationFence,
   operationId?: string,
+  // Mesmo papel que em bookAppointment (F2): a remarcação demo tem que
+  // respeitar a ocupação fictícia do dia de destino. Vazio em produção.
+  demoBaseline: Appointment[] = [],
 ): Promise<void> {
   const ref = sub(establishmentId, "appointments").doc(id);
   const lockRef = scheduleMutationRef(establishmentId);
@@ -298,7 +310,10 @@ export async function rescheduleBookedAppointment(
     const snap = await tx.get(conflictQuery(establishmentId, startAt));
     // Público derivado do agendamento que está sendo remarcado (já lido acima
     // nesta mesma transação).
-    const contending = contendingAppointments(slotAudienceOf(appointment), snap.docs.map((d) => d.data() as Appointment));
+    const contending = contendingAppointments(slotAudienceOf(appointment), [
+      ...snap.docs.map((d) => d.data() as Appointment),
+      ...demoBaseline,
+    ]);
     const reason = slotBookability(config, startAt, durationMin, contending, now, id);
     if (reason) throw new AppointmentConflictError(reason);
     tx.update(ref, {
@@ -470,12 +485,23 @@ export function isDemoAppointment(a: Pick<Appointment, "mode">): boolean {
 // Regras:
 //   público produção -> só agendamentos de produção disputam. Demo nunca
 //                       bloqueia cliente real.
-//   público demo     -> agendamentos de produção disputam (a demonstração
-//                       mostra a agenda REAL do estabelecimento, nunca
-//                       disponibilidade inventada) E o próprio lead disputa
-//                       consigo mesmo (quem acabou de reservar 14h precisa
-//                       ver 14h ocupado — é o que mantém a demo coerente).
-//                       Demos de OUTROS leads não disputam.
+//   público demo     -> o BASELINE fictício do cenário disputa (é comum a
+//                       todos os leads) E o próprio lead disputa consigo mesmo
+//                       (quem acabou de reservar 14h precisa ver 14h ocupado —
+//                       é o que mantém a demo coerente). Demos de OUTROS leads
+//                       não disputam, e agendamentos de PRODUÇÃO também não.
+//
+// F2 alterou a segunda regra. Na F0, agendamentos de produção do tenant demo
+// disputavam com a demonstração, porque não existia baseline e a alternativa
+// seria inventar disponibilidade. Com o cenário fictício de
+// establishments/{id}/meta/demoScenario esse paliativo deixou de ser
+// necessário, e mantê-lo seria pior: a demo passaria a expor a existência (e o
+// serviço) de agendamentos reais ao listar ocupação. Agora o ambiente de
+// demonstração é integralmente fictício e determinístico — todo prospect vê o
+// mesmo baseline, mais as próprias alterações.
+//
+// A garantia da F0 na outra direção fica intacta: demo NUNCA bloqueia
+// produção.
 export type SlotAudience =
   | { kind: "production" }
   | { kind: "demo"; prospectingLeadId: string | null };
@@ -495,7 +521,9 @@ export function slotAudienceOf(a: Pick<Appointment, "mode" | "prospectingLeadId"
 
 export function contendingAppointments(audience: SlotAudience, appointments: Appointment[]): Appointment[] {
   if (audience.kind === "production") return appointments.filter((a) => !isDemoAppointment(a));
-  return appointments.filter((a) => !isDemoAppointment(a) || a.prospectingLeadId === audience.prospectingLeadId);
+  return appointments.filter(
+    (a) => isDemoAppointment(a) && (a.demoBaseline === true || a.prospectingLeadId === audience.prospectingLeadId),
+  );
 }
 
 // ---- Compatibilidade com documentos legados ----
@@ -718,9 +746,18 @@ export async function assertBookable(
   // Default produção: qualquer chamador que não conheça o público continua
   // com o comportamento de agenda real, e demo nunca bloqueia cliente real.
   audience: SlotAudience = PRODUCTION_SLOTS,
+  // Ocupação fictícia do cenário de demonstração (F2). Vazio em produção.
+  demoBaseline: Appointment[] = [],
 ): Promise<NotBookableReason | null> {
   const existing = await listAppointments(establishmentId, startAt - 24 * 3600000, startAt + 48 * 3600000);
-  return slotBookability(config, startAt, durationMin, contendingAppointments(audience, existing), now, excludeId);
+  return slotBookability(
+    config,
+    startAt,
+    durationMin,
+    contendingAppointments(audience, [...existing, ...demoBaseline]),
+    now,
+    excludeId,
+  );
 }
 
 export async function hasScheduleConflict(

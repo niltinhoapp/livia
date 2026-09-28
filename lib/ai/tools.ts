@@ -80,6 +80,22 @@ const demoAppointmentScope = (ctx: ToolContext) => {
 const slotAudienceFor = (ctx: ToolContext): SlotAudience =>
   ctx.demoAuthorization?.authorized === true ? demoSlots(ctx.demoAuthorization.prospectingLeadId) : PRODUCTION_SLOTS;
 
+// Ocupação fictícia do cenário de demonstração para UMA data (F2).
+//
+// Só é materializada quando a demo está autorizada; em produção devolve vazio
+// e nenhuma leitura extra acontece. A fonte é
+// establishments/{id}/meta/demoScenario — explícita e resetável —, nunca uma
+// fixture no código da tool. Quem decide disponibilidade a partir disso
+// continua sendo computeSlots/slotBookability.
+async function demoBaselineFor(ctx: ToolContext, date: string, utcOffsetMinutes: number): Promise<Appointment[]> {
+  if (ctx.demoAuthorization?.authorized !== true) return [];
+  const [{ getDemoScenario }, { materializeDemoBaseline }] = await Promise.all([
+    import("@/lib/demo/store"),
+    import("@/lib/demo/scenario"),
+  ]);
+  return materializeDemoBaseline(await getDemoScenario(ctx.est.id), date, utcOffsetMinutes);
+}
+
 export interface ToolResult {
   ok: boolean;
   data?: unknown;
@@ -267,12 +283,31 @@ const findAvailableAppointments: ToolDefinition = {
     // outros leads ocupavam o dia e o prospect recebia "não há horários
     // livres" sem ter como ver a causa. `computeSlots` segue intocado — muda
     // apenas quem entra na lista de ocupação.
-    const contending = contendingAppointments(slotAudienceFor(ctx), existing);
+    // F2: a demo soma a ocupação fictícia do cenário. Em produção é vazio.
+    const baseline = await demoBaselineFor(ctx, date, config.utcOffsetMinutes);
+    const contending = contendingAppointments(slotAudienceFor(ctx), [...existing, ...baseline]);
     const slots = computeSlots(config, date, duration, contending).slice(0, 12);
-    if (slots.length === 0) return { ok: true, data: { date, slots: [], note: "Sem horários livres neste dia." } };
+
+    // Ocupação exposta SOMENTE na demonstração, para a Lívia poder dizer
+    // "8h já está ocupado" sem inventar. Carrega apenas hora e o nome do
+    // serviço — que na demo é fictício, vindo do cenário ou do próprio
+    // agendamento do prospect. Nenhum campo de contato entra aqui, e um
+    // agendamento de produção nunca chega: `contendingAppointments` já o
+    // excluiu do público demo. Em produção a chave não existe, então o
+    // contrato da tool para o atendimento real permanece idêntico.
+    const occupied = ctx.demoAuthorization?.authorized === true
+      ? contending
+          .filter((a) => isActive(a))
+          .map((a) => ({ time: localTimeString(a.startAt, config.utcOffsetMinutes), serviceName: a.serviceName }))
+          .sort((a, b) => a.time.localeCompare(b.time))
+      : null;
+
+    if (slots.length === 0) {
+      return { ok: true, data: { date, slots: [], note: "Sem horários livres neste dia.", ...(occupied ? { occupied } : {}) } };
+    }
     // `durationMin` volta só como informação: quem cria resolve de novo pela
     // mesma função, então listagem e criação não têm como divergir.
-    return { ok: true, data: { date, durationMin: duration, slots } };
+    return { ok: true, data: { date, durationMin: duration, slots, ...(occupied ? { occupied } : {}) } };
   },
 };
 
@@ -312,8 +347,12 @@ const createAppointmentTool: ToolDefinition = {
         operationId: operationIdFor(args),
         ...demoAppointmentScope(ctx),
       };
-      if (ctx.automationFence) await bookAppointment(ctx.est.id, config, input, Date.now(), ctx.automationFence);
-      else await bookAppointment(ctx.est.id, config, input);
+      // F2: a criação recebe a MESMA ocupação fictícia que a listagem usou —
+      // sem isto a demo ofereceria 08:00 como livre e a transação aceitaria,
+      // porque ela só vê documentos e o baseline não é persistido.
+      const baseline = await demoBaselineFor(ctx, localDateOf(args.startAt, ctx.offset), config.utcOffsetMinutes);
+      if (ctx.automationFence) await bookAppointment(ctx.est.id, config, input, Date.now(), ctx.automationFence, baseline);
+      else await bookAppointment(ctx.est.id, config, input, Date.now(), undefined, baseline);
     } catch (error) {
       if (error instanceof AppointmentConflictError) return { ok: false, error: NOT_BOOKABLE_MESSAGE[error.reason], reasonCode: error.reason };
       throw error;
@@ -537,8 +576,10 @@ const rescheduleAppointment: ToolDefinition = {
     // uma remarcação poderia cair dentro do almoço ou fora do expediente.
     const duration = resolveServiceDuration(ctx.config!, ctx.kb?.services, appt.serviceName);
     try {
-      if (ctx.automationFence) await rescheduleBookedAppointment(ctx.est.id, ctx.config!, appt.id, args.newStartAt, duration, Date.now(), ctx.automationFence, operationIdFor(args));
-      else await rescheduleBookedAppointment(ctx.est.id, ctx.config!, appt.id, args.newStartAt, duration, Date.now(), undefined, operationIdFor(args));
+      // F2: mesma ocupação fictícia do dia de destino (ver create_appointment).
+      const baseline = await demoBaselineFor(ctx, localDateOf(args.newStartAt, ctx.offset), ctx.config!.utcOffsetMinutes);
+      if (ctx.automationFence) await rescheduleBookedAppointment(ctx.est.id, ctx.config!, appt.id, args.newStartAt, duration, Date.now(), ctx.automationFence, operationIdFor(args), baseline);
+      else await rescheduleBookedAppointment(ctx.est.id, ctx.config!, appt.id, args.newStartAt, duration, Date.now(), undefined, operationIdFor(args), baseline);
     } catch (error) {
       if (error instanceof AppointmentConflictError) return { ok: false, error: NOT_BOOKABLE_MESSAGE[error.reason], reasonCode: error.reason };
       throw error;
@@ -657,7 +698,14 @@ const setOrderAddressTool: ToolDefinition = { name: "set_order_address", enabled
 const setOrderPaymentTool: ToolDefinition = { name: "set_order_payment", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("set_order_payment", "Define a forma de pagamento aceita pelo estabelecimento. Não processa pagamento nem usa billing SaaS.", { type: "object", properties: { method: { type: "string", enum: ["pix", "cash", "credit_card", "debit_card"] }, changeForCents: { type: "number" } }, required: ["method"] }), async execute(ctx, args) { try { const method = args.method as OrderPaymentMethod; if (!["pix", "cash", "credit_card", "debit_card"].includes(method)) throw new Error("forma inválida"); const order = await (await orderService()).setOrderPayment(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, ctx.contactName, method, typeof args.changeForCents === "number" ? args.changeForCents : null, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return orderMutationFailure(e); } } };
 const prepareOrderConfirmationTool: ToolDefinition = { name: "prepare_order_confirmation", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("prepare_order_confirmation", "Gera o resumo canônico e coloca o pedido em aguardando confirmação. Use somente quando todos os itens, retirada/entrega, endereço e pagamento já estiverem definidos.", { type: "object", properties: {} }), async execute(ctx, args) { try { const order = await (await orderService()).prepareOrderConfirmation(ctx.est.id, orderConversationId(ctx), ctx.contactPhone, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order, await pixInstructionsFor(ctx, order)) }; } catch (e) { return { ok: false, error: String(e) }; } } };
 const confirmOrderTool: ToolDefinition = { name: "confirm_order", enabled: (ctx) => (Boolean(ctx.est.bot.ordersEnabled)) && !ctx.prospectingContext, schema: fn("confirm_order", "Fecha o pedido somente quando a mensagem atual do cliente for uma confirmação explícita do resumo canônico pendente.", { type: "object", properties: {} }), async execute(ctx, args) { try { const confirmation = ctx.orderConfirmation; if (!confirmation?.explicitlyConfirmed) throw new Error("Ainda preciso de uma confirmação explícita do resumo para fechar o pedido."); const order = await (await orderService()).confirmOrder(ctx.est.id, confirmation.orderId, confirmation.version, ctx.contactPhone, operationIdFor(args), ...addOrderDemoArg(ctx)); return { ok: true, data: orderSummary(order) }; } catch (e) { return { ok: false, error: String(e) }; } } };
-const getOrderStatusTool: ToolDefinition = { name: "get_order_status", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("get_order_status", "Consulta o estado real de um pedido do próprio cliente.", { type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] }), async execute(ctx, args) { const order = await (await orderService()).getOrder(ctx.est.id, String(args.orderId ?? "")); return order && normalizePhone(order.contactPhone) === normalizePhone(ctx.contactPhone) ? { ok: true, data: orderSummary(order) } : { ok: false, error: "pedido não encontrado para este cliente" }; } };
+const getOrderStatusTool: ToolDefinition = { name: "get_order_status", enabled: (ctx) => Boolean(ctx.est.bot.ordersEnabled), schema: fn("get_order_status", "Consulta o estado real de um pedido do próprio cliente.", { type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] }), async execute(ctx, args) { const order = await (await orderService()).getOrder(ctx.est.id, String(args.orderId ?? "")); const naoEncontrado = { ok: false as const, error: "pedido não encontrado para este cliente" }; if (!order || normalizePhone(order.contactPhone) !== normalizePhone(ctx.contactPhone)) return naoEncontrado;
+    // Escopo demo (F2), na mesma semântica de assertDraftScope em
+    // lib/orders.ts: numa demonstração só o pedido do PRÓPRIO lead é legível,
+    // e fora dela um pedido demo nunca é. O telefone sozinho já separava os
+    // prospects, mas a posse é do lead — é ele a chave de isolamento.
+    const demo = ctx.demoAuthorization?.authorized === true ? ctx.demoAuthorization : null;
+    if (demo ? (order.mode !== "demo" || order.prospectingLeadId !== demo.prospectingLeadId) : order.mode === "demo") return naoEncontrado;
+    return { ok: true, data: orderSummary(order) }; } };
 
 // ---- requestHumanHandoff ----
 // Não toca Firestore aqui — só sinaliza a intenção. Quem grava a

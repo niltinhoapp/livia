@@ -523,6 +523,12 @@ export interface Appointment {
   // na agenda comercial nem em seus lembretes.
   mode?: "demo";
   prospectingLeadId?: string | null;
+  // Ocupação fictícia do cenário de demonstração (F2). NUNCA persistido: é
+  // materializado em memória a partir de establishments/{id}/meta/demoScenario
+  // e serve apenas de entrada para o motor real de disponibilidade. Vale para
+  // TODOS os leads da demo (é o baseline comum), diferente de um registro com
+  // `prospectingLeadId`, que pertence a uma sessão só.
+  demoBaseline?: true;
   // Chaves estáveis derivadas do inbound, usadas para tornar create/update
   // idempotentes mesmo quando o modelo muda a ordem das tool calls no replay.
   operationId?: string;
@@ -994,6 +1000,31 @@ export interface ProspectingSession {
   expiresAt: number;
   outcome: "interested" | "not_interested" | "human" | "opt_out" | "expired" | "closed" | null;
   createdAt: number;
+  updatedAt: number;
+}
+
+// ---- Ambiente oficial de demonstração (F2) ----
+//
+// Cenário fictício do tenant de demonstração, em
+// establishments/{id}/meta/demoScenario. É a ÚNICA fonte da ocupação baseline:
+// explícita, versionada e resetável, nunca espalhada em fixture de código.
+//
+// Declara somente OCUPAÇÃO. Nunca abre um dia que a ScheduleConfig do
+// estabelecimento mantém fechado, e nunca decide disponibilidade — isso
+// continua sendo de slotBookability/computeSlots.
+export interface DemoScenarioSlot {
+  time: string; // "HH:mm" no fuso do estabelecimento
+  serviceName: string; // fictício; é o único texto que a demo pode exibir
+  durationMin: number;
+}
+
+export interface DemoScenario {
+  establishmentId: string;
+  // Padrão semanal: "0"=domingo ... "6"=sábado. Materializado por data, então
+  // vale para qualquer dia que o prospect pedir, sem semear documento.
+  weekly: Record<string, DemoScenarioSlot[]>;
+  // Vida útil dos registros demo de uma sessão, usada pela limpeza por lead.
+  sessionTtlMs: number;
   updatedAt: number;
 }
 

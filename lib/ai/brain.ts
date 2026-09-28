@@ -962,6 +962,17 @@ async function resolveTimeSelection(
     // Mesmo escopo de disputa de slot usado por find_available_appointments
     // (F0.2): num turno de demonstração autorizada, demos de outros leads não
     // podem produzir uma recusa aqui.
+    const autorizacaoDemo = toolCtx.demoAuthorization?.authorized === true ? toolCtx.demoAuthorization : null;
+    // F2: a checagem recebe a mesma ocupação fictícia que a listagem usou.
+    const baseline = autorizacaoDemo
+      ? await (async () => {
+          const [{ getDemoScenario }, { materializeDemoBaseline }] = await Promise.all([
+            import("@/lib/demo/store"),
+            import("@/lib/demo/scenario"),
+          ]);
+          return materializeDemoBaseline(await getDemoScenario(toolCtx.est.id), date, config.utcOffsetMinutes);
+        })()
+      : [];
     const motivo = await assertBookable(
       toolCtx.est.id,
       config,
@@ -969,9 +980,8 @@ async function resolveTimeSelection(
       config.defaultDurationMin,
       Date.now(),
       undefined,
-      toolCtx.demoAuthorization?.authorized === true
-        ? demoSlots(toolCtx.demoAuthorization.prospectingLeadId)
-        : PRODUCTION_SLOTS,
+      autorizacaoDemo ? demoSlots(autorizacaoDemo.prospectingLeadId) : PRODUCTION_SLOTS,
+      baseline,
     );
     if (motivo) {
       return { kind: "conflict", reason: motivo, alternatives: await realAlternatives(toolCtx, date, toolCalls) };
