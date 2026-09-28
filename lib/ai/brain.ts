@@ -410,9 +410,11 @@ function buildSystemPrompt(
       "- Quando o produto tiver tamanho ou adicional obrigatório, pergunte antes de adicionar, uma coisa de cada vez.",
       "- Para trocar/remover algo, consulte get_order_draft e use os itemId reais.",
       "- Para mudar tamanho ou adicional de um item que já está no pedido, use update_order_item com variantId/modifierOptionIds — não remova e adicione de novo. Em modifierOptionIds mande a lista COMPLETA de adicionais que o item deve ficar.",
-       "- Quando o pedido estiver completo, use prepare_order_confirmation. Ela gera e apresenta o resumo canônico; não peça confirmação antes disso.",
+       "- Antes de fechar, o pedido precisa ter: itens, retirada ou entrega (endereço quando entrega) e forma de pagamento. Pergunte a forma de pagamento (use set_order_payment) antes de usar prepare_order_confirmation — nunca peça a confirmação final sem isso.",
+       "- Quando o pedido estiver completo (itens, entrega/retirada e pagamento definidos), use prepare_order_confirmation. Ela gera e apresenta o resumo canônico; não peça confirmação antes disso, e não pergunte 'posso confirmar?' por conta própria — é a ferramenta que apresenta o resumo e pede a confirmação.",
       "- Se o resumo marcar um item como repetido (repeatedProduct), confirme a quantidade com a pessoa antes de fechar — costuma ser envio duplicado sem querer.",
        "- Só use confirm_order quando a mensagem ATUAL for uma confirmação explícita (por exemplo: sim, confirmo, pode fechar) do resumo pendente. ‘ok’, emoji, pergunta ou alteração não fecham o pedido.",
+       "- NUNCA diga que o pedido foi confirmado, registrado ou fechado a menos que confirm_order tenha retornado sucesso NESTE turno. Se ainda não chamou confirm_order com sucesso, o pedido não está fechado — não afirme o contrário.",
       "- Para entrega, peça endereço e bairro quando a taxa não puder ser determinada; não estime taxa.",
       "- Se o resumo trouxer pixInstructions, repasse essas instruções como estão quando a pessoa escolher pix. Você NUNCA confirma pagamento: mesmo que ela diga que pagou ou mande comprovante, o pagamento só é confirmado pelo estabelecimento.",
       "- Ao apresentar cardápio ou fechar pedido, escreva como um atendente de balcão: frases curtas, sem tabela, sem repetir o preço de tudo que já foi dito, e confirmando o que a pessoa pediu com as palavras dela.",
@@ -583,6 +585,22 @@ const INCAPACITY_CLAIM =
 
 export function claimsIncapacity(reply: string): boolean {
   return INCAPACITY_CLAIM.test(reply);
+}
+
+// F5.6 — mesma lógica de confirmsBooking, para o desfecho de PEDIDO: o texto
+// só pode afirmar que o pedido foi confirmado/registrado/fechado se
+// confirm_order tiver retornado sucesso NESTE turno (ver orderConfirmedThisTurn
+// em think()). Em Production/demo o modelo pulou pagamento e resumo canônico
+// e ainda assim escreveu "O pedido ficou confirmado" como texto livre — sem
+// nenhuma tool de pedido ter fechado nada. O backend (lib/orders.ts) já
+// impede a MUTAÇÃO indevida (confirm_order exige awaiting_confirmation
+// vindo de um prepare_order_confirmation real); esta trava impede a MENTIRA
+// correspondente chegar ao cliente mesmo quando a mutação nunca aconteceu.
+const ORDER_CONFIRMED_CLAIM =
+  /\bpedidos?\b[\s\S]{0,50}\b(confirmad[oa]|registrad[oa]|fechad[oa]|conclu[íi]d[oa]|finalizad[oa])\b|\b(confirmad[oa]|registrad[oa]|fechad[oa]|conclu[íi]d[oa]|finalizad[oa])\b[\s\S]{0,50}\bpedidos?\b|\b(confirmei|registrei|fechei|finalizei)\b[\s\S]{0,50}\b(pedidos?|compra)\b/i;
+
+export function claimsOrderConfirmed(reply: string): boolean {
+  return ORDER_CONFIRMED_CLAIM.test(reply);
 }
 
 // O desfecho REAL da tentativa de reserva entra no prompt como fato
@@ -1815,6 +1833,35 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       } else {
         reply = "Agora não estamos recebendo pedidos. Consulte o estabelecimento para saber o próximo horário.";
       }
+      handoff = false;
+    }
+
+    // ---- Trava: o texto afirma que o pedido foi confirmado, mas confirm_order
+    // não fechou nada neste turno ----
+    //
+    // O backend (lib/orders.ts) já impede a MUTAÇÃO indevida: confirm_order
+    // exige um pedido em awaiting_confirmation, alcançado só por um
+    // prepare_order_confirmation real (que por sua vez exige pagamento já
+    // definido — refreshOrderForConfirmation rejeita sem isso), seguido da
+    // confirmação explícita do cliente sobre ESSE resumo (ver
+    // toolCtx.orderConfirmation acima). O que faltava era impedir a MENTIRA
+    // correspondente: em Production/demo o modelo pulou pagamento e resumo
+    // canônico e mesmo assim escreveu "o pedido ficou confirmado" como texto
+    // livre, sem nenhuma tool de pedido ter rodado — o cliente saiu
+    // acreditando ter fechado um pedido que continuava em draft.
+    if (hasCapability(capabilities, "order_read") && claimsOrderConfirmed(reply) && !orderConfirmedThisTurn) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content:
+            "A resposta acima afirmou que o pedido foi confirmado/registrado/fechado, mas confirm_order NÃO foi executado com sucesso neste turno — nenhum pedido foi fechado de verdade. Você não pode declarar isso. Se precisar saber o estado real do carrinho, use get_order_draft. Continue o fluxo real de pedido: forma de pagamento (se ainda faltar), depois prepare_order_confirmation para gerar o resumo canônico, e só então aguarde a confirmação explícita do cliente sobre esse resumo. Nunca diga que o pedido está confirmado/registrado/fechado antes de confirm_order retornar sucesso.",
+        });
+        continue;
+      }
+      reply = (ultimoPedido && composeOrderReply(ultimoPedido))
+        ?? "Seu pedido ainda não foi confirmado. Para fechar, preciso primeiro da forma de pagamento e da sua confirmação explícita sobre o resumo final.";
       handoff = false;
     }
 
