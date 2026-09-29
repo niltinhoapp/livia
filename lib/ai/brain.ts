@@ -224,6 +224,27 @@ function prospectingCommercialGuidance(
   ];
 }
 
+// A fórmula da Calculadora vive fora deste repositório. O que dá para afirmar
+// sem inventar é a aritmética dos próprios números recebidos: quantas vendas
+// do ticket informado a estimativa representa e que fração dos contatos de um
+// mês isso é. Calculado aqui, não pelo modelo.
+function auditEstimateReading(audit: NonNullable<ConversationContext["audit"]>): string[] {
+  const { leadsPerDay, averageTicketCents, estimatedOpportunityCentsPerMonth: estimate } = audit;
+  if (estimate === undefined) return [];
+  if (estimate === 0) {
+    return ["A Calculadora apresentou estimativa de R$ 0 para o tempo de resposta informado: ela não projetou perda. Não invente perda nem valor; mostre como a Lívia ajuda a manter esse padrão."];
+  }
+  if (!leadsPerDay || !averageTicketCents) return [];
+  const number = (value: number) => value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  const sales = estimate / averageTicketCents;
+  const monthlyLeads = leadsPerDay * 30;
+  const share = (sales / monthlyLeads) * 100;
+  return [
+    `Leitura aritmética dos números recebidos (a fórmula interna da Calculadora não está disponível aqui): ${formatCommercialPrice(estimate)} ÷ ticket de ${formatCommercialPrice(averageTicketCents)} ≈ ${number(sales)} vendas por mês; ${leadsPerDay} leads por dia × 30 dias = ${number(monthlyLeads)} contatos por mês; a estimativa equivale a cerca de ${number(share)}% desses contatos.`,
+    "Para explicar o resultado, use só essa leitura: é o potencial mensal que a Calculadora associa ao tempo de resposta informado. Não cite outro percentual, regra ou premissa que não esteja aqui.",
+  ];
+}
+
 function auditDataToText(context: ConversationContext | undefined): string[] {
   const audit = context?.audit;
   if (!audit) return [];
@@ -238,6 +259,7 @@ function auditDataToText(context: ConversationContext | undefined): string[] {
   if (!facts.length) return [];
   return [
     ...facts,
+    ...auditEstimateReading(audit),
     "Esses dados já foram recebidos: NÃO pergunte por eles novamente.",
     "A estimativa é uma simulação de potencial baseada nas informações fornecidas. Não é perda comprovada, não prova que todo contato seria venda e não garante recuperação do valor.",
   ];
@@ -296,6 +318,7 @@ function buildSystemPrompt(
         "Nunca prometa recuperar receita, garantir faturamento ou afirmar que uma estimativa é perda comprovada.",
         "Você pode oferecer continuar a conversa, explicar como experimentar ou como funciona a contratação. Nunca diga que teste, conta ou contratação foi ativado sem confirmação do backend.",
         "Perguntas alheias ao negócio ou à Lívia (por exemplo Nobel da Paz, mitologia ou capital de país) não são gatilho comercial e não devem virar pitch.",
+        "Explicar o resultado da Auditoria, o que a Lívia faz, como funciona, quanto custa, como testar ou como seria a demonstração é o SEU papel nesta conversa: responda você mesma. request_human_handoff é só para pedido explícito de humano, negociação ou condição especial, contratação/fechamento, ou irritação que você não consiga resolver.",
         "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
         nowHuman,
       ]
@@ -1429,6 +1452,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
   const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, conversationContext, capabilities, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null, suppressBooking: input.suppressBooking };
   const tools = toolsFor(toolCtx);
+  // As travas de desfecho de AGENDA (recusa/vaga/incapacidade inventadas)
+  // pressupõem uma agenda neste contexto. Sem ela (Audit, Commercial sem demo),
+  // "equipe ocupada" ou "fora do horário de atendimento" descrevem o negócio do
+  // prospect, e a correção pediria ferramentas que nem foram oferecidas — o
+  // único desfecho possível era transferir para humano.
+  const agendaInScope = hasCapability(capabilities, "agenda_read");
 
   let booked = false;
   // Dados da reserva REALMENTE criada neste turno (venha ela do caminho
@@ -1918,7 +1947,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // Se a ferramenta existe e está habilitada, dizer "não consigo" é falso.
     // Uma passada corretiva listando o que ela PODE fazer; se insistir,
     // transfere (aí sim há um humano de verdade no caminho).
-    if (claimsIncapacity(reply) && tools.length > 0) {
+    if (agendaInScope && claimsIncapacity(reply) && tools.length > 0) {
       if (!stallCorrected) {
         stallCorrected = true;
         const disponiveis = tools.map((t) => t.function.name).join(", ");
@@ -1972,7 +2001,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // repetindo o expediente de HOJE (domingo, fechado) para um horário de
     // segunda. Substituímos pela verdade quando temos, ou forçamos a consulta
     // quando não temos.
-    if (deniesBooking(reply)) {
+    if (agendaInScope && deniesBooking(reply)) {
       const consultouAgenda = toolCalls.some(
         (t) => t.name === "create_appointment" || t.name === "find_available_appointments",
       );
@@ -2001,7 +2030,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // em produção sem chamar a tool. Uma única correção permite que ele faça
     // a consulta; insistência vira uma resposta neutra, nunca uma agenda
     // inventada.
-    if (claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
+    if (agendaInScope && claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
       if (!stallCorrected) {
         stallCorrected = true;
         messages.push({ role: "assistant", content: reply });

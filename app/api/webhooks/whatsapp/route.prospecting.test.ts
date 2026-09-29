@@ -23,6 +23,9 @@ beforeEach(() => {
   process.env.META_APP_SECRET = WHATSAPP_TOKEN;
   process.env.OPENAI_API_KEY = "test";
   process.env.OPENAI_API_KEY = "test";
+  // Sessões de prospecção só existem no tenant interno de prospecção
+  // (app/api/internal/prospecting) — o fixture declara isso.
+  process.env.INTERNAL_PROSPECTING_ESTABLISHMENT_ID = EST_ID;
   vi.clearAllMocks();
 
   fakeDb.col("establishments").set(EST_ID, { id: EST_ID,

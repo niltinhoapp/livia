@@ -82,9 +82,12 @@ import {
   capabilitiesForConversation,
   hasCapability,
   historyForConversationContext,
+  isPreRevealProspecting,
   resolveConversationContext,
 } from "@/lib/ai/conversationPolicy";
-import { enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
+import { carriesAuditResult, enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
+import { isLiviaCommercialChannel } from "@/lib/prospectingChannel";
+import { textRequestsVoice } from "@/lib/ai/voiceRequest";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -123,11 +126,6 @@ Assim, você não precisa interromper seu trabalho e nenhum cliente fica esperan
 Se fizer sentido, me dê um OK e eu te mostro como funciona.
 
 E se estiver ocupado(a), pode me mandar um áudio. Eu também posso te responder por áudio.`;
-
-function textRequestsVoice(text: string): boolean {
-  const value = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR");
-  return /\b(manda(\s+um)? audio|me responde (em )?audio|quero ouvir|pode explicar por audio)\b/.test(value);
-}
 
 class WhatsAppChannelGenerationError extends Error {
   constructor() {
@@ -857,7 +855,9 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   let contextResolution = resolveConversationContext({
     persisted: conversation.conversationContext,
     prospectingSession,
+    commercialChannel: isLiviaCommercialChannel(est),
     startsAudit: startsAuditContext(customerText),
+    freshAuditEntry: carriesAuditResult(customerText),
     now: persistedCustomer.at,
   });
   const enrichedContext = enrichCommercialContext({
@@ -875,6 +875,19 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       context: enrichedContext.context,
       changed: true,
     };
+  }
+  // Quem chega pela Auditoria já sabe que fala com a Lívia. Uma
+  // ProspectingSession antiga do mesmo telefone não pode sequestrar essa
+  // jornada: durante o diagnóstico (Audit) nenhuma regra de prospecção vale, e
+  // uma sessão ainda pré-revelação (simulação de cliente) nunca vale numa
+  // jornada que nasceu na Calculadora. Sessão revelada continua disponível
+  // depois da qualificação — é ela que autoriza a demo oficial (F5.2).
+  if (
+    contextResolution.context.source === "audit_calculator"
+    && (contextResolution.context.purpose === "audit" || isPreRevealProspecting(prospectingContext?.status))
+  ) {
+    prospectingContext = undefined;
+    prospectingSession = null;
   }
   const priorBotOfferedPracticalDemo = history.some((message) => message.role === "bot" && /\b(?:mostrar|demonstra(?:cao|ção)).{0,50}\bna\s+pr[áa]tica\b/i.test(message.text));
   if (

@@ -72,6 +72,13 @@ export function extractAuditData(text: string, capturedAt: number): AuditConvers
   }, capturedAt);
 }
 
+// O texto pré-preenchido do CTA da Calculadora traz campos rotulados
+// ("Leads por dia: 78", "Estimativa apresentada: R$ ..."). Uma simples menção
+// a "auditoria" numa conversa em andamento não carrega esse resultado.
+export function carriesAuditResult(text: string): boolean {
+  return extractAuditData(text, 0) !== null;
+}
+
 export function inferCommercialSegment(text: string): CommercialSegment | null {
   const value = normalize(text);
   if (/\b(pet\s*shop|veterinari[ao]|banho\s+e\s+tosa)\b/.test(value)) return "pet";
