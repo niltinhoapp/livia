@@ -49,6 +49,64 @@ export interface Establishment {
   bot: BotConfig;
   // Resumo operacional enviado ao proprietário no fim do expediente.
   dailyOwnerSummary?: DailyOwnerSummaryConfig;
+  // Quem avisar, e por onde, quando um cliente pede atendimento humano.
+  humanHandoffNotifications?: HumanHandoffNotificationConfig;
+}
+
+export interface HumanHandoffNotificationConfig {
+  push: boolean;
+  whatsapp: boolean;
+  // WhatsApp pessoal do responsável (DDI + DDD + número).
+  responsiblePhone: string;
+  // Template APROVADO na WABA do próprio estabelecimento, validado na Meta ao
+  // salvar. Variáveis do corpo: {{1}} cliente, {{2}} link da conversa.
+  templateName: string;
+  templateLang: string;
+  templateParamCount: number;
+  updatedAt: number;
+}
+
+// Um episódio = um handoff pendente de uma conversa (conversationId +
+// handoffStartedAt). O documento é criado por quem vence a transição e é a
+// deduplicação: o template (pago) sai no máximo uma vez por episódio.
+export interface HandoffNotificationRecord {
+  id: string;
+  conversationId: string;
+  handoffStartedAt: number;
+  createdAt: number;
+  lastPushAt: number | null;
+  pushReminders: number;
+  // true enquanto algum canal ainda está pending/processing: é o que a
+  // recuperação consulta para retomar um aviso interrompido.
+  needsDelivery?: boolean;
+  push: HandoffNotificationChannelResult;
+  whatsapp: HandoffNotificationChannelResult;
+}
+
+// pending    -> pode ser reivindicado (respeitando nextAttemptAt)
+// processing -> reivindicado por uma execução (claimId); se ficar velho, a
+//               recuperação decide: push volta a pending, template NUNCA é
+//               reenviado (resultado desconhecido vira failed)
+// sent / failed / skipped -> terminais
+export interface HandoffNotificationChannelResult {
+  status: "pending" | "processing" | "sent" | "failed" | "skipped";
+  reason?: string;
+  at?: number;
+  waMessageId?: string;
+  delivered?: number;
+  attempts?: number;
+  claimId?: string;
+  claimedAt?: number;
+  nextAttemptAt?: number;
+}
+
+export interface PushDevice {
+  id: string;
+  token: string;
+  uid: string;
+  userAgent: string | null;
+  createdAt: number;
+  lastSeenAt: number;
 }
 
 export interface DailyOwnerSummaryConfig {
@@ -415,6 +473,19 @@ export interface Conversation {
   // backfill). ProspectingSession continua sendo a fonte de verdade do seu
   // próprio funil; este objeto registra somente o papel/capabilities.
   conversationContext?: ConversationContext;
+  // Início do handoff pendente atual (bot → handoff). Identifica o episódio
+  // de notificação ao responsável; não é estado de posse.
+  handoffStartedAt?: number | null;
+  // Trilha da posse humana. Só ações autenticadas do painel escrevem aqui:
+  // nada devolve a conversa à Lívia por tempo, cron ou heurística.
+  humanOwnership?: HumanOwnershipRecord;
+}
+
+export interface HumanOwnershipRecord {
+  assumedAt: number;
+  assumedBy: string;
+  returnedAt?: number;
+  returnedBy?: string;
 }
 
 export type ConversationPurpose = "operational" | "commercial" | "audit";

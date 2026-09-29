@@ -21,10 +21,20 @@ export async function GET(req: NextRequest) {
   const results = await Promise.allSettled([...conversations.values()].map((job) =>
     drainConversationInbox(job.establishmentId, job.conversationId)));
   const expiredMarkersDeleted = await deleteExpiredWhatsAppProcessedMarkers();
+  // Avisos de atendimento humano interrompidos (queda entre gravar o handoff
+  // e enviar o aviso). Efeito colateral: nunca muda posse da conversa.
+  let handoffNotifications: { establishments: number; episodes: number } | { error: string };
+  try {
+    const { recoverHandoffNotifications } = await import("@/lib/humanHandoff/notifications");
+    handoffNotifications = await recoverHandoffNotifications();
+  } catch (error) {
+    handoffNotifications = { error: error instanceof Error ? error.name : "unknown" };
+  }
   return NextResponse.json({
     conversations: conversations.size,
     succeeded: results.filter((result) => result.status === "fulfilled").length,
     failed: results.filter((result) => result.status === "rejected").length,
     expiredMarkersDeleted,
+    handoffNotifications,
   });
 }

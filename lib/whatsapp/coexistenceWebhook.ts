@@ -24,6 +24,29 @@ export function classifyWebhookChange(change: WebhookChangeLike): IncomingWebhoo
   return "unknown";
 }
 
+export interface AgentEchoMessage {
+  id: string;
+  to: string;
+  text: string;
+}
+
+/**
+ * `smb_message_echoes`: mensagens que a equipe enviou pelo app WhatsApp
+ * Business (Coexistence). São respostas do atendente humano — entram no
+ * histórico com autoria "agent", nunca como mensagem do cliente.
+ */
+export function parseMessageEchoes(value: unknown): AgentEchoMessage[] {
+  const echoes = (value as { message_echoes?: unknown } | undefined)?.message_echoes;
+  if (!Array.isArray(echoes)) return [];
+  return echoes.flatMap((raw): AgentEchoMessage[] => {
+    if (!raw || typeof raw !== "object") return [];
+    const echo = raw as { id?: unknown; to?: unknown; type?: unknown; text?: { body?: unknown } };
+    if (typeof echo.id !== "string" || !echo.id || typeof echo.to !== "string" || !echo.to) return [];
+    const body = typeof echo.text?.body === "string" ? echo.text.body.trim() : "";
+    return [{ id: echo.id, to: echo.to, text: body || "[Anexo enviado pelo atendente]" }];
+  });
+}
+
 /**
  * Eventos espelhados/sincronizados nunca são candidatos à IA.
  */

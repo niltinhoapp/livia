@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   listRecoverableWhatsAppInboundJobs: vi.fn(),
   deleteExpiredWhatsAppProcessedMarkers: vi.fn(),
   drainConversationInbox: vi.fn(),
+  recoverHandoffNotifications: vi.fn(),
+}));
+
+vi.mock("@/lib/humanHandoff/notifications", () => ({
+  recoverHandoffNotifications: mocks.recoverHandoffNotifications,
 }));
 
 vi.mock("@/lib/repo", () => ({
@@ -43,6 +48,7 @@ beforeEach(() => {
   mocks.listRecoverableWhatsAppInboundJobs.mockResolvedValue([]);
   mocks.drainConversationInbox.mockResolvedValue(undefined);
   mocks.deleteExpiredWhatsAppProcessedMarkers.mockResolvedValue(0);
+  mocks.recoverHandoffNotifications.mockResolvedValue({ establishments: 1, episodes: 1 });
 });
 
 afterEach(() => {
@@ -67,10 +73,17 @@ describe("recovery cron do inbox inbound", () => {
     const response = await GET(request());
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ conversations: 2, succeeded: 2, failed: 0, expiredMarkersDeleted: 0 });
+    await expect(response.json()).resolves.toEqual({ conversations: 2, succeeded: 2, failed: 0, expiredMarkersDeleted: 0, handoffNotifications: { establishments: 1, episodes: 1 } });
     expect(mocks.listRecoverableWhatsAppInboundJobs).toHaveBeenCalledWith(100);
     expect(mocks.drainConversationInbox).toHaveBeenCalledTimes(2);
     expect(mocks.drainConversationInbox).toHaveBeenCalledWith("est-1", "551100000001");
     expect(mocks.drainConversationInbox).toHaveBeenCalledWith("est-1", "551100000002");
+  });
+
+  it("falha na recuperação de avisos de atendimento humano não derruba a recuperação do inbox", async () => {
+    mocks.recoverHandoffNotifications.mockRejectedValueOnce(new Error("firestore"));
+    const response = await GET(request());
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ conversations: 0, handoffNotifications: { error: "Error" } });
   });
 });

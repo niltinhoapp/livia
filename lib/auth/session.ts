@@ -22,7 +22,7 @@ const PILOT_COUNTER_PATH = ["_system", "pilot-access-v1"] as const;
 export type PanelAccessResolution =
   | { status: "unauthenticated" }
   | { status: "blocked" }
-  | { status: "allowed"; establishmentId: string; legacy: boolean };
+  | { status: "allowed"; establishmentId: string; legacy: boolean; uid: string };
 
 // Esta é a fronteira central de autorização do painel. Os handlers privados
 // continuam chamando resolveEstablishmentId, que só expõe o tenant após esta
@@ -95,7 +95,7 @@ export async function resolvePanelAccess(cookie: string | undefined): Promise<Pa
     });
 
     if (!admitted) return { status: "blocked" };
-    return { status: "allowed", establishmentId: admitted, legacy: false };
+    return { status: "allowed", establishmentId: admitted, legacy: false, uid };
   }
 
   const tenant = snap.docs[0]!.data() as Establishment;
@@ -109,10 +109,18 @@ export async function resolvePanelAccess(cookie: string | undefined): Promise<Pa
     status: "allowed",
     establishmentId: snap.docs[0]!.id,
     legacy: tenant.panelAccess === undefined,
+    uid,
   };
 }
 
 export async function resolveEstablishmentId(req: NextRequest): Promise<string | null> {
   const access = await resolvePanelAccess(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   return access.status === "allowed" ? access.establishmentId : null;
+}
+
+// Mesma fronteira de resolveEstablishmentId, com a identidade de quem agiu —
+// usada para registrar quem assumiu/devolveu um atendimento.
+export async function resolvePanelActor(req: NextRequest): Promise<{ establishmentId: string; uid: string } | null> {
+  const access = await resolvePanelAccess(req.cookies.get(SESSION_COOKIE_NAME)?.value);
+  return access.status === "allowed" ? { establishmentId: access.establishmentId, uid: access.uid } : null;
 }

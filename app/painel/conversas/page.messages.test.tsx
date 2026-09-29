@@ -56,6 +56,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function serveStatus(status: Conversation["status"]) {
+  const base = fetchMock.getMockImplementation() as (url: string, init?: RequestInit) => Promise<Response>;
+  fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+    String(url).startsWith("/api/conversations/") && !init?.method ? jsonResponse(messagesEndpointBody(status)) : base(url, init));
+}
+
 function getMessagesCalls() {
   return fetchMock.mock.calls.filter(
     ([url, init]) => String(url).startsWith("/api/conversations/") && (init === undefined || init.method === undefined),
@@ -118,16 +124,46 @@ describe("C — troca de conversa carrega imediatamente o histórico correto", (
 });
 
 describe("D — ação local (assumir/devolver) atualiza sem esperar o polling externo", () => {
-  it("clicar em 'Assumir conversa' rebusca as mensagens imediatamente, sem lastMessageAt mudar", async () => {
+  it("clicar em 'Assumir atendimento' rebusca as mensagens imediatamente, sem lastMessageAt mudar", async () => {
     const conv = conversation({ status: "bot" });
     render(<ConversationDetail conversation={conv} onBack={() => {}} onStatusChanged={() => {}} />);
     await waitFor(() => expect(getMessagesCalls()).toHaveLength(1));
 
-    fireEvent.click(screen.getByText("Assumir conversa"));
+    fireEvent.click(screen.getByText("Assumir atendimento"));
 
     await waitFor(() => expect(getMessagesCalls()).toHaveLength(2));
     // A ação em si (PATCH) também deve ter acontecido.
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true);
+  });
+
+  it("'Devolver para Lívia' pede confirmação; cancelar não altera nada", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    serveStatus("human");
+    render(<ConversationDetail conversation={conversation({ status: "human" })} onBack={() => {}} onStatusChanged={() => {}} />);
+    await waitFor(() => expect(getMessagesCalls()).toHaveLength(1));
+
+    fireEvent.click(screen.getByText("Devolver para Lívia"));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+
+    confirm.mockReturnValueOnce(true);
+    fireEvent.click(screen.getByText("Devolver para Lívia"));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+  });
+
+  it("com o atendimento assumido, a resposta do atendente vai pelo endpoint do painel", async () => {
+    serveStatus("human");
+    render(<ConversationDetail conversation={conversation({ status: "human" })} onBack={() => {}} onStatusChanged={() => {}} />);
+    await waitFor(() => expect(getMessagesCalls()).toHaveLength(1));
+    expect(screen.getByText(/continuam com você até você tocar em/)).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("Responder pelo WhatsApp do estabelecimento"), { target: { value: "Oi! Já vejo seu pedido." } });
+    fireEvent.click(screen.getByText("Enviar"));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/conversations/conv-1/messages" && init?.method === "POST")).toBe(true));
+    const [, init] = fetchMock.mock.calls.find(([url, i]) => url === "/api/conversations/conv-1/messages" && i?.method === "POST")!;
+    expect(JSON.parse(String(init.body))).toMatchObject({ text: "Oi! Já vejo seu pedido.", clientMessageId: expect.any(String) });
   });
 });
 

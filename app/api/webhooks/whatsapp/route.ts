@@ -87,6 +87,7 @@ import {
 import { acceptsPracticalDemoOffer, carriesAuditResult, enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
 import { isLiviaCommercialChannel } from "@/lib/prospectingChannel";
 import { textRequestsVoice } from "@/lib/ai/voiceRequest";
+import { shouldNotifyHumanHandoff } from "@/lib/humanHandoff/policy";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
 import { summarizeConversation } from "@/lib/ai/summarize";
 import { SERVICE_PAUSED_REPLY, warnedServicePausedRecently } from "@/lib/servicePaused";
@@ -96,7 +97,7 @@ import { readConfirmation } from "@/lib/ai/confirmation";
 import { acceptsHumanOffer, offeredHuman, readHumanIntent } from "@/lib/ai/humanRequest";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { declaresAutomatedRecipient, isClearClosingReply, isClearHumanDemand, isPureSocialFarewell } from "@/lib/ai/conversationClosure";
-import { classifyWebhookChange } from "@/lib/whatsapp/coexistenceWebhook";
+import { classifyWebhookChange, parseMessageEchoes } from "@/lib/whatsapp/coexistenceWebhook";
 import { getWhatsappTestCredentials } from "@/lib/whatsapp/testCredentials";
 import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inboundMessage";
 import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription";
@@ -105,6 +106,8 @@ import { isLegacyBusinessInquiry, LEGACY_DEMO_CHANNEL_REPLY } from "@/lib/demoSa
 import { authorizeDemo, grantAuditDemoAccess, type DemoAuthorization } from "@/lib/demoAuthorization";
 import { serviceBlockedByBilling } from "@/lib/billing/serviceEntitlement";
 import type {
+  Conversation,
+  ConversationContext,
   Establishment,
   EstablishmentWhatsapp,
   ConversationTask,
@@ -379,7 +382,18 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const kind = classifyWebhookChange(change);
-      if (kind === "message_echo" || kind === "history" || kind === "app_state_sync") {
+      if (kind === "message_echo") {
+        // Resposta do atendente pelo app WhatsApp Business: só histórico.
+        try {
+          await persistAgentEchoes(change.value);
+        } catch (err) {
+          console.error("[livia webhook] agent echo persistence failed", {
+            errorType: err instanceof Error ? err.name : "unknown",
+          });
+        }
+        continue;
+      }
+      if (kind === "history" || kind === "app_state_sync") {
         logStage("coexistence sync event ignored", { kind });
         continue;
       }
@@ -427,6 +441,22 @@ async function handleWebhook(body: WebhookBody): Promise<void> {
       });
     }
   }
+}
+
+// Ecos nunca criam conversa, nunca acionam IA e nunca mudam status ou posse:
+// só completam o histórico que a Lívia lê quando o atendimento volta para ela.
+// Idempotente pelo wamid (id do documento da mensagem).
+async function persistAgentEchoes(value: unknown): Promise<void> {
+  const echoes = parseMessageEchoes(value);
+  if (echoes.length === 0) return;
+  const est = await resolveInboundEstablishment(value as WebhookValue);
+  if (!est) return;
+  for (const echo of echoes) {
+    const conversationId = normalizePhone(echo.to);
+    if (!(await getConversation(est.id, conversationId))) continue;
+    await appendMessage(est.id, conversationId, "agent", echo.text, echo.id);
+  }
+  logStage("agent echoes persisted", { estId: est.id, count: echoes.length });
 }
 
 async function resolveInboundEstablishment(value: WebhookValue): Promise<Establishment | null> {
@@ -973,7 +1003,8 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     const declined = humanIntent === "declines" || confirmation === "no";
 
     if (accepted) {
-      const transitioned = await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff");
+      const handoffStartedAt = Date.now();
+      const transitioned = await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff", { handoffStartedAt });
       if (!transitioned) return;
       await setAwaitingHumanOfferConfirmation(est.id, conversation.id, false);
       // Handoff CONFIRMADO: só aqui (ou num pedido explícito) a sessão de
@@ -994,6 +1025,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
         estId: est.id,
         conversationId: conversation.id,
       });
+      await notifyResponsible("confirmed", est, { ...conversation, status: "handoff", handoffStartedAt }, contextResolution.context);
       return;
     }
 
@@ -1147,6 +1179,9 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       type: "awaiting_human",
       waitingFor: "responder mensagem nova do cliente",
     });
+    // A mensagem continua com o humano (status intocado); o responsável só é
+    // lembrado por push, com intervalo mínimo — nunca por template repetido.
+    await notifyResponsible("activity", est, conversation, contextResolution.context);
     return;
   }
 
@@ -1480,12 +1515,11 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
 
   if (awaitingHumanOfferConfirmation) {
     await setAwaitingHumanOfferConfirmation(est.id, conversation.id, true, automationFence);
-  } else if (handoff) {
-    // "handoff" != "human": a Livia identificou que precisa de atendente e
-    // PAROU de responder sozinha, mas ninguém assumiu ainda — só um clique
-    // em "Assumir conversa" em /painel/conversas vira "human" de verdade.
-    // TODO: notificar o dono/atendente (push, e-mail ou painel).
   }
+  // "handoff" != "human": a Livia identificou que precisa de atendente e
+  // PAROU de responder sozinha, mas ninguém assumiu ainda — só "Assumir
+  // atendimento" no painel vira "human". O aviso ao responsável sai depois
+  // da transição (fim desta função), só para quem a venceu.
 
   // Passo 9: registra/atualiza/conclui a pendência desta conversa,
   // integrada ao Intent (Passo 3) e ao ConversationTask (Passo 4) já
@@ -1513,7 +1547,34 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     if (summary) await setConversationSummary(est.id, conversation.id, summary, automationFence);
   }
   if (handoff && !awaitingHumanOfferConfirmation) {
-    await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff");
+    const handoffStartedAt = Date.now();
+    const transitioned = await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff", { handoffStartedAt });
+    if (transitioned) {
+      await notifyResponsible("confirmed", est, { ...conversation, status: "handoff", handoffStartedAt }, contextResolution.context);
+    }
+  }
+}
+
+// Aviso ao responsável: efeito colateral depois da mudança de estado. Nenhuma
+// falha aqui (Meta, FCM, configuração) propaga — o handoff já está gravado.
+async function notifyResponsible(
+  kind: "confirmed" | "activity",
+  establishment: Establishment,
+  conversation: Conversation,
+  context: ConversationContext | undefined,
+): Promise<void> {
+  if (!shouldNotifyHumanHandoff(establishment, context)) return;
+  try {
+    const notifications = await import("@/lib/humanHandoff/notifications");
+    if (kind === "confirmed") await notifications.notifyHandoffConfirmed(establishment, conversation);
+    else await notifications.notifyHandoffActivity(establishment, conversation);
+  } catch (err) {
+    logStage("human handoff notification failed", {
+      estId: establishment.id,
+      conversationId: conversation.id,
+      kind,
+      errorType: err instanceof Error ? err.name : "unknown",
+    });
   }
 }
 

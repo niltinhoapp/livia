@@ -1388,6 +1388,13 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
 // a demonstração não termina num beco sem saída. Só em demo autorizada.
 const DEMO_COMMERCIAL_CONTINUATION = " Foi assim que eu cuidaria disso com os clientes da sua empresa. Quer ver outra parte funcionando ou prefere saber como começar?";
 
+// Respostas do atendente humano (painel ou app WhatsApp Business) ficam no
+// histórico real da conversa. Ao reassumir, a Lívia precisa saber que não
+// foram dela, para continuar do que a equipe combinou.
+const HUMAN_AGENT_PREFIX = "[Atendente humano da equipe]";
+const HUMAN_AGENT_HISTORY_NOTE =
+  `=== ATENDIMENTO HUMANO NESTA CONVERSA ===\nAs mensagens que começam com "${HUMAN_AGENT_PREFIX}" foram escritas por uma pessoa da equipe, não por você. Considere o que ela respondeu ou combinou, não peça de novo o que o cliente já informou e não contradiga a equipe. Nunca escreva esse marcador nas suas respostas.`;
+
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
   const conversationContext = input.conversationContext ?? {
@@ -1614,11 +1621,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         bookingOutcomeSection(bookingOutcome) +
         cancelOutcomeSection(cancelOutcome) +
         (prospectMenu ? `\n\n=== CARDÁPIO REAL CONSULTADO AGORA ===\n${JSON.stringify(prospectMenu)}\nApresente apenas esses dados; não diga que não há cardápio sem esta consulta.` : "") +
-        (prospectCatalogPrice ? `\n\n=== PREÇO CONSULTADO NO CATÁLOGO DEMO OFICIAL ===\n${JSON.stringify(prospectCatalogPrice)}\nInforme somente o preço devolvido pela tool; não confunda com a mensalidade da Lívia.` : ""),
+        (prospectCatalogPrice ? `\n\n=== PREÇO CONSULTADO NO CATÁLOGO DEMO OFICIAL ===\n${JSON.stringify(prospectCatalogPrice)}\nInforme somente o preço devolvido pela tool; não confunda com a mensalidade da Lívia.` : "") +
+        (history.some((m) => m.role === "agent") ? `\n\n${HUMAN_AGENT_HISTORY_NOTE}` : ""),
     },
     ...history.map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
-      content: contentForAI(m),
+      content: m.role === "agent" ? `${HUMAN_AGENT_PREFIX} ${contentForAI(m)}` : contentForAI(m),
     })),
   ];
 
@@ -1826,7 +1834,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       continue; // volta ao modelo com os resultados
     }
 
-    let reply = msg.content?.trim() ?? "";
+    let reply = (msg.content ?? "").replaceAll(HUMAN_AGENT_PREFIX, "").trim();
     // Transferir alguém que ACABOU de dizer que não quer é o erro mais
     // irritante possível — o cliente escreve "não" e some do atendimento.
     // A recusa é lida por código (lib/ai/humanRequest.ts) e vale contra

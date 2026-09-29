@@ -254,6 +254,9 @@ export default function OnboardingPage() {
           <Button className="w-full" onClick={() => router.push("/painel/conhecimento")}>
             Ensinar a Livia agora
           </Button>
+          <Button variant="secondary" className="mt-3 w-full" onClick={() => router.push("/painel/configuracoes?aba=humano")}>
+            Configurar avisos de atendimento humano
+          </Button>
           <Button variant="secondary" className="mt-3 w-full" onClick={() => router.push("/painel")}>
             Ir para o painel
           </Button>
