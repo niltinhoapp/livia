@@ -65,7 +65,9 @@ export interface ToolContext {
 }
 
 const isBookingActive = (ctx: ToolContext) => ctx.est.bot.bookingEnabled && !ctx.suppressBooking;
-const isAuthorizedDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
+// A autorização é a prova da demo (prospecção ou Auditoria); ela só nasce no
+// canal demo oficial. Não depende de haver ProspectingSession no contexto.
+const isAuthorizedDemo = (ctx: ToolContext) => ctx.demoAuthorization?.authorized === true;
 const matchingMode = (a: Appointment, ctx: ToolContext) => {
   const authorization = ctx.demoAuthorization;
   return authorization?.authorized === true
@@ -668,7 +670,7 @@ const orderConversationId = (ctx: ToolContext) => normalizePhone(ctx.contactPhon
 const automationFenceArg = (ctx: ToolContext): [] | [AutomationFence] =>
   ctx.automationFence ? [ctx.automationFence] : [];
 const addOrderDemoArg = (ctx: ToolContext): [AutomationFence | undefined, Extract<DemoAuthorization, { authorized: true }> | undefined] =>
-  [ctx.automationFence, ctx.prospectingContext && ctx.demoAuthorization?.authorized ? ctx.demoAuthorization : undefined];
+  [ctx.automationFence, ctx.demoAuthorization?.authorized ? ctx.demoAuthorization : undefined];
 // __operationId é metadado injetado pelo loop de tool calls em brain.ts.
 // Não integra o schema público e, portanto, não pode ser escolhido pelo modelo.
 const operationIdFor = (args: Record<string, unknown>) =>
@@ -767,7 +769,6 @@ const DEMO_ORDER_MUTATION_TOOLS = new Set([
   "add_order_item", "update_order_item", "remove_order_item", "set_order_fulfillment",
   "set_order_address", "set_order_payment", "prepare_order_confirmation", "confirm_order",
 ]);
-const hasAuthorizedProspectDemo = (ctx: ToolContext) => Boolean(ctx.prospectingContext && ctx.demoAuthorization?.authorized);
 
 const TOOL_CAPABILITY: Readonly<Record<string, ConversationCapability>> = {
   get_business_hours: "agenda_read",
@@ -819,7 +820,7 @@ function toolEnabled(tool: ToolDefinition, ctx: ToolContext): boolean {
   // Falha fechada: tool nova sem classificação nunca chega ao modelo nem
   // executa por chamada forjada.
   if (!required || !effectiveCapabilities(ctx)[required]) return false;
-  return tool.enabled(ctx) || (hasAuthorizedProspectDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(tool.name));
+  return tool.enabled(ctx) || (isAuthorizedDemo(ctx) && DEMO_ORDER_MUTATION_TOOLS.has(tool.name));
 }
 
 export function toolsFor(ctx: ToolContext): OpenAI.Chat.ChatCompletionTool[] {

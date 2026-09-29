@@ -33,11 +33,6 @@ export function isActiveProspectingSession(session: ProspectingSession | null | 
   return Boolean(session && session.expiresAt > now && !TERMINAL_PROSPECTING_STATUSES.has(session.status));
 }
 
-// Fase de simulação da prospecção: a Lívia ainda não se revelou ao prospect.
-export function isPreRevealProspecting(status: ProspectingSession["status"] | undefined): boolean {
-  return status === "PREPARED" || status === "WAITING_REPLY" || status === "LIVIA_ACTIVE";
-}
-
 export interface ConversationContextResolution {
   context: ConversationContext;
   changed: boolean;

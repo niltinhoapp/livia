@@ -37,6 +37,7 @@ import {
   SEGMENT_COMMERCIAL_GUIDANCE,
 } from "@/lib/ai/commercialContext";
 import { COMMERCIAL_MENU_IMPORT_FACT, commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
+import { AUDIT_CALCULATOR_MODEL, explainAuditEstimate } from "@/lib/commercial/auditCalculator";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -224,24 +225,29 @@ function prospectingCommercialGuidance(
   ];
 }
 
-// A fórmula da Calculadora vive fora deste repositório. O que dá para afirmar
-// sem inventar é a aritmética dos próprios números recebidos: quantas vendas
-// do ticket informado a estimativa representa e que fração dos contatos de um
-// mês isso é. Calculado aqui, não pelo modelo.
+// Explicação do resultado pelo modelo REAL da Calculadora
+// (lib/commercial/auditCalculator.ts), calculada aqui e não pelo modelo de
+// linguagem. Se os números não fecharem com esse modelo, nada é decomposto.
 function auditEstimateReading(audit: NonNullable<ConversationContext["audit"]>): string[] {
-  const { leadsPerDay, averageTicketCents, estimatedOpportunityCentsPerMonth: estimate } = audit;
-  if (estimate === undefined) return [];
-  if (estimate === 0) {
-    return ["A Calculadora apresentou estimativa de R$ 0 para o tempo de resposta informado: ela não projetou perda. Não invente perda nem valor; mostre como a Lívia ajuda a manter esse padrão."];
+  if (audit.estimatedOpportunityCentsPerMonth === undefined) return [];
+  const breakdown = explainAuditEstimate(audit);
+  if (!breakdown) {
+    return ["A Calculadora estima o impacto de oportunidades não atendidas rapidamente a partir de leads por dia, ticket médio e tempo de resposta. Os números recebidos não fecham com o modelo conhecido dela: explique só nesses termos, sem citar percentual, premissa ou conta."];
   }
-  if (!leadsPerDay || !averageTicketCents) return [];
   const number = (value: number) => value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
-  const sales = estimate / averageTicketCents;
-  const monthlyLeads = leadsPerDay * 30;
-  const share = (sales / monthlyLeads) * 100;
+  const percent = (share: number) => `${number(share * 100)}%`;
+  const days = AUDIT_CALCULATOR_MODEL.daysPerMonth;
+  const conversion = percent(AUDIT_CALCULATOR_MODEL.idealConversionRate);
+  const potential = formatCommercialPrice(Math.round(breakdown.potentialRevenueCents));
   return [
-    `Leitura aritmética dos números recebidos (a fórmula interna da Calculadora não está disponível aqui): ${formatCommercialPrice(estimate)} ÷ ticket de ${formatCommercialPrice(averageTicketCents)} ≈ ${number(sales)} vendas por mês; ${leadsPerDay} leads por dia × 30 dias = ${number(monthlyLeads)} contatos por mês; a estimativa equivale a cerca de ${number(share)}% desses contatos.`,
-    "Para explicar o resultado, use só essa leitura: é o potencial mensal que a Calculadora associa ao tempo de resposta informado. Não cite outro percentual, regra ou premissa que não esteja aqui.",
+    "Como a Calculadora chegou ao resultado (modelo oficial dela; não use outro):",
+    `1) Contatos no mês: ${number(breakdown.leadsPerDay)} leads por dia × ${days} dias = ${number(breakdown.monthlyLeads)} contatos.`,
+    `2) Premissa da Calculadora: num atendimento ideal, ${conversion} desses contatos viram venda = ${number(breakdown.potentialSales)} vendas × ticket de ${formatCommercialPrice(breakdown.averageTicketCents)} = ${potential} de potencial por mês.`,
+    breakdown.lostShare > 0
+      ? `3) Para o tempo de resposta "${breakdown.responseTimeLabel}", a Calculadora considera que ${percent(breakdown.retainedShare)} desse potencial é aproveitado e ${percent(breakdown.lostShare)} se perde: ${percent(breakdown.lostShare)} × ${potential} = ${formatCommercialPrice(breakdown.estimateCents)} por mês (cerca de ${number(breakdown.lostSales)} vendas do ticket informado).`
+      : `3) Para "${breakdown.responseTimeLabel}", a Calculadora considera 100% do potencial aproveitado — por isso a estimativa é ${formatCommercialPrice(0)}. Não invente perda.`,
+    "O fator que define o resultado é a faixa de tempo de resposta: quanto mais demorada, menor a parte do potencial que a Calculadora considera aproveitada.",
+    `Fatos informados pela pessoa: leads por dia, ticket médio e tempo de resposta. Premissas da Calculadora: mês de ${days} dias, ${conversion} de conversão num atendimento ideal e a parte aproveitada por faixa de tempo. Deixe essa diferença clara.`,
   ];
 }
 
@@ -348,8 +354,9 @@ function buildSystemPrompt(
   if (options?.conversationContext?.purpose === "audit") {
     rules.push(
       "--- CONTEXTO AUDIT PERSISTENTE ---",
-      "Esta conversa veio da Auditoria/Calculadora e não é lead frio. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil.",
-      "Fluxo: explique o diagnóstico recebido, contextualize sem transformar estimativa em fato, descubra o segmento somente se ainda não estiver conhecido, conecte uma capacidade relevante e ofereça um próximo passo.",
+      "Esta conversa veio da Auditoria/Calculadora e não é lead frio: a pessoa acabou de descobrir uma possível dor no atendimento e é uma potencial cliente da Lívia. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil como se ela fosse consumidora.",
+      "Você é uma vendedora consultiva da própria Lívia. Sequência: (1) reconheça que ela fez a Auditoria; (2) explique o resultado pela conta da Calculadora abaixo, separando o que ela informou das premissas da Calculadora e deixando claro que é estimativa, não perda comprovada; (3) explique de forma simples que, com esse volume e esse tempo de resposta, parte das oportunidades pode esfriar antes de o atendimento começar; (4) conecte essa dor a UMA capacidade real da Lívia (responder na hora, entender o que o cliente precisa e seguir a conversa mesmo com a equipe ocupada); (5) ofereça mostrar isso funcionando aqui mesmo. Descubra o segmento se ainda não souber. Uma pergunta principal por vez.",
+      "Sem urgência falsa, sem garantia de faturamento ou de recuperar a estimativa, sem dizer que todo contato perdido seria venda e sem criticar a equipe da pessoa.",
       ...(options.auditNeedsDiagnosis
         ? ["NA RESPOSTA ATUAL, comece pelo resultado/diagnóstico recebido antes de perguntar qualquer coisa."]
         : []),
@@ -1370,8 +1377,16 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
   } else {
     reply = "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
   }
-  return reply + (demo ? " Este agendamento foi registrado no sistema apenas para demonstração e não representa uma reserva em estabelecimento real." : "") + blockedAgendaMutationContinuation(mutation, blocked);
+  const blockedNote = blockedAgendaMutationContinuation(mutation, blocked);
+  return reply
+    + (demo ? " Este agendamento foi registrado no sistema apenas para demonstração e não representa uma reserva em estabelecimento real." : "")
+    + blockedNote
+    + (demo && !blockedNote ? DEMO_COMMERCIAL_CONTINUATION : "");
 }
+
+// Depois de uma ação demonstrativa concluída, a conversa volta ao comercial —
+// a demonstração não termina num beco sem saída. Só em demo autorizada.
+const DEMO_COMMERCIAL_CONTINUATION = " Foi assim que eu cuidaria disso com os clientes da sua empresa. Quer ver outra parte funcionando ou prefere saber como começar?";
 
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
@@ -1795,7 +1810,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       }
       if (orderConfirmedThisTurn && input.demoAuthorization?.authorized) {
         return {
-          reply: "Prontinho! Pedido registrado no sistema. Foi exatamente assim que eu receberia e organizaria um pedido no seu estabelecimento. Só lembrando: este pedido é demonstrativo, então não será preparado nem entregue.",
+          reply: "Prontinho! Pedido registrado no sistema. Foi exatamente assim que eu receberia e organizaria um pedido no seu estabelecimento. Só lembrando: este pedido é demonstrativo, então não será preparado nem entregue. Quer ver outra parte funcionando ou prefere saber como começar?",
           handoff: false,
           booked,
           rescheduled,

@@ -82,7 +82,7 @@ async function run(context: ConversationContext, history: Message[], opts: { dem
 
 const customer = (text: string, at = 1_000): Message => ({ id: `c-${at}`, role: "customer", text, at });
 const bot = (text: string, at: number): Message => ({ id: `b-${at}`, role: "bot", text, at });
-const systemPrompt = () => String(calls[0]?.messages.find((m) => m.role === "system")?.content ?? "");
+const systemPrompt = () => String(calls[0]?.messages.find((m) => m.role === "system")?.content ?? "").replace(/ /g, " ");
 const correctionMessages = () => calls.flatMap((c) => c.messages.filter((m, i) => m.role === "system" && i > 0).map((m) => String(m.content)));
 
 beforeEach(() => {
@@ -121,32 +121,57 @@ describe("A — Auditoria/Calculadora: reconhecimento e explicação", () => {
     expect(correctionMessages()).toEqual([]);
   });
 
+  // Valores produzidos pela Calculadora real (calculadora-livia/index.html:249-258):
+  // potencial = leads × 30 × 20% × ticket; estimativa = potencial × (1 − aproveitado).
   it.each([
-    // leads, ticket, tempo, estimativa exibida, vendas, contatos/mês, %
-    [78, "450", "Até 30 minutos", "52.650", "117", "2.340", "5"],
-    [10, "199", "Até 30 minutos", "2.985", "15", "300", "5"],
-    [50, "1.200", "Até 1 hora", "180.000", "150", "1.500", "10"],
-    [200, "80", "Mais de 2 horas", "120.000", "1.500", "6.000", "25"],
-    [8, "199", "Até 30 minutos", "2.388", "12", "240", "5"],
-  ])("A3/A8: %i leads, ticket R$ %s, %s → leitura aritmética dos próprios números", async (leads, ticket, time, estimate, sales, monthly, share) => {
-    const { context } = contextFor(calculatorMessage(leads, ticket, time, estimate));
+    // leads, ticket, tempo, estimativa exibida, vendas potenciais, potencial, % perdido, vendas perdidas
+    [78, "450", "Até 30 minutos", "52.650", "468", "R$ 210.600", "25%", "117"],
+    [10, "199", "Até 30 minutos", "2.985", "60", "R$ 11.940", "25%", "15"],
+    [50, "1.200", "Cerca de 1 hora", "180.000", "300", "R$ 360.000", "50%", "150"],
+    [200, "80", "Mais de 2 horas", "72.000", "1.200", "R$ 96.000", "75%", "900"],
+    [12, "300", "No dia seguinte", "19.440", "72", "R$ 21.600", "90%", "64,8"],
+  ])("A2/A8: %i leads, ticket R$ %s, %s → explicação pelo modelo real da Calculadora", async (leads, ticket, time, estimate, potentialSales, potential, lost, lostSales) => {
+    const text = calculatorMessage(leads, ticket, time, estimate);
+    const { context } = contextFor(text);
     script = [{ content: "Explico já." }];
-    await run(context, [customer(calculatorMessage(leads, ticket, time, estimate))]);
+    await run(context, [customer(text)]);
     const prompt = systemPrompt();
     expect(prompt).toContain(`Leads por dia informados: ${leads}.`);
-    expect(prompt).toContain(`≈ ${sales} vendas por mês`);
-    expect(prompt).toContain(`= ${monthly} contatos por mês`);
-    expect(prompt).toContain(`cerca de ${share}% desses contatos`);
-    expect(prompt).toContain("Não cite outro percentual, regra ou premissa que não esteja aqui.");
+    expect(prompt).toContain(`${leads} leads por dia × 30 dias`);
+    expect(prompt).toContain(`20% desses contatos viram venda = ${potentialSales} vendas`);
+    expect(prompt).toContain(`= ${potential} de potencial por mês`);
+    expect(prompt).toContain(`e ${lost} se perde`);
+    expect(prompt).toContain(`= R$ ${estimate} por mês (cerca de ${lostSales} vendas do ticket informado)`);
+    expect(prompt).toContain("Fatos informados pela pessoa: leads por dia, ticket médio e tempo de resposta.");
   });
 
-  it("A8: estimativa R$ 0 não vira perda inventada", async () => {
+  it("A8: estimativa R$ 0 ('Até 5 minutos') é explicada como 100% aproveitado, sem perda inventada", async () => {
     const text = calculatorMessage(85, "1.560", "Até 5 minutos", "0");
     const { context } = contextFor(text);
     script = [{ content: "Com esse tempo de resposta a Calculadora não projetou perda." }];
     await run(context, [customer(text)]);
-    expect(systemPrompt()).toContain("estimativa de R$ 0");
-    expect(systemPrompt()).not.toContain("vendas por mês");
+    expect(systemPrompt()).toContain("considera 100% do potencial aproveitado — por isso a estimativa é R$ 0");
+    expect(systemPrompt()).not.toContain("se perde:");
+  });
+
+  it("A2: números que não fecham com o modelo real não recebem decomposição inventada", async () => {
+    const text = calculatorMessage(78, "450", "Até 30 minutos", "99.999");
+    const { context } = contextFor(text);
+    script = [{ content: "Explico já." }];
+    await run(context, [customer(text)]);
+    expect(systemPrompt()).toContain("não fecham com o modelo conhecido");
+    expect(systemPrompt()).not.toContain("20% desses contatos");
+  });
+
+  it("A6: o roteiro consultivo pede explicar, conectar a dor e oferecer demonstração", async () => {
+    const { context } = contextFor(TRANSCRIPT);
+    script = [{ content: "Explico já." }];
+    await run(context, [customer(TRANSCRIPT)]);
+    const prompt = systemPrompt();
+    expect(prompt).toContain("vendedora consultiva da própria Lívia");
+    expect(prompt).toContain("ofereça mostrar isso funcionando aqui mesmo");
+    expect(prompt).toContain("sem criticar a equipe da pessoa");
+    expect(prompt).not.toContain("demo_execution está autorizada");
   });
 
   it("A4: 'o que significa esse resultado?' no turno seguinte mantém o diagnóstico e não transfere", async () => {
@@ -155,10 +180,10 @@ describe("A — Auditoria/Calculadora: reconhecimento e explicação", () => {
     const { context } = contextFor(followUp, entry.context, 2_000);
     expect(context.enteredAt).toBe(entry.context.enteredAt);
     const history = [customer(TRANSCRIPT, 1_000), bot("Esse valor é uma simulação de potencial. Qual é o seu segmento?", 1_500), customer(followUp, 2_000)];
-    script = [{ content: "Significa que ~5% dos seus contatos do mês podem esfriar enquanto a equipe está ocupada." }];
+    script = [{ content: "Significa que, com resposta em até 30 minutos, a Calculadora considera que 25% do potencial pode esfriar enquanto a equipe está ocupada." }];
     const result = await run(context, history);
     expect(result.handoff).toBe(false);
-    expect(systemPrompt()).toContain("≈ 117 vendas por mês");
+    expect(systemPrompt()).toContain("R$ 52.650 por mês (cerca de 117 vendas do ticket informado)");
     expect(systemPrompt()).not.toContain("NA RESPOSTA ATUAL, comece pelo resultado");
   });
 

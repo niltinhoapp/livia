@@ -82,10 +82,9 @@ import {
   capabilitiesForConversation,
   hasCapability,
   historyForConversationContext,
-  isPreRevealProspecting,
   resolveConversationContext,
 } from "@/lib/ai/conversationPolicy";
-import { carriesAuditResult, enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
+import { acceptsPracticalDemoOffer, carriesAuditResult, enrichCommercialContext, requestsDemoNow } from "@/lib/ai/commercialContext";
 import { isLiviaCommercialChannel } from "@/lib/prospectingChannel";
 import { textRequestsVoice } from "@/lib/ai/voiceRequest";
 import { derivePendingTask } from "@/lib/ai/pendingTask";
@@ -103,7 +102,7 @@ import { parseInboundMessage, type MetaInboundMessage } from "@/lib/whatsapp/inb
 import { transcribeAudio, AudioTranscriptionError } from "@/lib/ai/transcription";
 import { synthesizeSpeech, SpeechError } from "@/lib/ai/speech";
 import { isLegacyBusinessInquiry, LEGACY_DEMO_CHANNEL_REPLY } from "@/lib/demoSafety";
-import { authorizeDemo, type DemoAuthorization } from "@/lib/demoAuthorization";
+import { authorizeDemo, grantAuditDemoAccess, type DemoAuthorization } from "@/lib/demoAuthorization";
 import { serviceBlockedByBilling } from "@/lib/billing/serviceEntitlement";
 import type {
   Establishment,
@@ -860,14 +859,16 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     freshAuditEntry: carriesAuditResult(customerText),
     now: persistedCustomer.at,
   });
+  const lastBotText = [...history].reverse().find((message) => message.role === "bot")?.text;
   const enrichedContext = enrichCommercialContext({
     context: contextResolution.context,
     text: customerText,
     now: persistedCustomer.at,
     // A própria mensagem de entrada deve receber primeiro a explicação do
     // diagnóstico. Qualificação só vale em turno posterior e com intenção
-    // comercial inequívoca.
+    // comercial inequívoca (ou o aceite da demonstração que a Lívia ofereceu).
     allowAuditQualification: !contextResolution.enteredAudit,
+    lastBotText,
   });
   if (enrichedContext.changed) {
     contextResolution = {
@@ -876,22 +877,31 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       changed: true,
     };
   }
-  // Quem chega pela Auditoria já sabe que fala com a Lívia. Uma
-  // ProspectingSession antiga do mesmo telefone não pode sequestrar essa
-  // jornada: durante o diagnóstico (Audit) nenhuma regra de prospecção vale, e
-  // uma sessão ainda pré-revelação (simulação de cliente) nunca vale numa
-  // jornada que nasceu na Calculadora. Sessão revelada continua disponível
-  // depois da qualificação — é ela que autoriza a demo oficial (F5.2).
-  if (
-    contextResolution.context.source === "audit_calculator"
-    && (contextResolution.context.purpose === "audit" || isPreRevealProspecting(prospectingContext?.status))
-  ) {
+  const priorBotOfferedPracticalDemo = history.some((message) => message.role === "bot" && /\b(?:mostrar|demonstra(?:cao|ção)).{0,50}\bna\s+pr[áa]tica\b/i.test(message.text));
+  const auditJourney = contextResolution.context.source === "audit_calculator";
+  // A jornada da Calculadora é uma porta própria: nenhuma ProspectingSession
+  // do mesmo telefone vale nela (nem simulação, nem revelação, nem o roteiro
+  // do negócio prospectado). A demo dessa jornada vem do seu próprio acesso.
+  if (auditJourney) {
     prospectingContext = undefined;
     prospectingSession = null;
+    const withDemoAccess = grantAuditDemoAccess({
+      context: contextResolution.context,
+      establishment: est,
+      internalDemoProspectingEstablishmentId: process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID,
+      phone: normalizePhone(contactPhone),
+      demoRequested: enrichedContext.auditQualified
+        || requestsDemoNow(customerText, priorBotOfferedPracticalDemo)
+        || acceptsPracticalDemoOffer(customerText, lastBotText),
+      now: persistedCustomer.at,
+    });
+    if (withDemoAccess !== contextResolution.context) {
+      contextResolution = { ...contextResolution, context: withDemoAccess, changed: true };
+    }
   }
-  const priorBotOfferedPracticalDemo = history.some((message) => message.role === "bot" && /\b(?:mostrar|demonstra(?:cao|ção)).{0,50}\bna\s+pr[áa]tica\b/i.test(message.text));
   if (
-    contextResolution.context.purpose === "commercial"
+    !auditJourney
+    && contextResolution.context.purpose === "commercial"
     && est.id === process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID
     && est.demoChannel?.enabled === true
     && requestsDemoNow(customerText, priorBotOfferedPracticalDemo)
@@ -1263,6 +1273,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     session: prospectingSession,
     phone: normalizePhone(contactPhone),
     leadId: prospectingContext?.leadId ?? "",
+    context: contextResolution.context,
   });
   const policyCapabilities = capabilitiesForConversation({
     context: contextResolution.context,
