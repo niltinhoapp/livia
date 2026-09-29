@@ -243,3 +243,21 @@ describe("D — robustez", () => {
     expect(isSilentAcknowledgement("ta bom", general, noTask, resolvedHistory)).toBe(true);
   });
 });
+
+describe("E — o bot pediu um OK (revelação da prospecção)", () => {
+  const revelacao: Message[] = [{
+    id: "b-reveal",
+    role: "bot",
+    text: "Eu sou a Lívia, assistente virtual com IA da ConectWeb.\n\nSe fizer sentido, me dê um OK e eu te mostro como funciona.\n\nE se estiver ocupado(a), pode me mandar um áudio. Eu também posso te responder por áudio.",
+    at: 1,
+  }];
+
+  it.each(["OK", "ok!", "Beleza", "show", "Combinado"])("B2: '%s' é a resposta pedida, não reconhecimento passivo", (text) => {
+    expect(isSilentAcknowledgement(text, general, noTask, revelacao)).toBe(false);
+  });
+
+  it("encerramento comum ('qualquer coisa, é só chamar') continua silenciando o ok", () => {
+    const encerramento: Message[] = [{ id: "b-end", role: "bot", text: "Prontinho! Qualquer coisa, é só chamar.", at: 1 }];
+    expect(isSilentAcknowledgement("ok", general, noTask, encerramento)).toBe(true);
+  });
+});

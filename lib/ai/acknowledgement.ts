@@ -79,6 +79,15 @@ function lastBotAskedQuestion(history: Message[]): boolean {
   return last.text.trimEnd().endsWith("?");
 }
 
+// A própria mensagem do bot pediu um "OK" (a revelação da prospecção diz "me
+// dê um OK e eu te mostro como funciona"). Aí o OK é a resposta pedida, não um
+// reconhecimento passivo — silenciar deixava o prospect sem a demonstração.
+function lastBotRequestedOk(history: Message[]): boolean {
+  const last = [...history].reverse().find((m) => m.role === "bot");
+  if (!last) return false;
+  return /\b(?:me\s+de|mand[ae]|envi[ae]|respond[ae]|me\s+respond[ae])\s+(?:um\s+)?["“']?ok\b/.test(normalize(last.text));
+}
+
 export function isSilentAcknowledgement(
   customerText: string,
   intent: Intent,
@@ -94,7 +103,7 @@ export function isSilentAcknowledgement(
 
   if (hasActiveTask(task)) return false;
 
-  if (lastBotAskedQuestion(history)) return false;
+  if (lastBotAskedQuestion(history) || lastBotRequestedOk(history)) return false;
 
   return true;
 }

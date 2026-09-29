@@ -4,6 +4,7 @@ import type {
   ConversationContext,
 } from "@/types";
 import { transitionConversationContext } from "@/lib/ai/conversationPolicy";
+import { readConfirmation } from "@/lib/ai/confirmation";
 
 const normalize = (value: string) => value
   .normalize("NFD")
@@ -72,6 +73,13 @@ export function extractAuditData(text: string, capturedAt: number): AuditConvers
   }, capturedAt);
 }
 
+// O texto pré-preenchido do CTA da Calculadora traz campos rotulados
+// ("Leads por dia: 78", "Estimativa apresentada: R$ ..."). Uma simples menção
+// a "auditoria" numa conversa em andamento não carrega esse resultado.
+export function carriesAuditResult(text: string): boolean {
+  return extractAuditData(text, 0) !== null;
+}
+
 export function inferCommercialSegment(text: string): CommercialSegment | null {
   const value = normalize(text);
   if (/\b(pet\s*shop|veterinari[ao]|banho\s+e\s+tosa)\b/.test(value)) return "pet";
@@ -98,6 +106,26 @@ export function explicitlyQualifiesAudit(text: string): boolean {
     /\bvamos\b.{0,30}\b(?:fazer|ver|iniciar|continuar)\b.{0,25}\bdemonstracao\b/.test(value) ||
     /\b(quero|gostaria)\b.{0,40}\bconhecer\b.{0,20}\blivia\b/.test(value)
   );
+}
+
+// A última mensagem da Lívia ofereceu mostrar/testar a solução funcionando.
+export function offersPracticalDemo(botText: string): boolean {
+  const value = normalize(botText);
+  return /\b(?:mostr(?:ar|o|e)|demonstr\w*|test(?:ar|e))\b[^?]{0,80}\b(?:funcionando|na pratica|aqui mesmo|ao vivo|agora)\b/.test(value)
+    || /\bquer\s+(?:ver|testar|experimentar|uma\s+demonstracao)\b/.test(value);
+}
+
+// Resposta curta que aceita essa oferta ("sim", "quero", "pode mostrar",
+// "bora"). Negação e hesitação nunca aceitam.
+export function acceptsPracticalDemoOffer(text: string, lastBotText: string | undefined): boolean {
+  if (!lastBotText || !offersPracticalDemo(lastBotText)) return false;
+  const answer = readConfirmation(text);
+  if (answer === "yes") return true;
+  if (answer === "no") return false;
+  const value = normalize(text);
+  return value.split(" ").length <= 8
+    && !/\b(?:talvez|depois|agora nao|mais tarde|sei la|acho que)\b/.test(value)
+    && /^(?:quero|pode|bora|vamos|manda|mostra|mostre|topo|claro|opa)\b/.test(value);
 }
 
 export function requestsDemoNow(text: string, afterPracticalDemoOffer = false): boolean {
@@ -137,6 +165,9 @@ export function enrichCommercialContext(input: {
   text: string;
   now: number;
   allowAuditQualification: boolean;
+  // Última mensagem da Lívia: aceitar a oferta de demonstração que ela fez
+  // também qualifica a jornada da Auditoria.
+  lastBotText?: string;
 }): { context: ConversationContext; changed: boolean; auditQualified: boolean } {
   const { text, now } = input;
   let context = input.context;
@@ -159,7 +190,9 @@ export function enrichCommercialContext(input: {
     changed = true;
   }
 
-  const auditQualified = context.purpose === "audit" && input.allowAuditQualification && explicitlyQualifiesAudit(text);
+  const auditQualified = context.purpose === "audit"
+    && input.allowAuditQualification
+    && (explicitlyQualifiesAudit(text) || acceptsPracticalDemoOffer(text, input.lastBotText));
   if (auditQualified) {
     context = transitionConversationContext(context, "commercial", "audit_qualified", now);
     changed = true;
@@ -180,6 +213,6 @@ export const SEGMENT_COMMERCIAL_GUIDANCE: Readonly<Record<CommercialSegment, rea
 export function commercialDemoGuidance(segment: CommercialSegment | undefined, canExecuteDemo: boolean): string {
   const focus = segment ? SEGMENT_COMMERCIAL_GUIDANCE[segment].join("; ") : "a necessidade que o prospect acabou de informar";
   return canExecuteDemo
-    ? `A capability demo_execution está autorizada. Demonstre somente o fluxo relevante (${focus}) pelas interfaces disponíveis e deixe explícito que é demonstração.`
+    ? `A capability demo_execution está autorizada. Demonstre somente o fluxo relevante (${focus}) pelas interfaces disponíveis e deixe explícito que é demonstração. Quando a pessoa aceitar ou pedir para ver, DEMONSTRE executando as ferramentas agora — não apenas descreva a funcionalidade. Depois de concluir uma ação demonstrativa, volte ao contexto comercial: é assim que funcionaria com os clientes dela; ofereça outra demonstração, tire dúvidas ou explique como começar.`
     : `A capability demo_execution NÃO está autorizada. Você pode explicar ou oferecer continuar uma demonstração sobre ${focus}, mas não execute tools demo nem afirme que testou, ativou ou contratou algo.`;
 }

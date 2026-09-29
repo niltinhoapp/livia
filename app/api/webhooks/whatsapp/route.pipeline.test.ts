@@ -333,19 +333,72 @@ beforeEach(() => {
 });
 
 describe("F5.2 — demo oficial a partir de Audit", () => {
-  it("reativa HUMAN expirada somente após pedido prático e entrega agenda demo ao brain", async () => {
+  const demoEst = () => establishment({ demoChannel: { enabled: true }, bot: { personaName: "Livia", tone: "", bookingEnabled: true, ordersEnabled: true, medicalGuardrail: false } } as never);
+
+  it("A10: pedido prático numa jornada da Calculadora autoriza a demo pelo acesso da própria jornada — sessão antiga de prospecção não é reativada", async () => {
     vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
-    const demoEst = establishment({ demoChannel: { enabled: true }, bot: { personaName: "Livia", tone: "", bookingEnabled: true, ordersEnabled: true, medicalGuardrail: false } } as never);
-    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst);
-    getEstablishment.mockResolvedValue(demoEst);
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
     loadConversation.mockResolvedValue(conversa("bot", undefined, [], { conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 1, updatedAt: 1 } }));
-    getProspectingSessionByPhone.mockResolvedValue({ establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-a", status: "HUMAN", expiresAt: 1 });
-    reactivateProspectingSessionForDemo.mockResolvedValue({ establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-a", businessName: "Prospect", segment: "salão", initialManualMessage: "", status: "REVEALED", preRevealReplyCount: 0, preparedAt: 1, manualSendConfirmedAt: 2, firstReplyAt: null, revealedAt: 2, expiresAt: Date.now() + 60_000 });
+    getProspectingSessionByPhone.mockResolvedValueOnce({ establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-a", status: "HUMAN", expiresAt: 1 });
     await enviarPayload(payloadMensagem({ id: "wamid.f52.demo", text: "Me mostre na prática como vc faz no comercio um agendamento" }));
-    expect(reactivateProspectingSessionForDemo).toHaveBeenCalledWith("est_odonto", PHONE, expect.any(Number));
-    const input = think.mock.calls[0]?.[0] as { demoAuthorization: { authorized: boolean }; capabilities: { demo_execution: boolean; agenda_read: boolean; agenda_mutate: boolean } };
-    expect(input.demoAuthorization.authorized).toBe(true);
+    expect(reactivateProspectingSessionForDemo).not.toHaveBeenCalled();
+    const input = think.mock.calls[0]?.[0] as { demoAuthorization: { authorized: boolean; prospectingLeadId?: string }; prospectingContext?: unknown; capabilities: { demo_execution: boolean; agenda_read: boolean; agenda_mutate: boolean } };
+    expect(input.demoAuthorization).toEqual({ authorized: true, establishmentId: "est_odonto", prospectingLeadId: `audit_${PHONE}_1` });
+    expect(input.prospectingContext).toBeUndefined();
     expect(input.capabilities).toMatchObject({ demo_execution: true, agenda_read: true, agenda_mutate: true });
+    expect(setConversationContext).toHaveBeenCalledWith("est_odonto", PHONE, expect.objectContaining({ purpose: "commercial", source: "audit_calculator", demoAccess: expect.objectContaining({ leadId: `audit_${PHONE}_1` }) }), expect.any(Boolean), expect.anything());
+  });
+
+  it("A5/A9: lead da Calculadora SEM sessão de prospecção responde 'sim' à oferta e entra na demo", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [
+      { id: "c-audit", role: "customer", text: "Acabei de fazer a Auditoria de Atendimento. Leads por dia: 78", at: 5 },
+      { id: "b-offer", role: "bot", text: "Pelos seus dados a Calculadora estima R$ 52.650/mês. Se quiser, posso te mostrar isso funcionando aqui mesmo.", at: 6 },
+    ], { conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 5, updatedAt: 6, audit: { leadsPerDay: 78, capturedAt: 5 } } }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.audit.accept", text: "sim" }));
+
+    expect(getProspectingSessionByPhone).toHaveBeenCalled();
+    const input = think.mock.calls[0]?.[0] as { demoAuthorization: { authorized: boolean; prospectingLeadId?: string }; conversationContext: { purpose: string }; capabilities: Record<string, boolean> };
+    expect(input.conversationContext.purpose).toBe("commercial");
+    expect(input.demoAuthorization).toMatchObject({ authorized: true, prospectingLeadId: `audit_${PHONE}_5` });
+    expect(input.capabilities).toMatchObject({ demo_execution: true, order_mutate: true, customer_profile_read: false });
+  });
+
+  it("A15: recusa ('agora não') mantém o diagnóstico sem liberar demo", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [
+      { id: "b-offer", role: "bot", text: "Se quiser, posso te mostrar isso funcionando aqui mesmo.", at: 6 },
+    ], { conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 5, updatedAt: 6 } }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.audit.decline", text: "agora não" }));
+
+    const input = think.mock.calls[0]?.[0] as { demoAuthorization: { authorized: boolean }; conversationContext: { purpose: string } };
+    expect(input.conversationContext.purpose).toBe("audit");
+    expect(input.demoAuthorization.authorized).toBe(false);
+  });
+
+  it("B: prospecção revelada continua autorizada pela própria sessão, independente da Auditoria", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    getProspectingSessionByPhone.mockResolvedValueOnce({
+      establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-b", businessName: "Salão Bela", segment: "salão",
+      initialManualMessage: "Oi", status: "REVEALED", preRevealReplyCount: 1, preparedAt: 1, manualSendConfirmedAt: 2, firstReplyAt: 3, revealedAt: 4, expiresAt: Date.now() + 60_000,
+    });
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.b.demo", text: "quero testar a agenda" }));
+
+    const input = think.mock.calls[0]?.[0] as { demoAuthorization: unknown; conversationContext: { purpose: string; source: string }; prospectingContext?: { leadId: string } };
+    expect(input.conversationContext).toMatchObject({ purpose: "commercial", source: "prospecting" });
+    expect(input.demoAuthorization).toEqual({ authorized: true, establishmentId: "est_odonto", prospectingLeadId: "lead-b" });
+    expect(input.prospectingContext?.leadId).toBe("lead-b");
   });
 
   it.each(["sim", "legal", "como funciona?"])("não reativa demo para mensagem vaga: %s", async (text) => {
@@ -803,6 +856,8 @@ describe("lifecycle de ConversationTask concluida", () => {
 });
 
 describe("context switch: auditoria cria fronteira de contexto completa", () => {
+  // A Calculadora encaminha para o número da própria Lívia (canal interno).
+  beforeEach(() => vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto"));
   const schedulingTask: ConversationTask = {
     type: "schedule_appointment",
     state: "offer_options",
@@ -985,6 +1040,65 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
     expect(loadedConversation.history).toEqual(schedulingHistory);
   });
 
+  const CALCULADORA = "Oi Lívia! Acabei de fazer a Auditoria de Atendimento.\nLeads por dia: 78\nTicket médio: R$ 450\nTempo médio de resposta: Até 30 minutos\nEstimativa apresentada: R$ 52.650/mês\nPode me explicar esse resultado e mostrar como você poderia ajudar minha empresa?";
+  const sessaoAntiga = (status: string) => ({
+    establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-antigo", businessName: "Negócio antigo", segment: "salão",
+    initialManualMessage: "Oi, tem horário amanhã?", status, preRevealReplyCount: 0, preparedAt: 1, manualSendConfirmedAt: 2,
+    firstReplyAt: 3, revealedAt: status === "REVEALED" ? 4 : null, expiresAt: Date.now() + 60_000,
+  });
+
+  it("A2: telefone que já fez uma Auditoria envia um resultado novo — jornada nova, só a mensagem atual, sem dados herdados", async () => {
+    const historicoAntigo: Message[] = [
+      { id: "a-old-1", role: "customer", text: "Acabei de fazer a Auditoria de Atendimento. Leads por dia: 20 Ticket médio: R$ 150", at: 10 },
+      { id: "a-old-2", role: "bot", text: "Explicação da auditoria antiga.", at: 11 },
+    ];
+    loadConversation.mockResolvedValue(conversa("bot", undefined, historicoAntigo, {
+      conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 10, updatedAt: 11, audit: { leadsPerDay: 20, averageTicketCents: 15_000, capturedAt: 10 }, commercial: { segment: "clinic", segmentIdentifiedAt: 11 } },
+    }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.audit.reentry", text: CALCULADORA }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { history: Message[]; conversationContext: Conversation["conversationContext"] };
+    expect(brainArgs.history.map((m) => m.text)).toEqual([CALCULADORA]);
+    expect(brainArgs.conversationContext).toMatchObject({ purpose: "audit", source: "audit_calculator", audit: { leadsPerDay: 78, averageTicketCents: 45_000, estimatedOpportunityCentsPerMonth: 5_265_000 } });
+    expect(brainArgs.conversationContext?.commercial).toBeUndefined();
+    expect(brainArgs.conversationContext?.enteredAt).toBeGreaterThan(11);
+  });
+
+  it.each(["LIVIA_ACTIVE", "WAITING_REPLY"])("B13: sessão de prospecção pré-revelação (%s) do mesmo telefone não sequestra a Auditoria", async (status) => {
+    getProspectingSessionByPhone.mockResolvedValueOnce(sessaoAntiga(status));
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await enviarPayload(payloadMensagem({ id: `wamid.audit.prospect.${status}`, text: CALCULADORA }));
+
+    expect(JSON.stringify(sendText.mock.calls)).not.toContain("me dê um OK e eu te mostro como funciona");
+    expect(think).toHaveBeenCalledTimes(1);
+    const brainArgs = think.mock.calls[0]?.[0] as { prospectingContext?: unknown; conversationContext: { purpose: string }; demoAuthorization: { authorized: boolean } };
+    expect(brainArgs.prospectingContext).toBeUndefined();
+    expect(brainArgs.conversationContext.purpose).toBe("audit");
+    expect(brainArgs.demoAuthorization.authorized).toBe(false);
+  });
+
+  it("B13: sessão revelada do mesmo telefone não mistura o roteiro da prospecção com o diagnóstico", async () => {
+    getProspectingSessionByPhone.mockResolvedValueOnce(sessaoAntiga("REVEALED"));
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.audit.prospect.revealed", text: CALCULADORA }));
+
+    const brainArgs = think.mock.calls[0]?.[0] as { prospectingContext?: unknown; conversationContext: { purpose: string } };
+    expect(brainArgs.prospectingContext).toBeUndefined();
+    expect(brainArgs.conversationContext.purpose).toBe("audit");
+  });
+
+  it("A7: oferta de humano vinda do cérebro continua sendo só oferta (handoff legítimo preservado)", async () => {
+    loadConversation.mockResolvedValue(conversa("bot"));
+    think.mockResolvedValueOnce({ reply: "Vou chamar alguém.", handoff: true, booked: false, rescheduled: false, cancelled: false, toolCalls: [] });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.audit.offer", text: CALCULADORA }));
+
+    expect(JSON.stringify(sendText.mock.calls)).toContain("Posso chamar uma pessoa da equipe para te ajudar com isso?");
+  });
+
   it("conversa sem auditoria preserva comportamento normal", async () => {
     loadConversation.mockResolvedValue(conversa("bot", undefined, []));
     think.mockResolvedValueOnce({
@@ -997,6 +1111,70 @@ describe("context switch: auditoria cria fronteira de contexto completa", () => 
 
     const brainArgs = think.mock.calls[0]?.[0] as { suppressBooking?: boolean };
     expect(brainArgs.suppressBooking).toBeFalsy();
+  });
+});
+
+describe("B2 — prospect responde o OK que a revelação pediu", () => {
+  it("a Lívia responde (não silencia) e segue a demonstração", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    getProspectingSessionByPhone.mockResolvedValueOnce({
+      establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-b2", businessName: "Salão Bela", segment: "salão",
+      initialManualMessage: "Oi, tem horário?", status: "REVEALED", preRevealReplyCount: 1, preparedAt: 1, manualSendConfirmedAt: 2,
+      firstReplyAt: 3, revealedAt: 4, expiresAt: Date.now() + 60_000,
+    });
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [
+      { id: "b-reveal", role: "bot", text: "Eu sou a Lívia, assistente virtual com IA da ConectWeb.\n\nSe fizer sentido, me dê um OK e eu te mostro como funciona.\n\nE se estiver ocupado(a), pode me mandar um áudio. Eu também posso te responder por áudio.", at: 5 },
+    ]));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.b2.ok", text: "OK" }));
+
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    const args = think.mock.calls[0]?.[0] as { conversationContext: { purpose: string }; prospectingContext?: { status: string } };
+    expect(args.conversationContext.purpose).toBe("commercial");
+    expect(args.prospectingContext?.status).toBe("REVEALED");
+  });
+});
+
+describe("C11 — estabelecimento cliente nunca entra na jornada comercial da Lívia", () => {
+  // est_odonto aqui é um cliente real: os tenants internos são outros.
+  beforeEach(() => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_livia_demo");
+    vi.stubEnv("INTERNAL_PROSPECTING_ESTABLISHMENT_ID", "est_livia_prospeccao");
+  });
+
+  it.each([
+    "Quero agendar um diagnóstico para amanhã",
+    "vocês fazem avaliação?",
+    "queria uma auditoria",
+    "meu atendimento está atrasado",
+    "quero falar com alguém",
+    "a calculadora de vocês aceita cartão?",
+    "Oi Lívia! Acabei de fazer a Auditoria de Atendimento. Leads por dia: 78 Ticket médio: R$ 450",
+    "me mostra na prática como funciona, quero testar",
+  ])("C12/C13: '%s' segue atendimento real com agenda, sem pitch", async (text) => {
+    loadConversation.mockResolvedValue(conversa("bot"));
+
+    await enviarPayload(payloadMensagem({ id: `wamid.real.${text.length}`, text }));
+
+    const args = think.mock.calls[0]?.[0] as { conversationContext: { purpose: string }; capabilities: Record<string, boolean>; suppressBooking: boolean; prospectingContext?: unknown };
+    expect(args.conversationContext.purpose).toBe("operational");
+    expect(args.capabilities).toMatchObject({ agenda_read: true, agenda_mutate: true, commercial_guidance: false, demo_execution: false });
+    expect(args.suppressBooking).toBe(false);
+    expect(setConversationContext).not.toHaveBeenCalled();
+  });
+
+  it("conversa real que já tinha sido sequestrada para Audit volta a operational e mantém a tarefa", async () => {
+    const task: ConversationTask = { type: "schedule_appointment", state: "offer_options", collectedData: { serviceName: "Limpeza" }, missingData: ["date"], updatedAt: 1 };
+    loadConversation.mockResolvedValue(conversa("bot", task, [], { conversationContext: { purpose: "audit", source: "audit_calculator", enteredAt: 1, updatedAt: 1 } }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.real.heal", text: "Pode ser amanhã às 14h" }));
+
+    expect(setConversationContext).toHaveBeenCalledWith("est_odonto", PHONE, expect.objectContaining({ purpose: "operational", source: "normal" }), false, expect.anything());
+    const args = think.mock.calls[0]?.[0] as { conversationContext: { purpose: string }; task: ConversationTask | null; capabilities: Record<string, boolean> };
+    expect(args.conversationContext.purpose).toBe("operational");
+    expect(args.task).toEqual(task);
+    expect(args.capabilities.agenda_mutate).toBe(true);
   });
 });
 

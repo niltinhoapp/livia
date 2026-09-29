@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ConversationContext } from "@/types";
 import { historyForConversationContext, transitionConversationContext } from "./conversationPolicy";
 import {
+  acceptsPracticalDemoOffer,
   asksCommercialProductPrice,
   asksMenuSetup,
   commercialDemoGuidance,
@@ -10,6 +11,7 @@ import {
   extractAuditData,
   inferCommercialSegment,
   normalizeAuditData,
+  offersPracticalDemo,
   requestsDemoNow,
 } from "./commercialContext";
 import { commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
@@ -141,5 +143,39 @@ describe("demo e transições", () => {
     const commercial: ConversationContext = { purpose: "commercial", source: "prospecting", enteredAt: 1, updatedAt: 1 };
     expect(transitionConversationContext(commercial, "operational", "customer_activated", 2).purpose).toBe("operational");
     expect(() => transitionConversationContext(commercial, "operational", "audit_qualified", 2)).toThrow();
+  });
+});
+
+describe("aceite da demonstração oferecida pela Lívia (jornada da Calculadora)", () => {
+  const oferta = "É justamente aí que eu posso ajudar. Se quiser, posso te mostrar isso funcionando aqui mesmo.";
+  const audit = (): ConversationContext => ({ purpose: "audit", source: "audit_calculator", enteredAt: 100, updatedAt: 100 });
+
+  it("A8: reconhece a oferta prática da própria Lívia", () => {
+    expect(offersPracticalDemo(oferta)).toBe(true);
+    expect(offersPracticalDemo("Quer ver como seria no seu negócio?")).toBe(true);
+    expect(offersPracticalDemo("Qual é o seu segmento?")).toBe(false);
+  });
+
+  it.each(["sim", "Sim, pode mostrar", "quero", "pode", "bora", "claro!", "manda ver", "mostra"])("A9: '%s' aceita a oferta e qualifica a jornada", (text) => {
+    expect(acceptsPracticalDemoOffer(text, oferta)).toBe(true);
+    const result = enrichCommercialContext({ context: audit(), text, now: 200, allowAuditQualification: true, lastBotText: oferta });
+    expect(result.auditQualified).toBe(true);
+    expect(result.context).toMatchObject({ purpose: "commercial", source: "audit_calculator", enteredAt: 100 });
+  });
+
+  it.each(["não", "agora não", "talvez depois", "prefiro não", "deixa pra lá", "acho que sim", "quanto custa?"])("A15: '%s' não é aceite — a jornada continua sem demo e sem pressão", (text) => {
+    expect(acceptsPracticalDemoOffer(text, oferta)).toBe(false);
+    const result = enrichCommercialContext({ context: audit(), text, now: 200, allowAuditQualification: true, lastBotText: oferta });
+    expect(result.auditQualified).toBe(false);
+    expect(result.context.purpose).toBe("audit");
+  });
+
+  it("'sim' sem oferta prévia de demonstração não qualifica", () => {
+    expect(acceptsPracticalDemoOffer("sim", "Qual é o seu segmento?")).toBe(false);
+    expect(enrichCommercialContext({ context: audit(), text: "sim", now: 200, allowAuditQualification: true, lastBotText: "Qual é o seu segmento?" }).auditQualified).toBe(false);
+  });
+
+  it("nunca qualifica no próprio turno de entrada da Auditoria", () => {
+    expect(enrichCommercialContext({ context: audit(), text: "sim", now: 200, allowAuditQualification: false, lastBotText: oferta }).auditQualified).toBe(false);
   });
 });

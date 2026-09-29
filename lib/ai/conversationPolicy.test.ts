@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ConversationContext, Message, ProspectingSession } from "@/types";
 import {
   capabilitiesForConversation,
@@ -6,6 +6,9 @@ import {
   resolveConversationContext,
   transitionConversationContext,
 } from "./conversationPolicy";
+import { carriesAuditResult } from "./commercialContext";
+import { startsAuditContext } from "./contextSwitch";
+import { isLiviaCommercialChannel } from "@/lib/prospectingChannel";
 
 const context = (purpose: ConversationContext["purpose"], enteredAt = 100): ConversationContext => ({
   purpose,
@@ -80,7 +83,7 @@ describe("capability policy", () => {
 
 describe("persistent context precedence and transitions", () => {
   it("entrada Audit persiste semanticamente e limpa task operacional", () => {
-    const resolved = resolveConversationContext({ startsAudit: true, now: 100 });
+    const resolved = resolveConversationContext({ commercialChannel: true, startsAudit: true, now: 100 });
     expect(resolved.context).toEqual(context("audit", 100));
     expect(resolved.changed).toBe(true);
     expect(resolved.enteredAudit).toBe(true);
@@ -88,32 +91,32 @@ describe("persistent context precedence and transitions", () => {
   });
 
   it("segundo e terceiro turnos continuam Audit sem repetir a palavra", () => {
-    const second = resolveConversationContext({ persisted: context("audit", 100), startsAudit: false, now: 200 });
-    const third = resolveConversationContext({ persisted: second.context, startsAudit: false, now: 300 });
+    const second = resolveConversationContext({ commercialChannel: true, persisted: context("audit", 100), startsAudit: false, now: 200 });
+    const third = resolveConversationContext({ commercialChannel: true, persisted: second.context, startsAudit: false, now: 300 });
     expect(second.context).toEqual(context("audit", 100));
     expect(third.context).toEqual(context("audit", 100));
     expect(second.enteredAudit).toBe(false);
   });
 
   it("conversa antiga continua operational sem exigir backfill", () => {
-    const resolved = resolveConversationContext({ startsAudit: false, now: 100 });
+    const resolved = resolveConversationContext({ commercialChannel: true, startsAudit: false, now: 100 });
     expect(resolved.context.purpose).toBe("operational");
     expect(resolved.changed).toBe(false);
   });
 
   it("ProspectingSession ativa produz Commercial; terminal não encerra contexto persistido", () => {
-    const active = resolveConversationContext({ prospectingSession: session("REVEALED"), startsAudit: false, now: 100 });
+    const active = resolveConversationContext({ commercialChannel: true, prospectingSession: session("REVEALED"), startsAudit: false, now: 100 });
     expect(active.context.purpose).toBe("commercial");
     expect(active.context.source).toBe("prospecting");
 
-    const terminal = resolveConversationContext({ persisted: active.context, prospectingSession: session("CLOSED"), startsAudit: false, now: 200 });
+    const terminal = resolveConversationContext({ commercialChannel: true, persisted: active.context, prospectingSession: session("CLOSED"), startsAudit: false, now: 200 });
     expect(terminal.context.purpose).toBe("commercial");
     expect(terminal.changed).toBe(false);
   });
 
   it("Audit persistido vence sessão ativa; nova entrada Audit vence todos", () => {
-    expect(resolveConversationContext({ persisted: context("audit"), prospectingSession: session("REVEALED"), startsAudit: false, now: 200 }).context.purpose).toBe("audit");
-    expect(resolveConversationContext({ persisted: context("commercial"), prospectingSession: session("REVEALED"), startsAudit: true, now: 200 }).context.purpose).toBe("audit");
+    expect(resolveConversationContext({ commercialChannel: true, persisted: context("audit"), prospectingSession: session("REVEALED"), startsAudit: false, now: 200 }).context.purpose).toBe("audit");
+    expect(resolveConversationContext({ commercialChannel: true, persisted: context("commercial"), prospectingSession: session("REVEALED"), startsAudit: true, now: 200 }).context.purpose).toBe("audit");
   });
 
   it("só permite saídas explícitas com razões fortes", () => {
@@ -138,5 +141,55 @@ describe("Audit history boundary", () => {
   it("segundo e terceiro turnos recebem todo o histórico da própria Audit", () => {
     expect(historyForConversationContext(messages.slice(0, 3), { context: context("audit"), enteredAudit: false }).map((m) => m.id)).toEqual(["audit", "business"]);
     expect(historyForConversationContext(messages, { context: context("audit"), enteredAudit: false }).map((m) => m.id)).toEqual(["audit", "business", "help"]);
+  });
+});
+
+describe("canal comercial da Lívia × estabelecimento cliente", () => {
+  it("C11: num estabelecimento cliente, 'diagnóstico'/'auditoria' não tiram a conversa do atendimento real", () => {
+    for (const text of ["Quero agendar um diagnóstico", "Preciso de uma auditoria contábil", "Acabei de fazer a Auditoria de Atendimento. Leads por dia: 78"]) {
+      const resolved = resolveConversationContext({ commercialChannel: false, startsAudit: startsAuditContext(text), freshAuditEntry: carriesAuditResult(text), now: 100 });
+      expect(resolved).toMatchObject({ context: { purpose: "operational", source: "normal" }, changed: false, enteredAudit: false, clearOperationalTask: false });
+    }
+  });
+
+  it("C11: conversa real que já tinha sido sequestrada para Audit/Commercial volta a operational sem perder a tarefa", () => {
+    for (const persisted of [context("audit"), { ...context("commercial"), source: "audit_calculator" as const }]) {
+      const resolved = resolveConversationContext({ persisted, commercialChannel: false, startsAudit: false, now: 200 });
+      expect(resolved).toMatchObject({ context: { purpose: "operational", source: "normal" }, changed: true, enteredAudit: false, clearOperationalTask: false });
+    }
+  });
+
+  it("estabelecimento cliente ignora ProspectingSession (que só nasce em tenant interno)", () => {
+    expect(resolveConversationContext({ commercialChannel: false, prospectingSession: session("REVEALED"), startsAudit: false, now: 100 }).context.purpose).toBe("operational");
+  });
+
+  it("A2: resultado novo da Calculadora sobre Audit persistida reinicia a fronteira; menção simples não", () => {
+    const fresh = resolveConversationContext({ persisted: { ...context("audit", 100), audit: { leadsPerDay: 1, capturedAt: 100 } }, commercialChannel: true, startsAudit: true, freshAuditEntry: true, now: 900 });
+    expect(fresh).toMatchObject({ changed: true, enteredAudit: true, clearOperationalTask: true, context: { purpose: "audit", enteredAt: 900 } });
+    expect(fresh.context.audit).toBeUndefined();
+
+    const mention = resolveConversationContext({ persisted: context("audit", 100), commercialChannel: true, startsAudit: true, freshAuditEntry: false, now: 900 });
+    expect(mention).toMatchObject({ changed: false, enteredAudit: false, context: { enteredAt: 100 } });
+  });
+});
+
+describe("isLiviaCommercialChannel", () => {
+  it("só os tenants internos (prospecção/demo) e o canal demo são comerciais", () => {
+    vi.stubEnv("INTERNAL_PROSPECTING_ESTABLISHMENT_ID", "est-revenue");
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est-demo");
+    expect(isLiviaCommercialChannel({ id: "est-revenue" })).toBe(true);
+    expect(isLiviaCommercialChannel({ id: "est-demo" })).toBe(true);
+    expect(isLiviaCommercialChannel({ id: "outro", demoChannel: { enabled: true } })).toBe(true);
+    expect(isLiviaCommercialChannel({ id: "clinica-real" })).toBe(false);
+    expect(isLiviaCommercialChannel({ id: "clinica-real", demoChannel: { enabled: false } })).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it("sem env configurada, nenhum tenant comum vira canal comercial", () => {
+    vi.stubEnv("INTERNAL_PROSPECTING_ESTABLISHMENT_ID", "");
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "");
+    expect(isLiviaCommercialChannel({ id: "" })).toBe(false);
+    expect(isLiviaCommercialChannel({ id: "clinica-real" })).toBe(false);
+    vi.unstubAllEnvs();
   });
 });

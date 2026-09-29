@@ -42,6 +42,9 @@ export interface ConversationContextResolution {
 
 /**
  * Precedência deliberada:
+ * 0. fora de um canal comercial da Lívia, sempre operational — o
+ *    estabelecimento cliente nunca vira Audit/Commercial (e um documento que
+ *    já tenha virado volta a operational);
  * 1. entrada explícita de Audit;
  * 2. jornada originada em Audit já persistida (mesmo após Audit -> Commercial,
  *    uma ProspectingSession não apaga seus dados/boundary no turno seguinte);
@@ -51,11 +54,18 @@ export interface ConversationContextResolution {
  *
  * Sessão terminal não causa uma transição implícita: o contexto comercial
  * permanece até uma condição explícita de ativação operacional futura.
+ *
+ * `freshAuditEntry`: a mensagem traz o resultado rotulado da Calculadora
+ * (o texto pré-preenchido do CTA). É uma jornada NOVA mesmo que a conversa já
+ * esteja em Audit — nova fronteira de histórico e nenhum dado herdado da
+ * Auditoria anterior.
  */
 export function resolveConversationContext(input: {
   persisted?: ConversationContext | null;
   prospectingSession?: ProspectingSession | null;
+  commercialChannel: boolean;
   startsAudit: boolean;
+  freshAuditEntry?: boolean;
   now?: number;
 }): ConversationContextResolution {
   const now = input.now ?? Date.now();
@@ -63,7 +73,10 @@ export function resolveConversationContext(input: {
   let purpose: ConversationPurpose;
   let source: ConversationContext["source"];
 
-  if (input.startsAudit) {
+  if (!input.commercialChannel) {
+    purpose = "operational";
+    source = "normal";
+  } else if (input.startsAudit) {
     purpose = "audit";
     source = "audit_calculator";
   } else if (persisted?.source === "audit_calculator") {
@@ -82,10 +95,11 @@ export function resolveConversationContext(input: {
 
   // Documento legado operacional não precisa de backfill: o default efetivo
   // é suficiente e evita uma escrita massiva incidental.
+  const enteredAudit = purpose === "audit"
+    && (persisted?.purpose !== "audit" || (input.startsAudit && input.freshAuditEntry === true));
   const changed = persisted
-    ? persisted.purpose !== purpose || persisted.source !== source
+    ? persisted.purpose !== purpose || persisted.source !== source || enteredAudit
     : purpose !== "operational";
-  const enteredAudit = purpose === "audit" && persisted?.purpose !== "audit";
   const context: ConversationContext = changed || !persisted
     ? { purpose, source, enteredAt: now, updatedAt: now }
     : persisted!;

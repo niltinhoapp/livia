@@ -37,6 +37,7 @@ import {
   SEGMENT_COMMERCIAL_GUIDANCE,
 } from "@/lib/ai/commercialContext";
 import { COMMERCIAL_MENU_IMPORT_FACT, commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
+import { AUDIT_CALCULATOR_MODEL, explainAuditEstimate } from "@/lib/commercial/auditCalculator";
 
 export const HANDOFF_TOKEN = "[[HANDOFF]]";
 
@@ -224,6 +225,32 @@ function prospectingCommercialGuidance(
   ];
 }
 
+// Explicação do resultado pelo modelo REAL da Calculadora
+// (lib/commercial/auditCalculator.ts), calculada aqui e não pelo modelo de
+// linguagem. Se os números não fecharem com esse modelo, nada é decomposto.
+function auditEstimateReading(audit: NonNullable<ConversationContext["audit"]>): string[] {
+  if (audit.estimatedOpportunityCentsPerMonth === undefined) return [];
+  const breakdown = explainAuditEstimate(audit);
+  if (!breakdown) {
+    return ["A Calculadora estima o impacto de oportunidades não atendidas rapidamente a partir de leads por dia, ticket médio e tempo de resposta. Os números recebidos não fecham com o modelo conhecido dela: explique só nesses termos, sem citar percentual, premissa ou conta."];
+  }
+  const number = (value: number) => value.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  const percent = (share: number) => `${number(share * 100)}%`;
+  const days = AUDIT_CALCULATOR_MODEL.daysPerMonth;
+  const conversion = percent(AUDIT_CALCULATOR_MODEL.idealConversionRate);
+  const potential = formatCommercialPrice(Math.round(breakdown.potentialRevenueCents));
+  return [
+    "Como a Calculadora chegou ao resultado (modelo oficial dela; não use outro):",
+    `1) Contatos no mês: ${number(breakdown.leadsPerDay)} leads por dia × ${days} dias = ${number(breakdown.monthlyLeads)} contatos.`,
+    `2) Premissa da Calculadora: num atendimento ideal, ${conversion} desses contatos viram venda = ${number(breakdown.potentialSales)} vendas × ticket de ${formatCommercialPrice(breakdown.averageTicketCents)} = ${potential} de potencial por mês.`,
+    breakdown.lostShare > 0
+      ? `3) Para o tempo de resposta "${breakdown.responseTimeLabel}", a Calculadora considera que ${percent(breakdown.retainedShare)} desse potencial é aproveitado e ${percent(breakdown.lostShare)} se perde: ${percent(breakdown.lostShare)} × ${potential} = ${formatCommercialPrice(breakdown.estimateCents)} por mês (cerca de ${number(breakdown.lostSales)} vendas do ticket informado).`
+      : `3) Para "${breakdown.responseTimeLabel}", a Calculadora considera 100% do potencial aproveitado — por isso a estimativa é ${formatCommercialPrice(0)}. Não invente perda.`,
+    "O fator que define o resultado é a faixa de tempo de resposta: quanto mais demorada, menor a parte do potencial que a Calculadora considera aproveitada.",
+    `Fatos informados pela pessoa: leads por dia, ticket médio e tempo de resposta. Premissas da Calculadora: mês de ${days} dias, ${conversion} de conversão num atendimento ideal e a parte aproveitada por faixa de tempo. Deixe essa diferença clara.`,
+  ];
+}
+
 function auditDataToText(context: ConversationContext | undefined): string[] {
   const audit = context?.audit;
   if (!audit) return [];
@@ -238,6 +265,7 @@ function auditDataToText(context: ConversationContext | undefined): string[] {
   if (!facts.length) return [];
   return [
     ...facts,
+    ...auditEstimateReading(audit),
     "Esses dados já foram recebidos: NÃO pergunte por eles novamente.",
     "A estimativa é uma simulação de potencial baseada nas informações fornecidas. Não é perda comprovada, não prova que todo contato seria venda e não garante recuperação do valor.",
   ];
@@ -296,6 +324,7 @@ function buildSystemPrompt(
         "Nunca prometa recuperar receita, garantir faturamento ou afirmar que uma estimativa é perda comprovada.",
         "Você pode oferecer continuar a conversa, explicar como experimentar ou como funciona a contratação. Nunca diga que teste, conta ou contratação foi ativado sem confirmação do backend.",
         "Perguntas alheias ao negócio ou à Lívia (por exemplo Nobel da Paz, mitologia ou capital de país) não são gatilho comercial e não devem virar pitch.",
+        "Explicar o resultado da Auditoria, o que a Lívia faz, como funciona, quanto custa, como testar ou como seria a demonstração é o SEU papel nesta conversa: responda você mesma. request_human_handoff é só para pedido explícito de humano, negociação ou condição especial, contratação/fechamento, ou irritação que você não consiga resolver.",
         "Seja breve — mensagens curtas, como numa conversa de WhatsApp.",
         nowHuman,
       ]
@@ -325,8 +354,9 @@ function buildSystemPrompt(
   if (options?.conversationContext?.purpose === "audit") {
     rules.push(
       "--- CONTEXTO AUDIT PERSISTENTE ---",
-      "Esta conversa veio da Auditoria/Calculadora e não é lead frio. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil.",
-      "Fluxo: explique o diagnóstico recebido, contextualize sem transformar estimativa em fato, descubra o segmento somente se ainda não estiver conhecido, conecte uma capacidade relevante e ofereça um próximo passo.",
+      "Esta conversa veio da Auditoria/Calculadora e não é lead frio: a pessoa acabou de descobrir uma possível dor no atendimento e é uma potencial cliente da Lívia. Não trate a pessoa como cliente operacional deste estabelecimento e não ofereça agenda, pedidos ou atualização de perfil como se ela fosse consumidora.",
+      "Você é uma vendedora consultiva da própria Lívia. Sequência: (1) reconheça que ela fez a Auditoria; (2) explique o resultado pela conta da Calculadora abaixo, separando o que ela informou das premissas da Calculadora e deixando claro que é estimativa, não perda comprovada; (3) explique de forma simples que, com esse volume e esse tempo de resposta, parte das oportunidades pode esfriar antes de o atendimento começar; (4) conecte essa dor a UMA capacidade real da Lívia (responder na hora, entender o que o cliente precisa e seguir a conversa mesmo com a equipe ocupada); (5) ofereça mostrar isso funcionando aqui mesmo. Descubra o segmento se ainda não souber. Uma pergunta principal por vez.",
+      "Sem urgência falsa, sem garantia de faturamento ou de recuperar a estimativa, sem dizer que todo contato perdido seria venda e sem criticar a equipe da pessoa.",
       ...(options.auditNeedsDiagnosis
         ? ["NA RESPOSTA ATUAL, comece pelo resultado/diagnóstico recebido antes de perguntar qualquer coisa."]
         : []),
@@ -1347,8 +1377,16 @@ function agendaMutationReply(mutation: AgendaMutation, blocked: ToolName | null 
   } else {
     reply = "Pronto, cancelei seu agendamento. Se quiser remarcar, é só me chamar.";
   }
-  return reply + (demo ? " Este agendamento foi registrado no sistema apenas para demonstração e não representa uma reserva em estabelecimento real." : "") + blockedAgendaMutationContinuation(mutation, blocked);
+  const blockedNote = blockedAgendaMutationContinuation(mutation, blocked);
+  return reply
+    + (demo ? " Este agendamento foi registrado no sistema apenas para demonstração e não representa uma reserva em estabelecimento real." : "")
+    + blockedNote
+    + (demo && !blockedNote ? DEMO_COMMERCIAL_CONTINUATION : "");
 }
+
+// Depois de uma ação demonstrativa concluída, a conversa volta ao comercial —
+// a demonstração não termina num beco sem saída. Só em demo autorizada.
+const DEMO_COMMERCIAL_CONTINUATION = " Foi assim que eu cuidaria disso com os clientes da sua empresa. Quer ver outra parte funcionando ou prefere saber como começar?";
 
 export async function think(input: BrainInput): Promise<BrainResult> {
   const { est, kb, history, contactPhone, contactName, customerProfile, task, intent, hasLastConfirmedOrder = false, orderAwaitingConfirmation = null, prospectingContext } = input;
@@ -1429,6 +1467,12 @@ export async function think(input: BrainInput): Promise<BrainResult> {
 
   const toolCtx: ToolContext = { est, kb, config, contactPhone, contactName, offset, customerProfile, discussedDate, automationFence: input.automationFence, prospectingContext: input.prospectingContext, demoAuthorization: input.demoAuthorization, conversationContext, capabilities, orderConfirmation: orderAwaitingConfirmation ? { ...orderAwaitingConfirmation, explicitlyConfirmed: Boolean(ultimaDoCliente && explicitOrderConfirmation(ultimaDoCliente.text)) } : null, suppressBooking: input.suppressBooking };
   const tools = toolsFor(toolCtx);
+  // As travas de desfecho de AGENDA (recusa/vaga/incapacidade inventadas)
+  // pressupõem uma agenda neste contexto. Sem ela (Audit, Commercial sem demo),
+  // "equipe ocupada" ou "fora do horário de atendimento" descrevem o negócio do
+  // prospect, e a correção pediria ferramentas que nem foram oferecidas — o
+  // único desfecho possível era transferir para humano.
+  const agendaInScope = hasCapability(capabilities, "agenda_read");
 
   let booked = false;
   // Dados da reserva REALMENTE criada neste turno (venha ela do caminho
@@ -1766,7 +1810,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       }
       if (orderConfirmedThisTurn && input.demoAuthorization?.authorized) {
         return {
-          reply: "Prontinho! Pedido registrado no sistema. Foi exatamente assim que eu receberia e organizaria um pedido no seu estabelecimento. Só lembrando: este pedido é demonstrativo, então não será preparado nem entregue.",
+          reply: "Prontinho! Pedido registrado no sistema. Foi exatamente assim que eu receberia e organizaria um pedido no seu estabelecimento. Só lembrando: este pedido é demonstrativo, então não será preparado nem entregue. Quer ver outra parte funcionando ou prefere saber como começar?",
           handoff: false,
           booked,
           rescheduled,
@@ -1918,7 +1962,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // Se a ferramenta existe e está habilitada, dizer "não consigo" é falso.
     // Uma passada corretiva listando o que ela PODE fazer; se insistir,
     // transfere (aí sim há um humano de verdade no caminho).
-    if (claimsIncapacity(reply) && tools.length > 0) {
+    if (agendaInScope && claimsIncapacity(reply) && tools.length > 0) {
       if (!stallCorrected) {
         stallCorrected = true;
         const disponiveis = tools.map((t) => t.function.name).join(", ");
@@ -1972,7 +2016,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // repetindo o expediente de HOJE (domingo, fechado) para um horário de
     // segunda. Substituímos pela verdade quando temos, ou forçamos a consulta
     // quando não temos.
-    if (deniesBooking(reply)) {
+    if (agendaInScope && deniesBooking(reply)) {
       const consultouAgenda = toolCalls.some(
         (t) => t.name === "create_appointment" || t.name === "find_available_appointments",
       );
@@ -2001,7 +2045,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     // em produção sem chamar a tool. Uma única correção permite que ele faça
     // a consulta; insistência vira uma resposta neutra, nunca uma agenda
     // inventada.
-    if (claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
+    if (agendaInScope && claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
       if (!stallCorrected) {
         stallCorrected = true;
         messages.push({ role: "assistant", content: reply });

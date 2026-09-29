@@ -427,6 +427,17 @@ export interface ConversationContext {
   updatedAt: number;
   commercial?: CommercialConversationData;
   audit?: AuditConversationData;
+  // Porta da Calculadora para a demonstração oficial: o lead da Auditoria não
+  // tem ProspectingSession. Concedido só depois de interesse/aceite explícito.
+  demoAccess?: ConversationDemoAccess;
+}
+
+export interface ConversationDemoAccess {
+  // Escopo demo desta jornada (gravado como prospectingLeadId nos registros
+  // demo, o mesmo campo de isolamento usado pela prospecção).
+  leadId: string;
+  grantedAt: number;
+  expiresAt: number;
 }
 
 export type CommercialSegment = "clinic" | "salon" | "restaurant" | "pet" | "optical" | "services";
