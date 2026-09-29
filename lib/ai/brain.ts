@@ -451,6 +451,7 @@ function buildSystemPrompt(
     );
   }
   rules.push(
+    "Você recebe o histórico recente desta conversa, inclusive o que o cliente escreveu enquanto estava com um atendente humano. Nunca diga que não consegue ver mensagens anteriores; se algo não chegou a ser dito, diga isso com base no que a pessoa de fato escreveu.",
     `Se a pessoa pedir um humano/atendente, demonstrar irritação que você não consiga resolver por aqui, ou pedir algo fora do seu escopo, responda com acolhimento e chame a ferramenta request_human_handoff com um motivo curto. Se por algum motivo não conseguir chamar a ferramenta, inclua o marcador ${HANDOFF_TOKEN} ao final da resposta em texto (ele não aparece para o cliente).`,
     "- Uma reclamação ou estranhamento sobre algo que você mesma pode esclarecer ou refazer (um horário, um item do pedido) não é motivo para chamar atendente: acolha, explique com os dados reais e resolva.",
     "- Se a mensagem trouxer um pedido novo e claro que você pode atender (fazer um pedido, agendar, tirar uma dúvida), atenda esse pedido; não ofereça atendente.",
@@ -615,6 +616,25 @@ const INCAPACITY_CLAIM =
 
 export function claimsIncapacity(reply: string): boolean {
   return INCAPACITY_CLAIM.test(reply);
+}
+
+// Alegar que não enxerga mensagens/histórico desta conversa é sempre falso:
+// o histórico recente vai inteiro no contexto, inclusive o que o cliente
+// escreveu enquanto estava com um atendente humano. Em Production, depois de
+// "Devolver para Lívia", ela respondeu "não consigo ver o conteúdo dela aqui"
+// sobre uma dúvida que o cliente só anunciou ("Tenho mais uma dúvida").
+const HISTORY_BLINDNESS_CLAIM =
+  /\bn[ãa]o\s+(?:consigo|posso|tenho\s+como|estou\s+conseguindo|consegui)\s+(?:ver|visualizar|enxergar|acessar|ler|encontrar)\b[^.!?\n]{0,40}\b(?:conte[úu]do|mensage\w*|hist[óo]rico|conversa|o\s+que\s+(?:voc[êe]|foi|a\s+pessoa)\s+(?:disse|falou|escreveu|perguntou))|\bn[ãa]o\s+tenho\s+acesso\s+(?:ao|[àa]s?|aos)\s+(?:hist[óo]rico|mensage\w*|conversa|conte[úu]do)/i;
+
+export function claimsHistoryBlindness(reply: string): boolean {
+  return HISTORY_BLINDNESS_CLAIM.test(reply);
+}
+
+function withoutHistoryBlindness(reply: string): string {
+  return (reply.match(/[^.!?\n]+[.!?]*\s*/g) ?? [reply])
+    .filter((sentence) => !claimsHistoryBlindness(sentence))
+    .join("")
+    .trim();
 }
 
 // F5.6 — mesma lógica de confirmsBooking, para o desfecho de PEDIDO: o texto
@@ -1987,6 +2007,25 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       // ponto (ver desfecho inventado e enrolação); este não sobrescrevia.
       handoff = true;
       reply = "Vou chamar uma pessoa da equipe pra te ajudar com isso — já já alguém te responde por aqui.";
+    }
+
+    // ---- Trava: "não consigo ver a mensagem/o histórico" ----
+    //
+    // Falso por construção (o histórico está no contexto). Uma correção
+    // apontando para o histórico; se insistir, só a frase falsa sai — o resto
+    // da resposta (a pergunta ao cliente) é preservado, sem inventar conteúdo.
+    if (claimsHistoryBlindness(reply)) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content:
+            "A resposta acima disse que você não consegue ver mensagens ou o histórico desta conversa. Isso é falso: o histórico recente está acima, inclusive o que o cliente escreveu enquanto estava com um atendente humano. Reescreva usando esse histórico. Se o que o cliente pergunta não chegou a ser dito, diga isso com base no que ele de fato escreveu (por exemplo: \"Você comentou que tinha mais uma dúvida, mas não chegou a dizer qual era. Pode me contar?\"). Não invente o conteúdo que falta e não diga que não consegue ver.",
+        });
+        continue;
+      }
+      reply = withoutHistoryBlindness(reply) || "Pode me contar com mais detalhes?";
     }
 
     // ---- Trava: a reserva EXISTE e o texto não confirma ----
