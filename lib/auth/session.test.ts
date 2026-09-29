@@ -48,6 +48,7 @@ describe("panelAccess server-side", () => {
       status: "allowed",
       establishmentId: "est-1",
       legacy: false,
+      uid: "owner",
     });
   });
 
@@ -68,6 +69,7 @@ describe("panelAccess server-side", () => {
       status: "allowed",
       establishmentId: "legacy-est",
       legacy: true,
+      uid: "owner",
     });
   });
 
@@ -79,6 +81,7 @@ describe("panelAccess server-side", () => {
       status: "allowed",
       establishmentId: "owner",
       legacy: false,
+      uid: "owner",
     });
   });
 

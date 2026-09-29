@@ -1,53 +1,47 @@
-// Saída explícita do handoff: "Assumir conversa" / "Devolver para Livia".
+// Saída explícita do handoff: "Assumir atendimento" / "Devolver para Lívia".
 //
 // É o único caminho de volta — não existe retomada automática de propósito,
-// para a Livia nunca voltar a responder por cima de um atendente.
+// para a Livia nunca voltar a responder por cima de um atendente. Integração
+// real: rota + lib/humanHandoff/ownership.ts sobre o Firestore fake.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { PendingTask } from "@/types";
+import type { Conversation, PendingTask } from "@/types";
 
-const getConversation = vi.fn();
-const setConversationStatus = vi.fn();
-const resolvePendingTask = vi.fn();
-const getPendingTask = vi.fn();
+vi.mock("@/lib/firebase/admin", async () => {
+  const fake = await import("@/lib/__testing__/firestoreFake");
+  return { sub: fake.sub, establishmentRef: fake.establishmentRef, db: fake.fakeDb };
+});
 
+let actor: { establishmentId: string; uid: string } | null = { establishmentId: "est_odonto", uid: "owner-odonto" };
 vi.mock("@/lib/auth/session", () => ({
-  resolveEstablishmentId: vi.fn(async () => "est_odonto"),
+  resolveEstablishmentId: vi.fn(async () => actor?.establishmentId ?? null),
+  resolvePanelActor: vi.fn(async () => actor),
 }));
 
-vi.mock("@/lib/repo", () => ({
-  getConversation: (...a: unknown[]) => getConversation(...a),
-  listMessages: vi.fn(async () => []),
-  setConversationStatus: (...a: unknown[]) => setConversationStatus(...a),
-  resolvePendingTask: (...a: unknown[]) => resolvePendingTask(...a),
-  getPendingTask: (...a: unknown[]) => getPendingTask(...a),
-}));
-
+const { fakeDb } = await import("@/lib/__testing__/firestoreFake");
 const { GET, PATCH } = await import("@/app/api/conversations/[id]/route");
 
 const CONV = "5514991234567";
 
-function pending(over: Partial<PendingTask> = {}): PendingTask {
-  return {
-    id: CONV,
-    establishmentId: "est_odonto",
-    conversationId: CONV,
-    contactPhone: CONV,
-    type: "awaiting_human",
-    waitingFor: "atendimento humano",
-    status: "open",
-    createdAt: 0,
-    updatedAt: 0,
-    resolvedAt: null,
-    dueAt: null,
+function seedConversation(status: Conversation["status"], over: Partial<Conversation> = {}, establishmentId = "est_odonto") {
+  fakeDb.col(`establishments/${establishmentId}/conversations`).set(CONV, {
+    id: CONV, establishmentId, contactPhone: CONV, contactName: "Ana", status, lastMessageAt: 0, createdAt: 0,
+    aiProcessingLease: { leaseId: "lease-ia", acquiredAt: 1, expiresAt: Number.MAX_SAFE_INTEGER },
     ...over,
-  } as PendingTask;
+  });
 }
 
-async function patch(action: string) {
-  const req = new Request(`https://livia.test/api/conversations/${CONV}`, {
-    method: "PATCH",
-    body: JSON.stringify({ action }),
+function seedPending(over: Partial<PendingTask> = {}, establishmentId = "est_odonto") {
+  fakeDb.col(`establishments/${establishmentId}/pendingTasks`).set(CONV, {
+    id: CONV, establishmentId, conversationId: CONV, contactPhone: CONV, type: "awaiting_human",
+    waitingFor: "atendimento humano", status: "open", createdAt: 0, updatedAt: 0, resolvedAt: null, dueAt: null, ...over,
   });
+}
+
+const conversation = (establishmentId = "est_odonto") => fakeDb.col(`establishments/${establishmentId}/conversations`).get(CONV) as unknown as Conversation;
+const pendingTask = () => fakeDb.col("establishments/est_odonto/pendingTasks").get(CONV) as unknown as PendingTask;
+
+async function patch(action: string) {
+  const req = new Request(`https://livia.test/api/conversations/${CONV}`, { method: "PATCH", body: JSON.stringify({ action }) });
   return PATCH(req as never, { params: Promise.resolve({ id: CONV }) });
 }
 
@@ -57,95 +51,106 @@ async function get(conversationId = CONV) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  getConversation.mockResolvedValue({ id: CONV, status: "handoff" });
-  getPendingTask.mockResolvedValue(pending());
+  fakeDb.reset();
+  actor = { establishmentId: "est_odonto", uid: "owner-odonto" };
+  seedConversation("handoff", { handoffStartedAt: 500 });
+  seedPending();
 });
 
 describe("saída do handoff", () => {
-  it("assumir: conversa vira human e a pendência de humano é resolvida", async () => {
+  it("H: assumir — conversa vira human, lease da IA é revogado, autor registrado e a pendência resolvida", async () => {
     const res = await patch("assume");
 
-    expect(await res.json()).toMatchObject({ status: "human" });
-    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", CONV, "human");
-    expect(resolvePendingTask).toHaveBeenCalledWith("est_odonto", CONV);
+    expect(await res.json()).toMatchObject({ ok: true, status: "human", changed: true });
+    expect(conversation()).toMatchObject({ status: "human", aiProcessingLease: null, humanOwnership: { assumedBy: "owner-odonto" } });
+    expect(pendingTask().status).toBe("resolved");
   });
 
-  it("devolver: conversa volta pro bot E a pendência de humano é encerrada", async () => {
-    // Sem isto a conversa voltava para a Livia mas seguia marcada como
-    // "Precisa de humano" na caixa de entrada, para sempre.
+  it("M: devolver — human → bot, autor registrado e a pendência de humano encerrada", async () => {
+    await patch("assume");
+    seedPending();
     const res = await patch("return");
 
-    expect(await res.json()).toMatchObject({ status: "bot" });
-    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", CONV, "bot");
-    expect(resolvePendingTask).toHaveBeenCalledWith("est_odonto", CONV);
+    expect(await res.json()).toMatchObject({ status: "bot", changed: true });
+    expect(conversation()).toMatchObject({ status: "bot", handoffStartedAt: null, humanOwnership: { assumedBy: "owner-odonto", returnedBy: "owner-odonto" } });
+    expect(pendingTask().status).toBe("resolved");
   });
 
   it("devolver NÃO apaga uma pendência de outro tipo, que ninguém atendeu", async () => {
-    getPendingTask.mockResolvedValue(pending({ type: "appointment_started_incomplete" }));
+    seedConversation("human");
+    seedPending({ type: "appointment_started_incomplete" });
 
     await patch("return");
 
-    expect(setConversationStatus).toHaveBeenCalledWith("est_odonto", CONV, "bot");
-    expect(resolvePendingTask).not.toHaveBeenCalled();
+    expect(conversation().status).toBe("bot");
+    expect(pendingTask().status).toBe("open");
   });
 
   it("devolver sem pendência aberta não quebra", async () => {
-    getPendingTask.mockResolvedValue(null);
+    seedConversation("human");
+    fakeDb.col("establishments/est_odonto/pendingTasks").clear();
 
     const res = await patch("return");
 
     expect(res.status).toBe(200);
-    expect(resolvePendingTask).not.toHaveBeenCalled();
+    expect(conversation().status).toBe("bot");
   });
 
-  it("pendência já resolvida não é resolvida de novo", async () => {
-    getPendingTask.mockResolvedValue(pending({ status: "resolved" }));
-
+  it("Q: repetir a mesma ação é idempotente (conversa já human / já bot)", async () => {
+    await patch("assume");
+    expect(await (await patch("assume")).json()).toMatchObject({ status: "human", changed: false });
     await patch("return");
+    expect(await (await patch("return")).json()).toMatchObject({ status: "bot", changed: false });
+  });
 
-    expect(resolvePendingTask).not.toHaveBeenCalled();
+  it("conversa encerrada não é 'devolvida' — o estado não muda por engano", async () => {
+    seedConversation("closed");
+    const res = await patch("return");
+    expect(res.status).toBe(409);
+    expect(conversation().status).toBe("closed");
   });
 
   it("action inválida é recusada — não existe transição implícita de estado", async () => {
     const res = await patch("retomar_automatico");
 
     expect(res.status).toBe(400);
-    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect(conversation().status).toBe("handoff");
+  });
+
+  it("L: sem sessão válida do responsável, nenhuma ação é aplicada", async () => {
+    seedConversation("human");
+    actor = null;
+    const res = await patch("return");
+    expect(res.status).toBe(401);
+    expect(conversation().status).toBe("human");
   });
 });
 
-// OT-BETA-01: isolamento multi-tenant — obrigatório antes de liberar um
-// segundo estabelecimento real. A rota nunca lê establishmentId de outro
-// lugar além de resolveEstablishmentId(req) (ver comentário no topo de
-// route.ts); a leitura em si é sempre escopada por
-// establishments/{id}/conversations/{conversationId}, então um
-// conversationId de outro tenant simplesmente não existe nesse escopo —
-// nunca vaza dado, só retorna 404.
+// OT-BETA-01: isolamento multi-tenant. A rota nunca lê establishmentId de
+// outro lugar além da sessão; a leitura/gravação é sempre escopada por
+// establishments/{id}/conversations/{conversationId}.
 describe("isolamento entre estabelecimentos (OT-BETA-01)", () => {
-  it("GET sempre consulta o repo com o establishmentId resolvido pela sessão, nunca outro", async () => {
-    await get();
-    expect(getConversation).toHaveBeenCalledWith("est_odonto", CONV);
+  it("GET sempre consulta o tenant da sessão", async () => {
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect((await res.json()).conversation).toMatchObject({ id: CONV, establishmentId: "est_odonto" });
   });
 
-  it("conversationId que só existe em OUTRO tenant: repo retorna null (escopo errado) -> 404, sem vazar dado", async () => {
-    // Simula exatamente o que o Firestore real faz: o doc não existe dentro
-    // da subcoleção do tenant resolvido (porque pertence a outro).
-    getConversation.mockResolvedValue(null);
-
+  it("conversationId que só existe em OUTRO tenant -> 404, sem vazar dado", async () => {
     const res = await get("conv_de_outro_tenant");
 
     expect(res.status).toBe(404);
-    const body = await res.json();
-    expect(JSON.stringify(body)).not.toContain("est_"); // nunca ecoa establishmentId de ninguém
+    expect(JSON.stringify(await res.json())).not.toContain("est_");
   });
 
-  it("PATCH também nunca aplica ação a uma conversa que não existe no tenant resolvido", async () => {
-    getConversation.mockResolvedValue(null);
+  it("P: responsável do tenant B não assume nem devolve a conversa do tenant A", async () => {
+    fakeDb.col("establishments/est_odonto/conversations").clear();
+    seedConversation("human", {}, "est_a");
+    actor = { establishmentId: "est_b", uid: "owner-b" };
 
-    const res = await patch("assume");
-
-    expect(res.status).toBe(404);
-    expect(setConversationStatus).not.toHaveBeenCalled();
+    expect((await patch("return")).status).toBe(404);
+    expect((await patch("assume")).status).toBe(404);
+    expect(conversation("est_a").status).toBe("human");
+    expect(fakeDb.col("establishments/est_b/conversations").size).toBe(0);
   });
 });

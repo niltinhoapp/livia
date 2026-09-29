@@ -2005,7 +2005,7 @@ export async function transitionConversationStatusWithLease(
   leaseId: string,
   expectedStatus: Conversation["status"],
   nextStatus: Conversation["status"],
-  options: { now?: number; closedReason?: Conversation["closedReason"] } = {},
+  options: { now?: number; closedReason?: Conversation["closedReason"]; handoffStartedAt?: number } = {},
 ): Promise<boolean> {
   const ref = sub(establishmentId, "conversations").doc(conversationId);
   const now = options.now ?? Date.now();
@@ -2023,6 +2023,7 @@ export async function transitionConversationStatusWithLease(
     tx.update(ref, {
       status: nextStatus,
       ...(options.closedReason ? { closedReason: options.closedReason } : {}),
+      ...(options.handoffStartedAt ? { handoffStartedAt: options.handoffStartedAt } : {}),
     });
     return true;
   });

@@ -31,6 +31,10 @@ export function ConversationDetail({
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(conversation.status);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   // Passo 8 — "Ensinar a Livia" a partir de uma conversa: qual mensagem do
   // bot está sendo corrigida agora (null = diálogo fechado).
   const [teachDefaultQuestion, setTeachDefaultQuestion] = useState<string | null>(null);
@@ -89,13 +93,19 @@ export function ConversationDetail({
   }, [messages, scrollToBottom]);
 
   async function act(action: "assume" | "return") {
+    if (
+      action === "return" &&
+      !window.confirm("Devolver para a Lívia? Ela volta a responder este cliente automaticamente, sabendo o que você conversou com ele.")
+    ) return;
     setBusy(true);
+    setActionError(null);
     const res = await fetch(`/api/conversations/${conversation.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action }),
-    });
-    if (res.ok) {
+    }).catch(() => null);
+    if (!res?.ok) setActionError("Não foi possível concluir. Atualize a conversa e tente de novo.");
+    if (res?.ok) {
       const j = await res.json();
       setStatus(j.status);
       onStatusChanged();
@@ -107,6 +117,27 @@ export function ConversationDetail({
       shouldAutoScroll.current = true;
     }
     setBusy(false);
+  }
+
+  async function sendReply() {
+    const text = draft.trim();
+    if (!text) return;
+    setSending(true);
+    setSendError(null);
+    const res = await fetch(`/api/conversations/${conversation.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, clientMessageId: crypto.randomUUID() }),
+    }).catch(() => null);
+    const body = res ? await res.json().catch(() => ({})) : {};
+    setSending(false);
+    if (!res?.ok) {
+      setSendError(body.error ?? "Não foi possível enviar agora.");
+      return;
+    }
+    setDraft("");
+    shouldAutoScroll.current = true;
+    loadMessages();
   }
 
   const s = STATUS_LABEL[status];
@@ -128,11 +159,11 @@ export function ConversationDetail({
           <StatusBadge tone={s.tone}>{s.label}</StatusBadge>
           {status === "human" ? (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => act("return")}>
-              Devolver para Livia
+              Devolver para Lívia
             </Button>
           ) : (
             <Button size="sm" disabled={busy} onClick={() => act("assume")}>
-              Assumir conversa
+              Assumir atendimento
             </Button>
           )}
         </div>
@@ -174,11 +205,35 @@ export function ConversationDetail({
       </div>
 
       <div className="border-t border-line bg-white p-3 sm:px-4">
+        {actionError && <p className="mb-2 text-xs font-semibold text-danger-fg">{actionError}</p>}
         {status === "human" ? (
-          <div className="flex items-center gap-2 rounded-control border border-info/30 bg-info-bg/30 px-3 py-2 text-xs text-info-fg">
-            <UserCheck className="h-4 w-4 shrink-0 text-info" />
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 rounded-control border border-info/30 bg-info-bg/30 px-3 py-2 text-xs text-info-fg">
+              <UserCheck className="h-4 w-4 shrink-0 text-info" />
+              <span>
+                <strong>Atendimento com você:</strong> as próximas mensagens deste cliente continuam com você até você tocar em “Devolver para Lívia”.
+              </span>
+            </div>
+            <div className="flex items-end gap-2">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={2}
+                maxLength={4096}
+                placeholder="Responder pelo WhatsApp do estabelecimento"
+                className="min-h-[44px] flex-1 resize-y rounded-control border border-line px-3 py-2 text-sm text-ink-900 focus:border-primary focus:outline-none"
+              />
+              <Button size="sm" disabled={sending || !draft.trim()} onClick={sendReply}>
+                {sending ? "Enviando…" : "Enviar"}
+              </Button>
+            </div>
+            {sendError && <p className="text-xs font-semibold text-danger-fg">{sendError}</p>}
+          </div>
+        ) : status === "handoff" ? (
+          <div className="flex items-center gap-2 rounded-control border border-warning/30 bg-warning-bg/30 px-3 py-2 text-xs text-warning-fg">
+            <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
             <span>
-              <strong>Atendimento assumido:</strong> a Lívia não responderá neste chat. Envie suas respostas pelo WhatsApp oficial do estabelecimento.
+              <strong>Cliente aguardando uma pessoa.</strong> A Lívia parou de responder. Toque em “Assumir atendimento” para conversar com ele.
             </span>
           </div>
         ) : (

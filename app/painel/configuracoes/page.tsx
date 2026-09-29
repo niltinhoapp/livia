@@ -16,15 +16,17 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState, ErrorState } from "@/components/ui/States";
 import { ESTABLISHMENT_TYPE_LABELS, WEEKDAY_LABELS } from "@/components/lib/labels";
+import { HumanHandoffSettings } from "@/components/settings/HumanHandoffSettings";
 
 const TYPES = Object.entries(ESTABLISHMENT_TYPE_LABELS) as [EstablishmentType, string][];
 
-type Tab = "empresa" | "atendente" | "agenda" | "resumo";
+type Tab = "empresa" | "atendente" | "agenda" | "resumo" | "humano";
 const TABS: { key: Tab; label: string }[] = [
   { key: "empresa", label: "Empresa" },
   { key: "atendente", label: "Atendente virtual" },
   { key: "agenda", label: "Agenda" },
   { key: "resumo", label: "Resumo diário" },
+  { key: "humano", label: "Atendimento humano" },
 ];
 
 export default function ConfigPanel() {
@@ -59,6 +61,11 @@ export default function ConfigPanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Atalho do onboarding: /painel/configuracoes?aba=humano.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("aba") === "humano") setTab("humano");
+  }, []);
 
   const save = useCallback(async () => {
     if (!bot || !sched) return;
@@ -256,13 +263,15 @@ export default function ConfigPanel() {
         </Card>
       )}
 
-      <div className="mt-5 flex flex-wrap items-center gap-4 rounded-card border border-line bg-white/95 p-3 shadow-e2 dark:bg-[#161d2b] lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Alterações nas configurações</p><p className="text-xs text-ink-500">Salve para aplicar as mudanças ao funcionamento da Lívia.</p></div>
+      {tab === "humano" && <HumanHandoffSettings />}
+
+      {tab !== "humano" && (<div className="mt-5 flex flex-wrap items-center gap-4 rounded-card border border-line bg-white/95 p-3 shadow-e2 dark:bg-[#161d2b] lg:sticky lg:bottom-3 lg:z-10 lg:backdrop-blur"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-900">Alterações nas configurações</p><p className="text-xs text-ink-500">Salve para aplicar as mudanças ao funcionamento da Lívia.</p></div>
         <Button disabled={state === "saving"} onClick={save}>
           {state === "saving" ? "Salvando…" : "Salvar configurações"}
         </Button>
         {state === "saved" && <span className="text-sm font-semibold text-success-fg">Salvo!</span>}
         {state === "error" && <span className="text-sm font-semibold text-danger-fg">Erro ao salvar.</span>}
-      </div>
+      </div>)}
     </div>
   );
 }
