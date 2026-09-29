@@ -76,16 +76,28 @@ export interface HandoffNotificationRecord {
   createdAt: number;
   lastPushAt: number | null;
   pushReminders: number;
+  // true enquanto algum canal ainda está pending/processing: é o que a
+  // recuperação consulta para retomar um aviso interrompido.
+  needsDelivery?: boolean;
   push: HandoffNotificationChannelResult;
   whatsapp: HandoffNotificationChannelResult;
 }
 
+// pending    -> pode ser reivindicado (respeitando nextAttemptAt)
+// processing -> reivindicado por uma execução (claimId); se ficar velho, a
+//               recuperação decide: push volta a pending, template NUNCA é
+//               reenviado (resultado desconhecido vira failed)
+// sent / failed / skipped -> terminais
 export interface HandoffNotificationChannelResult {
-  status: "pending" | "sent" | "failed" | "skipped";
+  status: "pending" | "processing" | "sent" | "failed" | "skipped";
   reason?: string;
   at?: number;
   waMessageId?: string;
   delivered?: number;
+  attempts?: number;
+  claimId?: string;
+  claimedAt?: number;
+  nextAttemptAt?: number;
 }
 
 export interface PushDevice {

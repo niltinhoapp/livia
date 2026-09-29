@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { getMessaging } from "firebase-admin/messaging";
 import { db, firebaseAdminApp, sub } from "@/lib/firebase/admin";
-import type { HandoffNotificationChannelResult, PushDevice } from "@/types";
+import type { PushDevice } from "@/types";
 
 const MAX_DEVICES = 20;
 // Tokens que o FCM declara mortos: removidos para não serem tentados de novo.
@@ -49,26 +49,37 @@ export interface HandoffPushMessage {
   tag: string;
 }
 
-export async function sendHandoffPush(establishmentId: string, message: HandoffPushMessage): Promise<HandoffNotificationChannelResult> {
-  const at = Date.now();
+export type PushOutcome =
+  | { kind: "sent"; delivered: number }
+  | { kind: "skipped"; reason: string }
+  // Todos os aparelhos recusados de forma definitiva (token morto).
+  | { kind: "permanent"; reason: string }
+  // FCM/rede indisponível: vale tentar de novo (tentativas limitadas).
+  | { kind: "transient"; reason: string };
+
+export async function sendHandoffPush(establishmentId: string, message: HandoffPushMessage): Promise<PushOutcome> {
   const snap = await sub(establishmentId, "pushDevices").limit(MAX_DEVICES).get();
   const devices = snap.docs.map((doc) => doc.data() as PushDevice).filter((d) => typeof d.token === "string" && d.token);
-  if (devices.length === 0) return { status: "skipped", reason: "no_devices", at };
+  if (devices.length === 0) return { kind: "skipped", reason: "no_devices" };
   try {
     const response = await getMessaging(firebaseAdminApp).sendEachForMulticast({
       tokens: devices.map((d) => d.token),
       data: { title: message.title, body: message.body, url: message.url, tag: message.tag },
-      webpush: { headers: { Urgency: "high", TTL: "86400" } },
+      // Topic: o serviço de push substitui uma mensagem ainda não entregue com
+      // o mesmo tópico — um reenvio do mesmo aviso não empilha no aparelho.
+      webpush: { headers: { Urgency: "high", TTL: "86400", Topic: createHash("sha256").update(message.tag).digest("hex").slice(0, 32) } },
     });
+    let dead = 0;
     await Promise.all(response.responses.map(async (result, index) => {
       if (!result.success && result.error && DEAD_TOKEN_CODES.has(result.error.code)) {
+        dead++;
         await sub(establishmentId, "pushDevices").doc(devices[index]!.id).delete();
       }
     }));
-    return response.successCount > 0
-      ? { status: "sent", delivered: response.successCount, at }
-      : { status: "failed", reason: response.responses.find((r) => r.error)?.error?.code ?? "push_failed", delivered: 0, at };
+    if (response.successCount > 0) return { kind: "sent", delivered: response.successCount };
+    if (dead === devices.length) return { kind: "permanent", reason: "no_valid_devices" };
+    return { kind: "transient", reason: response.responses.find((r) => r.error)?.error?.code ?? "push_failed" };
   } catch (error) {
-    return { status: "failed", reason: error instanceof Error ? error.name : "push_failed", at };
+    return { kind: "transient", reason: error instanceof Error ? error.name : "push_failed" };
   }
 }

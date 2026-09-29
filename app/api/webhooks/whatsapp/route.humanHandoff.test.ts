@@ -194,7 +194,41 @@ describe("handoff humano comercial — jornada completa", () => {
     expect(conversation().status).toBe("handoff");
     expect(fakeDb.col(`establishments/${EST}/pendingTasks`).get(CUSTOMER)).toMatchObject({ status: "open" });
     expect(sendText).toHaveBeenCalledTimes(1);
-    expect(episodes()[0]).toMatchObject({ push: { status: "failed" }, whatsapp: { status: "failed" } });
+    // Resposta HTTP de erro da Meta e FCM fora do ar: transitórios, reagendados.
+    expect(episodes()[0]).toMatchObject({ needsDelivery: true, push: { status: "pending", attempts: 1 }, whatsapp: { status: "pending", attempts: 1 } });
+  });
+
+  it("processo caiu entre gravar o handoff e avisar: o cron de recuperação avisa uma vez e a posse não muda", async () => {
+    // Simula a queda: o handoff foi gravado, mas nenhum aviso/episódio chegou a existir.
+    const configured = establishment().humanHandoffNotifications;
+    fakeDb.col("establishments").set(EST, establishment({ humanHandoffNotifications: undefined }));
+    await customerSays("quero falar com um atendente");
+    expect(conversation().status).toBe("handoff");
+    expect(episodes()).toHaveLength(0);
+    fakeDb.col("establishments").set(EST, establishment({ humanHandoffNotifications: configured }));
+
+    const { GET: cron } = await import("@/app/api/cron/whatsapp-inbound-recovery/route");
+    process.env.CRON_SECRET = "cron-handoff";
+    const run = () => cron(new NextRequest("http://localhost/api/cron/whatsapp-inbound-recovery", { headers: { authorization: "Bearer cron-handoff" } }));
+    advance(60_000);
+    await Promise.all([run(), run()]);
+    advance(60_000);
+    await run();
+
+    expect(sendTemplate).toHaveBeenCalledTimes(1);
+    expect(sendEachForMulticast).toHaveBeenCalledTimes(1);
+    expect(episodes()[0]).toMatchObject({ needsDelivery: false, push: { status: "sent" }, whatsapp: { status: "sent" } });
+    expect(conversation().status).toBe("handoff");
+
+    // Continua sendo do humano depois de assumir; nada volta sozinho, nem com o cron rodando.
+    await panel("assume");
+    advance(2 * 24 * 60 * 60 * 1000);
+    await run();
+    await customerSays("oi, alguém?");
+    expect(conversation().status).toBe("human");
+    expect(think).toHaveBeenCalledTimes(1);
+    expect(sendTemplate).toHaveBeenCalledTimes(1);
+    delete process.env.CRON_SECRET;
   });
 
   it("Q: webhook duplicado (mesmo wamid) não duplica handoff nem aviso", async () => {
