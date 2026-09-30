@@ -38,6 +38,7 @@ import {
 import { getCustomerProfile, upsertCustomerProfile } from "@/lib/repo";
 import { normalizePhone } from "@/lib/whatsapp/client";
 import { menuProductMatches } from "@/lib/ai/menuSearch";
+import { traceEvent } from "@/lib/pipelineTrace";
 const orderService = () => import("@/lib/orders");
 
 export interface ToolContext {
@@ -828,6 +829,16 @@ export function toolsFor(ctx: ToolContext): OpenAI.Chat.ChatCompletionTool[] {
 }
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  // Trace: só nome da ferramenta, quantidade de argumentos e desfecho —
+  // nunca os valores (nome, telefone, endereço do cliente).
+  const startedAt = Date.now();
+  traceEvent("tool_requested", () => ({ tool: name, argsCount: args && typeof args === "object" ? Object.keys(args).length : 0 }));
+  const result = await executeTool(name, args, ctx);
+  traceEvent("tool_result", () => ({ tool: name, ok: result.ok, reasonCode: result.reasonCode ?? null, durationMs: Date.now() - startedAt }));
+  return result;
+}
+
+async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const tool = TOOL_REGISTRY.find((candidate) => candidate.name === name && toolEnabled(candidate, ctx));
   if (!tool) return { ok: false, error: `ferramenta desconhecida ou indisponível: ${name}` };
   try {

@@ -19,6 +19,8 @@ import { evaluateTrust } from "@/lib/ai/trustPolicy";
 import { contentForAI } from "@/lib/ai/messageContent";
 import { greetingGuidanceLine } from "@/lib/ai/dayPeriod";
 import { runCompletion } from "@/lib/ai/gateway";
+import { classifyAiFailure } from "@/lib/ai/llmContingency";
+import { traceEvent } from "@/lib/pipelineTrace";
 import { isSilentAcknowledgement } from "@/lib/ai/acknowledgement";
 import { isPureSocialFarewell } from "@/lib/ai/conversationClosure";
 import { operationSemanticKey, stableToolOperationId } from "@/lib/ai/operationId";
@@ -1654,13 +1656,28 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Loop de ferramentas (máx. algumas iterações pra não travar).
   for (let i = 0; i < 4; i++) {
     if (!(await canContinueAutomation())) return abortForHandoff();
-    const msg = await runCompletion({
-      purpose: "reception",
-      messages,
-      tools,
-      temperature: 0.4,
-      maxOutputTokens: 500,
-    });
+    const llmStartedAt = Date.now();
+    traceEvent("llm_requested", () => ({ round: i + 1, historyCount: messages.length, toolsCount: tools.length }));
+    let msg: Awaited<ReturnType<typeof runCompletion>>;
+    try {
+      msg = await runCompletion({
+        purpose: "reception",
+        messages,
+        tools,
+        temperature: 0.4,
+        maxOutputTokens: 500,
+      });
+    } catch (err) {
+      // O erro segue para o webhook exatamente como antes (retry/contingência).
+      traceEvent("llm_completed", () => ({ round: i + 1, outcome: "error", errorKind: classifyAiFailure(err), durationMs: Date.now() - llmStartedAt }));
+      throw err;
+    }
+    traceEvent("llm_completed", () => ({
+      round: i + 1,
+      outcome: !msg ? "empty" : msg.tool_calls?.length ? "tool_calls" : "reply",
+      toolCallsCount: msg?.tool_calls?.length ?? 0,
+      durationMs: Date.now() - llmStartedAt,
+    }));
     if (!msg) break;
 
     if (msg.tool_calls?.length) {
@@ -1673,6 +1690,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
           args = JSON.parse(tc.function.arguments || "{}");
         } catch {
           // args malformado — segue com {} e deixa a ferramenta validar.
+          traceEvent("guardrail_result", { guard: "invalid_tool_args", tool: name, action: "empty_args" });
         }
         // Identidade semântica estável: independe da iteração, posição e ID
         // efêmero produzidos pelo provider em um replay do mesmo inbound.
@@ -1719,6 +1737,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         // válido e consultas posteriores continuem possíveis.
         if (AGENDA_MUTATION_TOOLS.has(name) && agendaMutation) {
           blockedAgendaMutation ??= name;
+          traceEvent("guardrail_result", { guard: "single_agenda_mutation_per_turn", tool: name, action: "blocked" });
           messages.push({
             role: "tool",
             tool_call_id: tc.id,
@@ -1741,11 +1760,13 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         }
         if (name === "confirm_order" && !toolCtx.orderConfirmation?.explicitlyConfirmed) {
           confirmationRejectedThisTurn = true;
+          traceEvent("guardrail_result", { guard: "confirm_order_requires_explicit_confirmation", tool: name, action: "blocked" });
           messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "explicit confirmation of the pending canonical summary is required" }) });
           continue;
         }
         if (ORDER_MUTATION_TOOLS.has(name) && orderMutationAttempts >= MAX_ORDER_MUTATIONS_PER_TURN) {
           orderMutationLimitReached = true;
+          traceEvent("guardrail_result", { guard: "order_mutation_limit", tool: name, action: "blocked" });
           messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: false, ignored: true, error: "order mutation limit reached for this turn", data: { limit: MAX_ORDER_MUTATIONS_PER_TURN, executed: orderMutationAttempts, operationExecuted: false } }) });
           continue;
         }
@@ -1924,6 +1945,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (hasCapability(capabilities, "order_read") && claimsOrderConfirmed(reply) && !orderConfirmedThisTurn) {
       if (!stallCorrected) {
         stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "order_confirmation_claim", action: "corrective_pass" });
         messages.push({ role: "assistant", content: reply });
         messages.push({
           role: "system",
@@ -1993,6 +2015,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (agendaInScope && claimsIncapacity(reply) && tools.length > 0) {
       if (!stallCorrected) {
         stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "invented_incapacity", action: "corrective_pass" });
         const disponiveis = tools.map((t) => t.function.name).join(", ");
         messages.push({ role: "assistant", content: reply });
         messages.push({
@@ -2017,6 +2040,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (claimsHistoryBlindness(reply)) {
       if (!stallCorrected) {
         stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "history_blindness", action: "corrective_pass" });
         messages.push({ role: "assistant", content: reply });
         messages.push({
           role: "system",
@@ -2074,6 +2098,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
       } else if (!consultouAgenda) {
         if (!stallCorrected) {
           stallCorrected = true;
+          traceEvent("guardrail_result", { guard: "booking_denial_without_lookup", action: "corrective_pass" });
           messages.push({ role: "assistant", content: reply });
           messages.push({
             role: "system",
@@ -2095,6 +2120,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (agendaInScope && claimsAvailableSlots(reply) && !ultimaDisponibilidade) {
       if (!stallCorrected) {
         stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "unlisted_slots", action: "corrective_pass" });
         messages.push({ role: "assistant", content: reply });
         messages.push({
           role: "system",
@@ -2122,6 +2148,7 @@ export async function think(input: BrainInput): Promise<BrainResult> {
     if (looksLikeStalling(reply) && !handoff) {
       if (!stallCorrected) {
         stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "stalling", action: "corrective_pass" });
         messages.push({ role: "assistant", content: reply });
         messages.push({
           role: "system",

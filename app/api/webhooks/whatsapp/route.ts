@@ -15,6 +15,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { logError } from "@/lib/observability";
+import { currentTraceId, runWithTrace, traceEvent } from "@/lib/pipelineTrace";
+import { classifyAiFailure, LLM_CONTINGENCY_REPLY, shouldActivateLlmContingency } from "@/lib/ai/llmContingency";
 import {
   findEstablishmentByPhoneNumberId,
   getEstablishment,
@@ -489,30 +491,38 @@ async function persistInboundMessage(
     logStage("message without waMessageId, ignored", { msgId: msg.id });
     return null;
   }
-  // Dedupe somente de CONCLUSÃO. Recebimentos em andamento são deduplicados
-  // pelo documento do inbox, sem se tornarem irrecuperáveis.
-  if (await alreadyProcessed(inbound.waMessageId)) {
-    logStage("duplicate message, ignored", { msgId: msg.id });
-    return null;
-  }
+  const waMessageId = inbound.waMessageId;
+  const phoneNumberId = value.metadata.phone_number_id;
+  return runWithTrace({ messageId: waMessageId }, async () => {
+    traceEvent("message_received", { kind: inbound.kind });
+    // Dedupe somente de CONCLUSÃO. Recebimentos em andamento são deduplicados
+    // pelo documento do inbox, sem se tornarem irrecuperáveis.
+    if (await alreadyProcessed(waMessageId)) {
+      logStage("duplicate message, ignored", { msgId: msg.id });
+      traceEvent("processing_completed", { outcome: "duplicate_ignored" });
+      return null;
+    }
 
-  const est = await resolveInboundEstablishment(value);
-  if (!est) {
-    logStage("establishment not found or channel not connected", { msgId: msg.id });
-    return null;
-  }
-  const contactName = value.contacts?.[0]?.profile?.name ?? null;
-  const loaded = await loadConversation(est.id, inbound.from, contactName);
-  const queued = await enqueueWhatsAppInboundJob({
-    waMessageId: inbound.waMessageId,
-    establishmentId: est.id,
-    conversationId: loaded.conversation.id,
-    whatsappPhoneNumberId: value.metadata.phone_number_id,
-    value: value as unknown as Record<string, unknown>,
-    message: msg as unknown as Record<string, unknown>,
+    const est = await resolveInboundEstablishment(value);
+    traceEvent("tenant_resolved", { resolved: Boolean(est), establishmentId: est?.id ?? null });
+    if (!est) {
+      logStage("establishment not found or channel not connected", { msgId: msg.id });
+      return null;
+    }
+    const contactName = value.contacts?.[0]?.profile?.name ?? null;
+    const loaded = await loadConversation(est.id, inbound.from, contactName);
+    const queued = await enqueueWhatsAppInboundJob({
+      waMessageId,
+      establishmentId: est.id,
+      conversationId: loaded.conversation.id,
+      whatsappPhoneNumberId: phoneNumberId,
+      value: value as unknown as Record<string, unknown>,
+      message: msg as unknown as Record<string, unknown>,
+    });
+    traceEvent("message_queued", { direction: "inbound", sequence: queued.sequence ?? null });
+    if (queued.sequence === null) return null;
+    return { establishmentId: est.id, conversationId: loaded.conversation.id };
   });
-  if (queued.sequence === null) return null;
-  return { establishmentId: est.id, conversationId: loaded.conversation.id };
 }
 
 export async function drainConversationInbox(establishmentId: string, conversationId: string): Promise<void> {
@@ -543,25 +553,33 @@ export async function drainConversationInbox(establishmentId: string, conversati
         if (!(await renewConversationProcessingLease(establishmentId, conversationId, leaseId, {
           allowNonAutomatedStatus: true,
         }))) return;
-        try {
-          await processQueuedMessage(job, leaseId);
-        } catch (error) {
-          const terminal = error instanceof OutboundReconciliationRequiredError ||
-            error instanceof OutboundIntentConflictError ||
-            error instanceof WhatsAppChannelGenerationError;
-          const result = await failWhatsAppInboundJob(job, leaseId, inboundFailureCode(error), { terminal });
-          console.error("PIPELINE THROW:", error);
-      logStage("inbound job failed", {
-            establishmentId,
-            conversationId,
-            outcome: result,
-            errorCode: inboundFailureCode(error),
-          });
-          if (result === "retry_scheduled") {
+        const traced = await runWithTrace({ messageId: job.id, establishmentId, attempt: Number(job.attempts ?? 0) + 1 }, async () => {
+          try {
+            await processQueuedMessage(job, leaseId);
+            traceEvent("processing_completed", { outcome: "processed" });
+            return { failed: false as const };
+          } catch (error) {
+            const terminal = error instanceof OutboundReconciliationRequiredError ||
+              error instanceof OutboundIntentConflictError ||
+              error instanceof WhatsAppChannelGenerationError;
+            const result = await failWhatsAppInboundJob(job, leaseId, inboundFailureCode(error), { terminal });
+            traceEvent("processing_failed", { errorCode: inboundFailureCode(error), outcome: result, terminal });
+            logError({ category: "whatsapp_webhook", operation: "inbound_job_failed", establishmentId, requestId: currentTraceId() ?? undefined, error });
+            logStage("inbound job failed", {
+              establishmentId,
+              conversationId,
+              outcome: result,
+              errorCode: inboundFailureCode(error),
+            });
+            return { failed: true as const, result };
+          }
+        });
+        if (traced.failed) {
+          if (traced.result === "retry_scheduled") {
             await releaseConversationProcessingLease(establishmentId, conversationId, leaseId);
             return;
           }
-          if (result === "lease_lost") return;
+          if (traced.result === "lease_lost") return;
           continue;
         }
         if (!(await completeWhatsAppInboundJob(job, leaseId))) return;
@@ -622,6 +640,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   if (inbound.waMessageId) await markAsRead(wa, est.id, inbound.waMessageId);
 
   const { conversation, history } = await loadConversation(est.id, contactPhone, contactName);
+  traceEvent("conversation_loaded", () => ({ status: conversation.status, historyCount: history.length, kind: inbound.kind }));
 
   let prospectingContext: import("@/types").ProspectingContext | undefined;
   let prospectingSession: import("@/types").ProspectingSession | null = null;
@@ -679,6 +698,8 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
 
   const existingOutbound = await getWhatsAppOutboundIntent(job.id);
   if (existingOutbound?.state === "confirmed") {
+    // Retry de um job cuja resposta já saiu: só reconcilia, nunca reenvia.
+    traceEvent("message_sent", { delivered: true, replayed: true });
     await appendMessage(est.id, conversation.id, "bot", existingOutbound.text, existingOutbound.waMessageId ?? undefined);
     if (existingOutbound.prospectingAction) {
       if (existingOutbound.prospectingAction.action === "increment_pre_reveal") {
@@ -956,6 +977,12 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     ordersEnabled: Boolean(est.bot.ordersEnabled),
     demoAuthorized: false, // recalculado após authorizeDemo, antes do brain
   });
+  traceEvent("conversation_mode", () => ({
+    purpose: contextResolution.context.purpose,
+    source: contextResolution.context.source,
+    changed: contextResolution.changed,
+    prospectingStatus: prospectingContext?.status ?? null,
+  }));
   if (contextResolution.changed) {
     await setConversationContext(
       est.id,
@@ -1168,6 +1195,11 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     }
   }
 
+  traceEvent("handoff_state", () => ({
+    status: conversation.status,
+    offerPending: Boolean(conversation.awaitingHumanOfferConfirmation) && !humanOfferClosedThisTurn,
+    automation: conversation.status === "human" || conversation.status === "handoff" ? "silent" : "active",
+  }));
   if (conversation.status === "human" || conversation.status === "handoff") {
     logStage("conversation not handled by Livia (human/handoff), message only logged", {
       msgId: msg.id,
@@ -1295,6 +1327,11 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   const existingTask: ConversationTask | null = contextResolution.context.purpose === "audit"
     ? null
     : conversation.task ?? null;
+  traceEvent("task_state", () => ({
+    task: existingTask?.type ?? "none",
+    state: existingTask?.state ?? null,
+    missingCount: existingTask?.missingData?.length ?? 0,
+  }));
 
   if (isSilentAcknowledgement(customerText, detectedIntent, existingTask, history)) {
     logStage("silent acknowledgement, no reply", { msgId: msg.id, estId: est.id, conversationId: conversation.id });
@@ -1328,6 +1365,18 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
   const orderAwaitingConfirmation = activeOrder?.status === "awaiting_confirmation"
     ? { orderId: activeOrder.id, version: activeOrder.version }
     : null;
+  traceEvent("context_built", () => ({
+    intent: detectedIntent.type,
+    historyCount: historyForAI.length,
+    hasKnowledgeBase: Boolean(kb),
+    hasProfile: Boolean(customerProfile),
+    demoAuthorized: demoAuthorization.authorized,
+    agendaMutate: effectiveCapabilities.agenda_mutate,
+    orderMutate: effectiveCapabilities.order_mutate,
+    humanHandoffAllowed: effectiveCapabilities.human_handoff,
+    commercialGuidance: effectiveCapabilities.commercial_guidance,
+    activeOrder: activeOrder?.status ?? null,
+  }));
   let brainResult: Awaited<ReturnType<typeof think>>;
   try {
     brainResult = await think({
@@ -1355,13 +1404,65 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     // A IA falhou (ex.: OpenAI fora do ar, erro de execução de ferramenta).
     // Sem isto, o erro subia genérico até o catch do POST e o log não dizia
     // em qual etapa exatamente a mensagem morreu.
+    const failureKind = classifyAiFailure(err);
     logStage("AI call failed", {
       msgId: msg.id,
       estId: est.id,
       conversationId: conversation.id,
       errorType: err instanceof Error ? err.name : "unknown",
+      failureKind,
     });
-    throw err;
+    // Turno que perdeu a autoridade (handoff/lease) não é falha do LLM, e as
+    // primeiras falhas seguem o retry do inbox como sempre.
+    const lostAuthority = err instanceof Error && err.name === "AutomationFenceError";
+    if (lostAuthority || !shouldActivateLlmContingency(failureKind, Number(job.attempts ?? 0))) {
+      traceEvent("guardrail_result", { guard: "llm_contingency", kind: failureKind, action: "retry" });
+      throw err;
+    }
+
+    // Falha persistente: sem isto a mensagem seguiria até a dead letter e o
+    // cliente ficaria sem resposta. Mesmo protocolo do aceite de oferta humana:
+    // a transição (com lease) vem antes do aviso, então a Lívia não volta a
+    // responder sozinha nem se o envio falhar. Se a conversa já não está com a
+    // Lívia (humano assumiu durante a falha), nada é sobrescrito: o erro segue
+    // para o retry, que cai no caminho silencioso de handoff/human.
+    const handoffStartedAt = Date.now();
+    const transitioned = await transitionConversationStatusWithLease(est.id, conversation.id, leaseId, "bot", "handoff", { handoffStartedAt });
+    if (!transitioned) {
+      traceEvent("guardrail_result", { guard: "llm_contingency", kind: failureKind, action: "skipped_not_owner" });
+      throw err;
+    }
+    if (prospectingContext && prospectingContext.status !== "EXPIRED") {
+      await import("@/lib/repo").then((m) => m.transitionProspectingSession(est.id, contactPhone, { action: "set_outcome", status: "HUMAN" }));
+    }
+    await upsertPendingTask(est.id, conversation.id, contactPhone, {
+      type: "awaiting_human",
+      waitingFor: "atendimento humano",
+    });
+    // Um único aviso, pelo outbox deste job (idempotente). Não sai quando:
+    // - já existe intenção de envio deste job (uma resposta anterior pode ter
+    //   chegado ao cliente — um segundo texto duplicaria);
+    // - a abordagem de prospecção ainda não se revelou (o texto a revelaria).
+    const preReveal = prospectingContext?.status === "LIVIA_ACTIVE";
+    const notifyCustomer = !existingOutbound && !preReveal;
+    if (notifyCustomer) {
+      try {
+        await replyAndLog(wa, est, conversation.id, contactPhone, LLM_CONTINGENCY_REPLY, false, msg.id, outboundContext(["handoff"]));
+      } catch (sendErr) {
+        // A conversa já está com a equipe; o aviso é best-effort e não reabre
+        // o ciclo de retry da mensagem.
+        logStage("LLM contingency reply failed", {
+          msgId: msg.id,
+          estId: est.id,
+          conversationId: conversation.id,
+          errorCode: inboundFailureCode(sendErr),
+        });
+      }
+    }
+    traceEvent("guardrail_result", { guard: "llm_contingency", kind: failureKind, action: notifyCustomer ? "handoff_notified" : "handoff_silent" });
+    logError({ category: "ai_openai", operation: "llm_contingency_handoff", establishmentId: est.id, requestId: currentTraceId() ?? undefined, error: err });
+    await notifyResponsible("confirmed", est, { ...conversation, status: "handoff", handoffStartedAt }, contextResolution.context);
+    return;
   }
   if (brainResult.abortedForHandoff || !(await canContinueAutomation())) {
     logStage("AI response discarded because human handoff won during processing", {
@@ -1655,7 +1756,8 @@ async function deliverFinalReply(
     }
   }
 
-  return executeDurableWhatsAppOutbound({
+  traceEvent("message_queued", () => ({ direction: "outbound", voice: Boolean(audio), allowedStatuses: outbound.allowedStatuses.join(",") }));
+  const sent = await executeDurableWhatsAppOutbound({
     jobId: outbound.jobId,
     establishmentId: establishment.id,
     conversationId,
@@ -1684,6 +1786,9 @@ async function deliverFinalReply(
     if (error instanceof WhatsAppAudioSendError) return { code: error.code, ambiguous: error.code === "audio_send_ambiguous" };
     return { code: error instanceof Error ? error.name : "outbound_unknown_error", ambiguous: true };
   });
+  // null = o outbox recusou (status mudou, ex.: humano assumiu) — nada saiu.
+  traceEvent("message_sent", { delivered: Boolean(sent), hasProviderId: Boolean(sent?.waMessageId) });
+  return sent;
 }
 
 // ---- Tipos do payload do webhook da Meta (parcial, só o que usamos) ----
