@@ -266,3 +266,21 @@ Não assumir que documentação antiga representa o estado atual quando o códig
 ## Direção
 
 A Lívia não é mais apenas uma recepcionista com agenda. Hoje o produto combina atendimento, voz, CRM, campanhas e operação de pedidos no WhatsApp. A evolução deve continuar incremental, usando o backend como fonte de verdade e preservando o que já está validado em produção.
+
+## 15. Plano de Inovação e Melhorias de Conversão (Próximas Sprints)
+
+Alinhado com o princípio de "redução de fricção" na Vertical Alimentação, as seguintes metas técnicas estão definidas para as próximas etapas evolutivas, focando em aumento de receita e usabilidade:
+
+1. **Repetir Último Pedido (One-Click Reorder):**
+   - Interceptar mensagens iniciais (webhook) e cruzar com CRM/Firestore.
+   - Usar *Meta Interactive Message* (botões) para recompras instantâneas sem passar pelo fluxo completo da IA.
+2. **Avaliação Pós-Entrega Interativa (NPS):**
+   - Usar *Cloud Tasks* disparadas pela máquina de estados (quando `ENTREGUE`).
+   - Usar *Meta List Messages* para enviar opção de 1 a 5 estrelas e popular dashboard do comerciante.
+3. **Importação Mágica de Cardápio com Visão Computacional:**
+   - Tela de upload no painel (Next.js + Firebase Storage).
+   - Extração via IA Multimodal (Gemini/GPT-4o) para JSON (*Structured Outputs*).
+   - Fluxo de revisão humana antes da publicação para evitar distorções de preço.
+4. **Recuperação de Carrinho Abandonado:**
+   - Background job (Firebase Functions) iterando por pedidos em `DRAFT` inativos.
+   - Mensagem de notificação (respeitando restrições de spam e opt-out) para reativar contexto da IA.
