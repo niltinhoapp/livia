@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Establishment, Intent, Message } from "@/types";
-import { chatCompletionCompatibilityParams } from "./openaiCompatibility";
+import {
+  chatCompletionCompatibilityParams,
+  requiresReasoningNone,
+  requiresResponsesApiForTools,
+  UnsupportedModelError,
+} from "./openaiCompatibility";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
@@ -70,6 +75,59 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe("troca de modelo por família, não por nome exato", () => {
+  // A promessa é "trocar LIVIA_MODEL e pronto". Estas tiers são nomes
+  // diferentes da MESMA restrição de endpoint, então todas precisam do
+  // reasoning_effort "none" — antes só gpt-5.6-terra recebia, e as outras
+  // levavam 400 em todo turno com tools.
+  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna"])(
+    "envia reasoning_effort none para %s",
+    (model) => {
+      expect(requiresReasoningNone(model)).toBe(true);
+      expect(chatCompletionCompatibilityParams(model, 500)).toEqual({
+        max_completion_tokens: 500,
+        reasoning_effort: "none",
+      });
+    },
+  );
+
+  // Modelos sem raciocínio rejeitam reasoning_effort. Um nome desconhecido cai
+  // na mesma trilha: o request continua sendo o que a Lívia sempre mandou.
+  it.each(["gpt-4o-mini", "gpt-4o", "modelo-futuro-desconhecido"])(
+    "não envia reasoning_effort para %s",
+    (model) => {
+      expect(requiresReasoningNone(model)).toBe(false);
+      expect(chatCompletionCompatibilityParams(model, 500)).toEqual({
+        max_completion_tokens: 500,
+      });
+    },
+  );
+
+  // Estes aceitam só low..max: não há como mandar function tools no Chat
+  // Completions. Falhar aqui, com o motivo, é melhor que um 400 do provider
+  // classificado como provider_rejected — que manda toda conversa para
+  // atendimento humano já na primeira tentativa.
+  it.each(["gpt-6-astra", "gpt-6.1-sol"])(
+    "recusa %s explicitamente em vez de deixar o provider devolver 400",
+    (model) => {
+      expect(requiresResponsesApiForTools(model)).toBe(true);
+      expect(() => chatCompletionCompatibilityParams(model, 500)).toThrow(UnsupportedModelError);
+      expect(() => chatCompletionCompatibilityParams(model, 500)).toThrow(/Responses API/);
+    },
+  );
+
+  it("gpt-6-sol não é confundido com gpt-6.1-sol", () => {
+    expect(requiresResponsesApiForTools("gpt-6-sol")).toBe(false);
+    expect(requiresReasoningNone("gpt-6.1-sol")).toBe(false);
+  });
+
+  // Snapshots datados do provider continuam na mesma família.
+  it("casa variantes datadas da família", () => {
+    expect(requiresReasoningNone("gpt-5.6-sol-2026-06-26")).toBe(true);
+    expect(requiresResponsesApiForTools("gpt-6-astra-2026-09-01")).toBe(true);
+  });
+});
+
 describe("parâmetros compatíveis do Chat Completions", () => {
   it("configura GPT-5.6 Terra com max_completion_tokens e reasoning none", () => {
     expect(chatCompletionCompatibilityParams("gpt-5.6-terra", 500)).toEqual({
@@ -114,6 +172,36 @@ describe("parâmetros compatíveis do Chat Completions", () => {
       }),
     );
     expect(mocks.create.mock.calls[0]![0]).not.toHaveProperty("max_tokens");
+    expect(mocks.runTool).toHaveBeenCalledWith("get_business_hours", {}, expect.anything());
+    expect(result.reply).toBe("A clínica está aberta.");
+  });
+
+  // O caminho completo da troca para a tier mais capaz da família: o tool loop
+  // e os guards do brain não mudam, só os parâmetros do request.
+  it("preserva tools, temperatura e o tool loop com GPT-5.6 Sol", async () => {
+    const modelMessages = [
+      {
+        content: null,
+        tool_calls: [{ id: "call-hours", function: { name: "get_business_hours", arguments: "{}" } }],
+      },
+      { content: "A clínica está aberta." },
+    ];
+    mocks.create.mockImplementation(async () => ({ choices: [{ message: modelMessages.shift() }] }));
+
+    const result = await runThink("gpt-5.6-sol");
+
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+    expect(mocks.create.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        model: "gpt-5.6-sol",
+        temperature: 0.4,
+        max_completion_tokens: 500,
+        reasoning_effort: "none",
+        tools: expect.arrayContaining([
+          expect.objectContaining({ function: expect.objectContaining({ name: "get_business_hours" }) }),
+        ]),
+      }),
+    );
     expect(mocks.runTool).toHaveBeenCalledWith("get_business_hours", {}, expect.anything());
     expect(result.reply).toBe("A clínica está aberta.");
   });
