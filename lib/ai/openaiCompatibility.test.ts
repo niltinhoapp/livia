@@ -4,6 +4,7 @@ import {
   chatCompletionCompatibilityParams,
   requiresReasoningNone,
   requiresResponsesApiForTools,
+  supportsTemperature,
   UnsupportedModelError,
 } from "./openaiCompatibility";
 
@@ -84,7 +85,7 @@ describe("troca de modelo por família, não por nome exato", () => {
     "envia reasoning_effort none para %s",
     (model) => {
       expect(requiresReasoningNone(model)).toBe(true);
-      expect(chatCompletionCompatibilityParams(model, 500)).toEqual({
+      expect(chatCompletionCompatibilityParams(model, 500, 0.4)).toMatchObject({
         max_completion_tokens: 500,
         reasoning_effort: "none",
       });
@@ -97,8 +98,9 @@ describe("troca de modelo por família, não por nome exato", () => {
     "não envia reasoning_effort para %s",
     (model) => {
       expect(requiresReasoningNone(model)).toBe(false);
-      expect(chatCompletionCompatibilityParams(model, 500)).toEqual({
+      expect(chatCompletionCompatibilityParams(model, 500, 0.4)).toEqual({
         max_completion_tokens: 500,
+        temperature: 0.4,
       });
     },
   );
@@ -111,8 +113,8 @@ describe("troca de modelo por família, não por nome exato", () => {
     "recusa %s explicitamente em vez de deixar o provider devolver 400",
     (model) => {
       expect(requiresResponsesApiForTools(model)).toBe(true);
-      expect(() => chatCompletionCompatibilityParams(model, 500)).toThrow(UnsupportedModelError);
-      expect(() => chatCompletionCompatibilityParams(model, 500)).toThrow(/Responses API/);
+      expect(() => chatCompletionCompatibilityParams(model, 500, 0.4)).toThrow(UnsupportedModelError);
+      expect(() => chatCompletionCompatibilityParams(model, 500, 0.4)).toThrow(/Responses API/);
     },
   );
 
@@ -128,17 +130,41 @@ describe("troca de modelo por família, não por nome exato", () => {
   });
 });
 
+// gpt-6-sol e gpt-6-luna mantêm o raciocínio sempre ligado por dentro e
+  // rejeitam temperature em TODO nível de esforço, inclusive "none". Enviar o
+  // parâmetro é 400 em toda mensagem — a mesma parada total que o
+  // reasoning_effort ausente causava.
+  describe("temperature por família", () => {
+    it.each(["gpt-6-sol", "gpt-6-luna"])("não envia temperature para %s", (model) => {
+      expect(supportsTemperature(model)).toBe(false);
+      expect(chatCompletionCompatibilityParams(model, 500, 0.4)).toEqual({
+        max_completion_tokens: 500,
+        reasoning_effort: "none",
+      });
+    });
+
+    it.each(["gpt-4o-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"])(
+      "envia temperature para %s",
+      (model) => {
+        expect(supportsTemperature(model)).toBe(true);
+        expect(chatCompletionCompatibilityParams(model, 500, 0.4)).toHaveProperty("temperature", 0.4);
+      },
+    );
+  });
+
 describe("parâmetros compatíveis do Chat Completions", () => {
-  it("configura GPT-5.6 Terra com max_completion_tokens e reasoning none", () => {
-    expect(chatCompletionCompatibilityParams("gpt-5.6-terra", 500)).toEqual({
+  it("configura GPT-5.6 Terra com max_completion_tokens, reasoning none e temperature", () => {
+    expect(chatCompletionCompatibilityParams("gpt-5.6-terra", 500, 0.4)).toEqual({
       max_completion_tokens: 500,
       reasoning_effort: "none",
+      temperature: 0.4,
     });
   });
 
   it("não envia reasoning_effort para gpt-4o-mini", () => {
-    expect(chatCompletionCompatibilityParams("gpt-4o-mini", 500)).toEqual({
+    expect(chatCompletionCompatibilityParams("gpt-4o-mini", 500, 0.4)).toEqual({
       max_completion_tokens: 500,
+      temperature: 0.4,
     });
   });
 

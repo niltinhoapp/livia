@@ -43,11 +43,14 @@ export interface CompletionRequest {
 export async function runCompletion(
   request: CompletionRequest,
 ): Promise<OpenAI.Chat.ChatCompletionMessage | undefined> {
+  // `temperature` sai junto dos outros parâmetros que dependem do modelo:
+  // há família que o rejeita (ver lib/ai/openaiCompatibility.ts). O valor
+  // pedido continua vindo do chamador — só quem decide se ele cabe no
+  // request é a camada de compatibilidade.
   const completion = await openai.chat.completions.create({
     model: MODEL,
     messages: request.messages,
-    temperature: request.temperature,
-    ...chatCompletionCompatibilityParams(MODEL, request.maxOutputTokens),
+    ...chatCompletionCompatibilityParams(MODEL, request.maxOutputTokens, request.temperature),
     ...(request.tools && request.tools.length > 0 ? { tools: request.tools } : {}),
   }, { timeout: AI_COMPLETION_TIMEOUT_MS, maxRetries: 0 });
   return completion.choices[0]?.message;
