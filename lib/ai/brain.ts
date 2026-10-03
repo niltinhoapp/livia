@@ -31,11 +31,13 @@ import {
   type ConversationCapabilities,
 } from "@/lib/ai/conversationPolicy";
 import {
+  acceptsPracticalDemoOffer,
   asksCommercialProductPrice,
   asksMenuSetup,
   commercialDemoGuidance,
   extractCatalogPriceQuery,
   inferCommercialSegment,
+  requestsDemoNow,
   SEGMENT_COMMERCIAL_GUIDANCE,
 } from "@/lib/ai/commercialContext";
 import { COMMERCIAL_MENU_IMPORT_FACT, commercialPriceReply, commercialProductFacts, formatCommercialPrice, LIVIA_COMMERCIAL_PRODUCT } from "@/lib/commercial/product";
@@ -653,6 +655,35 @@ const ORDER_CONFIRMED_CLAIM =
 
 export function claimsOrderConfirmed(reply: string): boolean {
   return ORDER_CONFIRMED_CLAIM.test(reply);
+}
+
+// F7 — "descrever em vez de demonstrar".
+//
+// No canal demo a demonstração NÃO é um anexo da venda: ela É o argumento. O
+// lojista se convence porque viu o pedido ser montado e o horário ser
+// agendado na frente dele, não porque leu que a Lívia sabe fazer isso.
+// commercialContext.ts já manda executar ("DEMONSTRE executando as
+// ferramentas agora — não apenas descreva a funcionalidade"), mas nada
+// verificava se foi obedecido.
+//
+// Em Production o prospect aceitou três vezes seguidas ("Ss", "Continue",
+// "Legal") e recebeu três paráfrases da mesma frase — "a Lívia consulta o
+// cardápio e ajuda a montar o pedido" —, sem uma única tool executada. Trocou
+// a prova pela promessa, que em venda é a pior troca possível: descrever
+// capacidade soa como qualquer concorrente; executar na frente do cliente não
+// tem concorrente.
+//
+// Duas assinaturas, ancoradas na AFIRMAÇÃO e não na redação da recusa (mesmo
+// princípio do guard de reserva abaixo):
+//   1. falar de si na TERCEIRA pessoa como produto ("a Lívia pode consultar");
+//   2. enquadrar como hipótese ("como funcionaria", "não é um teste real").
+const DESCRIBES_INSTEAD_OF_DEMONSTRATING =
+  /\b(?:a\s+)?l[íi]via\s+(?:pode|consegue|sabe|vai|consulta|ajuda|monta|faz|permite|responde)\b/i;
+const HYPOTHETICAL_DEMO_FRAMING =
+  /\bn[ãa]o\s+[ée]\s+(?:um\s+)?(?:teste|pedido|atendimento)\s+real\b|\bs[óo]\s+uma\s+explica[çc][ãa]o\b|\bcomo\s+funcionaria\b|\bfuncionaria\s+assim\b/i;
+
+export function describesInsteadOfDemonstrating(reply: string): boolean {
+  return DESCRIBES_INSTEAD_OF_DEMONSTRATING.test(reply) || HYPOTHETICAL_DEMO_FRAMING.test(reply);
 }
 
 // O desfecho REAL da tentativa de reserva entra no prompt como fato
@@ -1456,6 +1487,10 @@ export async function think(input: BrainInput): Promise<BrainResult> {
   // Data citada pelo cliente nesta mensagem — resolvida por código, no fuso
   // do estabelecimento. Vai no resultado para o webhook persistir na tarefa.
   const ultimaDoCliente = [...history].reverse().find((m) => m.role === "customer");
+  // Mesma derivação do webhook (route.ts): a oferta que o cliente está
+  // respondendo. acceptsPracticalDemoOffer só reconhece o aceite quando a
+  // última fala da Lívia de fato ofereceu demonstrar.
+  const lastBotText = [...history].reverse().find((m) => m.role === "bot")?.text;
   // Saudação temporal coerente (OT-03G): período do dia no fuso do
   // estabelecimento + a saudação que a própria pessoa usou, para o modelo não
   // responder "bom dia" à noite nem contradizer um "boa noite" do cliente.
@@ -2050,6 +2085,44 @@ export async function think(input: BrainInput): Promise<BrainResult> {
         continue;
       }
       reply = withoutHistoryBlindness(reply) || "Pode me contar com mais detalhes?";
+    }
+
+    // ---- Trava: descreveu quando devia ter demonstrado ----
+    //
+    // Só dispara com os três fatos juntos, nunca por redação isolada:
+    //   (a) demo_execution autorizada — sem ela, descrever é o comportamento
+    //       CORRETO (ver o ramo "NÃO está autorizada" em commercialContext);
+    //   (b) o prospect aceitou ver nesta mensagem;
+    //   (c) nenhuma ferramenta rodou neste turno.
+    // Com (c) falso ela já executou algo e o texto é legítimo.
+    //
+    // Se insistir, a resposta PASSA como está: não dá para fabricar uma
+    // demonstração reescrevendo texto, e transferir para humano puniria o
+    // prospect por um erro de redação. O pior caso é o comportamento de hoje,
+    // e o trace registra para a próxima iteração do prompt.
+    if (
+      hasCapability(capabilities, "demo_execution")
+      && toolCalls.length === 0
+      && describesInsteadOfDemonstrating(reply)
+      && ultimaDoCliente
+      && (acceptsPracticalDemoOffer(ultimaDoCliente.text, lastBotText) || requestsDemoNow(ultimaDoCliente.text, true))
+    ) {
+      if (!stallCorrected) {
+        stallCorrected = true;
+        traceEvent("guardrail_result", { guard: "describes_instead_of_demonstrating", action: "corrective_pass" });
+        const disponiveis = tools.map((t) => t.function.name).join(", ");
+        messages.push({ role: "assistant", content: reply });
+        messages.push({
+          role: "system",
+          content:
+            "A resposta acima DESCREVEU o que a Lívia faz, mas a pessoa acabou de pedir para ver — e nenhuma ferramenta foi executada neste turno. "
+            + `No ambiente de demonstração você executa de verdade. Ferramentas disponíveis agora: ${disponiveis}. `
+            + "Chame a ferramenta adequada AGORA e responda com o resultado real (o item do cardápio, o horário, o pedido montado). "
+            + "Não escreva \"a Lívia pode\", \"funciona assim\" nem \"não é um teste real\": faça e mostre o que saiu.",
+        });
+        continue;
+      }
+      traceEvent("guardrail_result", { guard: "describes_instead_of_demonstrating", action: "insisted" });
     }
 
     // ---- Trava: a reserva EXISTE e o texto não confirma ----
