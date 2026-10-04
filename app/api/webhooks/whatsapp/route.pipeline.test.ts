@@ -426,6 +426,57 @@ describe("F5.2 — demo oficial a partir de Audit", () => {
     );
   });
 
+  // A dívida se fecha pela EXECUÇÃO, não pela redação da resposta.
+  it("ferramenta demo executada quita a promessa pendente", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [], {
+      conversationContext: {
+        purpose: "commercial", source: "prospecting", enteredAt: 1, updatedAt: 1,
+        commercial: { segment: "restaurant", segmentIdentifiedAt: 1, pendingPromise: { kind: "practical_demo", at: 2 } },
+      },
+    }));
+    think.mockResolvedValue({
+      reply: "Separei do cardápio: X-Burger R$ 28,00.", handoff: false, booked: false,
+      rescheduled: false, cancelled: false, toolCalls: [{ name: "list_menu", args: {} }],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.promessa.quitada", text: "pode mostrar" }));
+
+    const comercialGravado = setConversationContext.mock.calls
+      .map((call) => (call[2] as { commercial?: Record<string, unknown> }).commercial)
+      .filter(Boolean);
+    expect(comercialGravado.length).toBeGreaterThan(0);
+    // A promessa sai; o segmento continua.
+    expect(comercialGravado.at(-1)).not.toHaveProperty("pendingPromise");
+    expect(comercialGravado.at(-1)).toMatchObject({ segment: "restaurant" });
+  });
+
+  it("sem ferramenta demo, a promessa continua pendente", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [], {
+      conversationContext: {
+        purpose: "commercial", source: "prospecting", enteredAt: 1, updatedAt: 1,
+        commercial: { segment: "restaurant", segmentIdentifiedAt: 1, pendingPromise: { kind: "practical_demo", at: 2 } },
+      },
+    }));
+    think.mockResolvedValue({
+      reply: "A Lívia pode consultar o cardápio.", handoff: false, booked: false,
+      rescheduled: false, cancelled: false, toolCalls: [],
+    });
+
+    await enviarPayload(payloadMensagem({ id: "wamid.promessa.aberta", text: "pode mostrar" }));
+
+    const semPromessa = setConversationContext.mock.calls.some(
+      (call) => (call[2] as { commercial?: Record<string, unknown> }).commercial
+        && !("pendingPromise" in ((call[2] as { commercial: Record<string, unknown> }).commercial)),
+    );
+    expect(semPromessa).toBe(false);
+  });
+
   it.each(["sim", "legal", "como funciona?"])("não reativa demo para mensagem vaga: %s", async (text) => {
     vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
     findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ demoChannel: { enabled: true } }));

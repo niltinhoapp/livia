@@ -186,7 +186,26 @@ export function enrichCommercialContext(input: {
 
   const segment = inferCommercialSegment(text);
   if ((context.purpose === "audit" || context.purpose === "commercial") && segment && context.commercial?.segment !== segment) {
-    context = { ...context, commercial: { segment, segmentIdentifiedAt: now }, updatedAt: now };
+    // Espalha o que já existe: `commercial` carrega mais que o segmento desde
+    // a promessa pendente, e sobrescrever o objeto inteiro a apagaria.
+    context = { ...context, commercial: { ...context.commercial, segment, segmentIdentifiedAt: now }, updatedAt: now };
+    changed = true;
+  }
+
+  // Promessa aberta: a Lívia ofereceu demonstrar e a pessoa aceitou. A partir
+  // daqui ela DEVE a demonstração — enquanto não entregar, oferecer outra
+  // coisa é o loop que o prospect viu em Production (03/10/2026): aceitou
+  // três vezes e recebeu três paráfrases da mesma frase.
+  if (
+    context.purpose === "commercial"
+    && !context.commercial?.pendingPromise
+    && acceptsPracticalDemoOffer(text, input.lastBotText)
+  ) {
+    context = {
+      ...context,
+      commercial: { ...context.commercial, pendingPromise: { kind: "practical_demo", at: now } },
+      updatedAt: now,
+    };
     changed = true;
   }
 

@@ -379,6 +379,17 @@ function buildSystemPrompt(
   if (mayPresentLivia) {
     rules.push(commercialDemoGuidance(segment, Boolean(options?.capabilities?.demo_execution)));
   }
+  // Dívida aberta com o prospect. Vem antes de qualquer outra orientação
+  // comercial porque é a única que diz o que fazer AGORA: entregar o que já
+  // foi prometido. Sem ela o modelo reabre a oferta a cada turno.
+  if (options?.conversationContext?.commercial?.pendingPromise?.kind === "practical_demo") {
+    rules.push(
+      "VOCÊ JÁ PROMETEU UMA DEMONSTRAÇÃO E A PESSOA ACEITOU. Ela está esperando desde então. "
+      + "Entregue AGORA, nesta resposta, antes de qualquer outro assunto: execute a ferramenta e mostre o resultado real. "
+      + "Não ofereça demonstrar de novo, não pergunte se pode continuar, não repita o que a Lívia faz — isso já foi dito e aceito. "
+      + "Se a demonstração não estiver disponível, diga claramente o que falta em vez de reabrir a oferta.",
+    );
+  }
   if (prospectingContext) {
     if (prospectingContext.status === "PREPARED" || prospectingContext.status === "WAITING_REPLY" || prospectingContext.status === "LIVIA_ACTIVE") {
       rules.push(

@@ -525,6 +525,18 @@ async function persistInboundMessage(
   });
 }
 
+// Uma demonstração prática só é cumprida executando algo que o prospect VÊ:
+// cardápio, agenda, pedido. Pedir humano ou consultar a base de conhecimento
+// não entrega o que foi prometido.
+const DEMO_FULFILLING_TOOLS = new Set<string>([
+  "list_menu", "list_menu_category", "search_menu", "get_menu_product",
+  "get_order_draft", "add_order_item", "update_order_item", "remove_order_item",
+  "set_order_fulfillment", "set_order_address", "set_order_payment",
+  "prepare_order_confirmation", "confirm_order", "get_order_status",
+  "find_available_appointments", "create_appointment", "confirm_appointment",
+  "reschedule_appointment", "cancel_appointment", "get_customer_appointments",
+]);
+
 export async function drainConversationInbox(establishmentId: string, conversationId: string): Promise<void> {
   const leaseId = await tryAcquireConversationProcessingLease(establishmentId, conversationId);
   if (!leaseId) {
@@ -1509,6 +1521,22 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
     replyLength: reply.length,
     handoff,
   });
+
+  // Promessa entregue: a demonstração deixou de ser dívida no instante em que
+  // uma ferramenta de verdade rodou. Fechar aqui — e não pela redação da
+  // resposta — mantém o fato ancorado na execução, como os demais guards.
+  const commercialPromise = contextResolution.context.commercial?.pendingPromise;
+  if (commercialPromise && toolCalls.some((call) => DEMO_FULFILLING_TOOLS.has(call.name))) {
+    const { pendingPromise: _entregue, ...restoComercial } = contextResolution.context.commercial ?? {};
+    const semPromessa: typeof contextResolution.context = {
+      ...contextResolution.context,
+      commercial: restoComercial,
+      updatedAt: Date.now(),
+    };
+    contextResolution = { ...contextResolution, context: semPromessa, changed: true };
+    traceEvent("guardrail_result", { guard: "commercial_promise_fulfilled", action: "cleared" });
+    await setConversationContext(est.id, conversation.id, semPromessa, false, automationFence);
+  }
 
   // Inclui confirm_appointment. Os flags legados continuam no fallback para
   // manter compatibilidade com dublês/testes e com qualquer chamador antigo

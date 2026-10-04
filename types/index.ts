@@ -516,6 +516,18 @@ export type CommercialSegment = "clinic" | "salon" | "restaurant" | "pet" | "opt
 export interface CommercialConversationData {
   segment?: CommercialSegment;
   segmentIdentifiedAt?: number;
+  // Compromisso que a Lívia assumiu e ainda não entregou. Sobrevive aos
+  // turnos de propósito: sem isso o modelo redecide do zero a cada mensagem
+  // e volta a oferecer o que já tinha prometido, em vez de entregar.
+  pendingPromise?: CommercialPendingPromise;
+}
+
+// Por ora só a demonstração prática, que é a promessa que a Lívia faz e
+// quebra na prática. O union existe para a próxima (proposta, orçamento)
+// entrar sem mudar o formato do que já está gravado no Firestore.
+export interface CommercialPendingPromise {
+  kind: "practical_demo";
+  at: number;
 }
 
 export interface AuditConversationData {
