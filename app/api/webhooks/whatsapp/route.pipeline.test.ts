@@ -401,6 +401,31 @@ describe("F5.2 — demo oficial a partir de Audit", () => {
     expect(input.prospectingContext?.leadId).toBe("lead-b");
   });
 
+  // Production 03/10/2026: a sessão venceu as 48h, virou EXPIRED e a demo caiu.
+  // A Lívia ofereceu demonstrar, o prospect disse "Ss" — aceite que já libera a
+  // demo na jornada da Calculadora — e nada acontecia: só a frase explícita
+  // reativava. Ela respondeu "só uma explicação de como funcionaria" com o
+  // prospect pedindo para ver, três turnos seguidos.
+  it("aceite da oferta reativa a sessão expirada com a razão suave", async () => {
+    vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
+    findEstablishmentByPhoneNumberId.mockResolvedValue(demoEst());
+    getEstablishment.mockResolvedValue(demoEst());
+    getProspectingSessionByPhone.mockResolvedValueOnce({
+      establishmentId: "est_odonto", normalizedPhone: PHONE, leadId: "lead-c", businessName: "Lanchonete", segment: "lanchonete",
+      initialManualMessage: "Oi", status: "REVEALED", preRevealReplyCount: 1, preparedAt: 1, manualSendConfirmedAt: 2,
+      firstReplyAt: 3, revealedAt: 4, expiresAt: Date.now() - 60_000,
+    });
+    loadConversation.mockResolvedValue(conversa("bot", undefined, [
+      { id: "oferta", role: "bot", text: "Quer ver funcionando aqui mesmo?", at: Date.now() - 1000 } as never,
+    ], { conversationContext: { purpose: "commercial", source: "prospecting", enteredAt: 1, updatedAt: 1 } }));
+
+    await enviarPayload(payloadMensagem({ id: "wamid.aceite.demo", text: "Ss" }));
+
+    expect(reactivateProspectingSessionForDemo).toHaveBeenCalledWith(
+      "est_odonto", PHONE, expect.any(Number), "accepted_practical_demo_offer",
+    );
+  });
+
   it.each(["sim", "legal", "como funciona?"])("não reativa demo para mensagem vaga: %s", async (text) => {
     vi.stubEnv("INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID", "est_odonto");
     findEstablishmentByPhoneNumberId.mockResolvedValue(establishment({ demoChannel: { enabled: true } }));

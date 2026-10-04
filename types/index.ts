@@ -1035,6 +1035,12 @@ export interface Message {
 
 
 // ---- Prospecção Assistida pela Lívia (Revenue Engine) ----
+// Por que a sessão demo foi reaberta. Separadas de propósito: só a explícita
+// pode reabrir uma sessão que foi para atendimento HUMANO.
+export type DemoReactivationReason =
+  | "explicit_practical_demo"
+  | "accepted_practical_demo_offer";
+
 export type ProspectingStatus =
   | "PREPARED"
   | "WAITING_REPLY"
@@ -1083,7 +1089,7 @@ export interface ProspectingSession {
   outcome: "interested" | "not_interested" | "human" | "opt_out" | "expired" | "closed" | null;
   createdAt: number;
   updatedAt: number;
-  demoReactivation?: { at: number; reason: "explicit_practical_demo"; previousStatus: ProspectingStatus; previousExpiresAt: number | null };
+  demoReactivation?: { at: number; reason: DemoReactivationReason; previousStatus: ProspectingStatus; previousExpiresAt: number | null };
 }
 
 // ---- Ambiente oficial de demonstração (F2) ----

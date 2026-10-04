@@ -659,6 +659,7 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
 
         if (!isTerminal) {
           if (now > session.expiresAt) {
+            traceEvent("prospecting_expired", { previousStatus: session.status, expiredForMs: now - session.expiresAt });
             await import("@/lib/repo").then(m => m.transitionProspectingSession(est.id, normalizedContactPhone, { action: "expire" }, now));
           } else {
             let activeSession = session;
@@ -950,14 +951,30 @@ async function processQueuedMessage(job: WhatsAppInboundJob, leaseId: string): P
       contextResolution = { ...contextResolution, context: withDemoAccess, changed: true };
     }
   }
+  // Pedido explícito reabre HUMAN e EXPIRED; o aceite da oferta que a Lívia
+  // acabou de fazer reabre só EXPIRED (ver reactivateProspectingSessionForDemo).
+  //
+  // Sem o segundo caso a sessão expirada virava beco sem saída: a Lívia
+  // oferecia demonstrar, o prospect dizia "Ss" — que já é aceite suficiente
+  // para liberar a demo na jornada da Calculadora, logo acima — e nada
+  // acontecia, porque só a frase explícita reativava. Ela caía no ramo "demo
+  // não autorizada" e respondia "só uma explicação de como funcionaria" com o
+  // prospect pedindo para ver, três turnos seguidos (Production, 03/10/2026).
+  const explicitDemoRequest = requestsDemoNow(customerText, priorBotOfferedPracticalDemo);
+  const acceptedDemoOffer = acceptsPracticalDemoOffer(customerText, lastBotText);
   if (
     !auditJourney
     && contextResolution.context.purpose === "commercial"
     && est.id === process.env.INTERNAL_DEMO_PROSPECTING_ESTABLISHMENT_ID
     && est.demoChannel?.enabled === true
-    && requestsDemoNow(customerText, priorBotOfferedPracticalDemo)
+    && (explicitDemoRequest || acceptedDemoOffer)
   ) {
-    const reactivated = await import("@/lib/repo").then((m) => m.reactivateProspectingSessionForDemo(est.id, contactPhone, persistedCustomer.at));
+    const reactivated = await import("@/lib/repo").then((m) => m.reactivateProspectingSessionForDemo(
+      est.id,
+      contactPhone,
+      persistedCustomer.at,
+      explicitDemoRequest ? "explicit_practical_demo" : "accepted_practical_demo_offer",
+    ));
     if (reactivated) {
       prospectingSession = reactivated;
       prospectingContext = {

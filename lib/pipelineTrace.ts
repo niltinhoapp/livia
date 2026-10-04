@@ -19,6 +19,10 @@ export type PipelineEvent =
   | "tenant_resolved"
   | "conversation_loaded"
   | "conversation_mode"
+  // Sessão de prospecção venceu as 48h: a demo deixa de ser autorizada no
+  // meio da conversa. Sem este evento a perda é invisível — a Lívia apenas
+  // passa a descrever em vez de demonstrar, e nada no log diz por quê.
+  | "prospecting_expired"
   | "handoff_state"
   | "task_state"
   | "context_built"

@@ -273,6 +273,45 @@ describe("reativação explícita de demo", () => {
     expect(reactivated).toMatchObject({ leadId: LEAD_1, status: "REVEALED", expiresAt: 100 + 48 * 60 * 60 * 1000, demoReactivation: { reason: "explicit_practical_demo", previousStatus: "HUMAN" } });
   });
 
+  // A assimetria que protege o atendente humano: o aceite suave reabre uma
+  // sessão que venceu sozinha, mas nunca uma que foi para uma pessoa — um
+  // "sim" curto ali pode estar respondendo ao humano, não pedindo demo.
+  it("aceite da oferta reativa EXPIRED", async () => {
+    await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
+    await transitionProspectingSession(EST, PHONE_1, { action: "receive_reply" }, 20);
+    await transitionProspectingSession(EST, PHONE_1, { action: "reveal" }, 30);
+    await transitionProspectingSession(EST, PHONE_1, { action: "expire" }, 40);
+
+    const reactivated = await reactivateProspectingSessionForDemo(EST, PHONE_1, 100, "accepted_practical_demo_offer");
+
+    expect(reactivated).toMatchObject({
+      leadId: LEAD_1,
+      status: "REVEALED",
+      expiresAt: 100 + 48 * 60 * 60 * 1000,
+      demoReactivation: { reason: "accepted_practical_demo_offer", previousStatus: "EXPIRED" },
+    });
+  });
+
+  it("aceite da oferta NÃO reativa HUMAN — só o pedido explícito reabre", async () => {
+    await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
+    await transitionProspectingSession(EST, PHONE_1, { action: "receive_reply" }, 20);
+    await transitionProspectingSession(EST, PHONE_1, { action: "reveal" }, 30);
+    await transitionProspectingSession(EST, PHONE_1, { action: "set_outcome", status: "HUMAN" }, 40);
+
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 100, "accepted_practical_demo_offer")).toBeNull();
+    // A sessão continua com a pessoa: nada mudou.
+    expect(await getProspectingSessionByPhone(EST, PHONE_1)).toMatchObject({ status: "HUMAN" });
+    // O pedido explícito continua reabrindo.
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 100, "explicit_practical_demo")).toMatchObject({ status: "REVEALED" });
+  });
+
+  it("aceite da oferta não reativa sessão ativa nem opt-out", async () => {
+    await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 20, "accepted_practical_demo_offer")).toBeNull();
+    await transitionProspectingSession(EST, PHONE_1, { action: "opt_out" }, 30);
+    expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 40, "accepted_practical_demo_offer")).toBeNull();
+  });
+
   it("não reativa sessão ativa nem opt-out", async () => {
     await upsertProspectingSession(EST, { leadId: LEAD_1, phone: PHONE_1, businessName: "Test", segment: "Salão", initialManualMessage: "Olá", now: 10 });
     expect(await reactivateProspectingSessionForDemo(EST, PHONE_1, 20)).toBeNull();

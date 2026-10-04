@@ -36,6 +36,7 @@ import type {
   CorrectionCategory,
   CampaignRecipient,
   CampaignRecipientStatus,
+  DemoReactivationReason,
   ProspectingSession,
   ProspectingStatus,
   ConversationContext,
@@ -2725,9 +2726,25 @@ export async function getProspectingSessionByPhone(
   return data;
 }
 
-// Operação explícita/auditável: somente pedido inequívoco do webhook pode
-// reabrir HUMAN/EXPIRED; OPTED_OUT e sessões ativas permanecem fail-closed.
-export async function reactivateProspectingSessionForDemo(establishmentId: string, phone: string, now = Date.now()): Promise<ProspectingSession | null> {
+// Operação explícita/auditável: somente pedido do webhook pode reabrir
+// HUMAN/EXPIRED; OPTED_OUT e sessões ativas permanecem fail-closed.
+//
+// A razão decide O QUE pode ser reaberto, e a assimetria é deliberada:
+//
+//   explicit_practical_demo       ("quero ver funcionando") → HUMAN e EXPIRED
+//   accepted_practical_demo_offer ("Ss" após a Lívia oferecer) → só EXPIRED
+//
+// Reabrir HUMAN tira a conversa de um atendente de verdade. Isso continua
+// exigindo pedido inequívoco: um "sim" curto pode estar respondendo ao
+// humano, não pedindo demonstração. Já a sessão EXPIRED não tem ninguém do
+// outro lado — venceu sozinha por tempo, e o aceite da oferta que a própria
+// Lívia acabou de fazer é pedido de demonstração inequívoco.
+export async function reactivateProspectingSessionForDemo(
+  establishmentId: string,
+  phone: string,
+  now = Date.now(),
+  reason: DemoReactivationReason = "explicit_practical_demo",
+): Promise<ProspectingSession | null> {
   const normalizedPhone = normalizePhone(phone);
   const ref = sub(establishmentId, "prospectingSessions").doc(normalizedPhone);
   return db.runTransaction(async (tx) => {
@@ -2735,11 +2752,12 @@ export async function reactivateProspectingSessionForDemo(establishmentId: strin
     if (!snap.exists) return null;
     const current = snap.data() as ProspectingSession;
     if (current.status !== "HUMAN" && current.status !== "EXPIRED") return null;
+    if (reason === "accepted_practical_demo_offer" && current.status !== "EXPIRED") return null;
     const next: ProspectingSession = {
       ...current, status: "REVEALED", preRevealReplyCount: 0, manualSendConfirmedAt: now,
       revealedAt: now, completedAt: null, expiresAt: now + 48 * 60 * 60 * 1000,
       outcome: null, updatedAt: now,
-      demoReactivation: { at: now, reason: "explicit_practical_demo", previousStatus: current.status, previousExpiresAt: current.expiresAt ?? null },
+      demoReactivation: { at: now, reason, previousStatus: current.status, previousExpiresAt: current.expiresAt ?? null },
     };
     tx.set(ref, next);
     return next;
